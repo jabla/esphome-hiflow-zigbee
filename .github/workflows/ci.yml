@@ -11,7 +11,7 @@ jobs:
   host-tests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential libssl-dev
       - name: Host test suites
@@ -31,14 +31,14 @@ jobs:
       matrix:
         config: [esp32c6.yaml, esp32c6-bleonly.yaml]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install ESPHome
         run: pip install "esphome==2026.8.2"
       - name: Cache the ESP-IDF toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.cache/esphome
           key: esphome-idf-${{ runner.os }}-esphome-2026.8.2

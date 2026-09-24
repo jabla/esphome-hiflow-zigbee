@@ -1,0 +1,3 @@
+# nanopb generator options for APPHeartbeatPB.proto
+# time_ymd_hms is a short timestamp string ("YYYY-MM-DD HH:MM:SS").
+HBResDTO.time_ymd_hms max_size:24

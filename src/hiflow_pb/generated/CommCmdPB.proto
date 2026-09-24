@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+// HiFlow "CommCmd" application-layer handshake messages (the post-pairing
+// handshake a device requires before it accepts V1 data requests).
+//
+// PROVENANCE / WHY THIS FILE EXISTS
+// ---------------------------------
+// These three message types are *not* part of the upstream .proto files in
+// TheTiEr/hiflow-ble (or suaveolent/hoymiles-wifi). Upstream encodes/parses
+// them by hand in hiflow_ble/hiflow.py. The field numbers below are copied
+// verbatim from that hand-written code (hiflow.py, "CommCmd handshake
+// helpers"), which is the only authoritative description available:
+//
+//   _build_comm_cmd_res()        -> CommCmdResDTO        : field 1=time, 2=action, 5=tid, 6=data
+//   _build_comm_cmd_status_res() -> CommCmdStatusResDTO  : field 1=time, 2=action, 4=tid
+//   _get_action_sts()            -> CommCmdStatusReqDTO  : field 3=action, 11=sts
+//
+// Transport (from hiflow_ble/const.py, V1/encRand-encrypted path):
+//   app -> device  cmd 0xA318  CMD_COMM_CMD_RES_DTO        (CommCmdResDTO)
+//   app -> device  cmd 0xA319  CMD_COMM_CMD_STATUS_RES     (CommCmdStatusResDTO, poll)
+//   device -> app  cmd ...     CommCmdStatusReqDTO         (status response)
+//
+// Action codes (documented in TheTiEr/hiflow-ble, NOT invented here):
+//   64  = login:      data = bleId string
+//   82  = submit PIN: data = PIN string (only sent after a login sts==3 reply)
+//   104 = time-sync:  data = "<unix_timestamp>,<tz_offset_seconds>\r"
+//
+// Status semantics (_get_action_sts), per action:
+//   action=64 : 0=in-progress, 1=OK, 3=PIN-needed
+//   action=82 : 0=SUCCESS,     1=wrong-PIN
+//   action=104: 0=OK
+//
+// Note: no credentials are stored here. bleId / PIN / tz are supplied by the
+// caller at runtime.
+
+message CommCmdResDTO {
+  int64 time = 1;    // unix seconds (device/app clock)
+  int32 action = 2;  // 64 login, 82 PIN, 104 time-sync
+  int64 tid = 5;     // transaction id / monotonic counter (hiflow-ble echoes time)
+  string data = 6;   // action 64: bleId; 82: PIN; 104: "<unix>,<tz_offset>\r"
+}
+
+message CommCmdStatusResDTO {
+  int64 time = 1;    // unix seconds
+  int32 action = 2;  // action code being polled
+  int64 tid = 4;     // transaction id
+}
+
+message CommCmdStatusReqDTO {
+  int32 action = 3;  // action code echoed by the device
+  int32 sts = 11;    // per-action status, see table above
+}

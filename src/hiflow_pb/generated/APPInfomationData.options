@@ -1,0 +1,26 @@
+# nanopb generator options for APPInfomationData.proto
+# (the V0 pairing handshake: 0xA201/0xA301 APP_INFO_DATA, SN-keyed AES-128-CBC)
+#
+# The HiFlow Pro emits its 16-byte encRand (= the V1/AES-GCM session key) inside
+# the pairing reply: the outer message's field 8 carries the APPDtuInfoMO, whose
+# field 27 is enc_rand (walked exactly like this in the reference implementation,
+# test/ref/hiflow_ble/hiflow.py::_extract_enc_rand_from_appinfo).
+#
+# Only two fields need static storage; everything else stays a pb_callback_t,
+# which nanopb skips while decoding when no callback is registered (see
+# pb_decode.c: decode_callback_field -> pb_skip_field). That keeps the reply
+# decode allocation-free and immune to a device that reports more meters / PV
+# strings / features than we would have guessed with max_count.
+#
+#   * APPDtuInfoMO.enc_rand          : the value we are after, exactly 16 bytes.
+#   * APPInfoDataResDTO.time_ymd_hms : we *send* that message (like the
+#                                      reference lib), so it must be encodable
+#                                      without a callback.
+#
+# NOTE: deliberately max_size, not fixed_length. With (nanopb).fixed_length an
+# empty bytes field decodes to 16 zero bytes, which would be accepted as a fresh
+# encRand and then fail every GCM auth tag; with max_size the `.size` member
+# lets hiflow_appinfo_extract_enc_rand() reject anything that is not exactly 16
+# bytes, matching the reference implementation's explicit length check.
+APPDtuInfoMO.enc_rand          max_size:16
+APPInfoDataResDTO.time_ymd_hms max_size:24

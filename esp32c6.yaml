@@ -1,0 +1,342 @@
+# HiFlow Pro -> Zigbee bridge: a XIAO ESP32-C6 reads a Hoymiles HiFlow Pro over BLE
+# (external component hiflow_ble) and reports the values as a Zigbee end device.
+# No WiFi, no api, no ota.
+esphome:
+  name: hiflow-zb
+  friendly_name: hiflow-zb
+
+esp32:
+  variant: esp32c6
+  flash_size: 4MB
+  framework:
+    type: esp-idf
+
+# The XIAO ESP32-C6 has an FM8625H RF switch (ESPHome aliases RF_SWITCH_EN=GPIO3,
+# RF_ANT_SELECT=GPIO14). With the pins left unset the radio path is undefined:
+# measured only -94 dBm where a USB dongle at the same spot saw -78 dBm.
+#   GPIO3  LOW  = RF switch powered
+#   GPIO14 LOW  = internal ceramic antenna, HIGH = external U.FL antenna
+# gpio outputs start "off"; `external_antenna: "true"` inverts GPIO14 so "off" means
+# HIGH. The IO setup (priority HARDWARE) runs before the BLE init, so the path is
+# right before the first radio command goes out. An external antenna gained about
+# 19 dB at the reference site.
+output:
+  - platform: gpio
+    pin:
+      number: GPIO3
+      mode: {output: true}
+    id: rf_switch_en
+  - platform: gpio
+    pin:
+      number: GPIO14
+      mode: {output: true}
+      inverted: ${external_antenna}
+    id: rf_ant_select
+
+logger:
+  # WARN is the level for the deployed board. On a USB charger (no USB host) CDC
+  # writes to USB_SERIAL_JTAG block: at INFO the board reset in a clean 5-minute
+  # cycle, on laptop USB the same firmware ran fine, and WARN stopped the resets.
+  # Raise DEBUG/VERBOSE only for a short session with a USB host attached
+  # (DEBUG = handshake steps, VERBOSE = GATT errors).
+  level: WARN
+  hardware_uart: USB_SERIAL_JTAG   # XIAO: log over native USB, not UART0
+
+# Credentials and per-site settings live in hiflow_secrets.yaml (gitignored; copy
+# hiflow_secrets.example.yaml) and come in as substitutions: no secrets in this file.
+substitutions: !include hiflow_secrets.yaml
+
+# The component from components/hiflow_ble (flat copies of the C core, see
+# components/hiflow_ble/README.md; refresh them with sync_core.sh).
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [hiflow_ble]
+
+# Keep the BLE scan window small: the C6 has ONE 2.4 GHz radio path, and Espressif
+# names "Zigbee end device + BLE scan" as the fragile combination. A continuously
+# scanning tracker next to Zigbee reproducibly starved the login. A 30 ms window
+# every 1280 ms (2 % duty) is enough because the MAC is known; the name (only in
+# the scan response) is not needed, hence passive scanning.
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 1280ms
+    window: 30ms
+    active: false
+
+# --- BLE transport: scan/connect/MTU/notify come from the built-in ble_client.
+ble_client:
+  - id: hiflow_client
+    mac_address: ${hiflow_mac}
+
+hiflow_ble:
+  id: hiflow
+  ble_client_id: hiflow_client
+  sn: ${hiflow_sn}
+  ble_id: ${hiflow_ble_id}
+  pin: ${hiflow_ble_pin}
+  # Standard (winter) UTC offset; eu_dst adds an hour from the last Sunday in
+  # March to the last Sunday in October. The handshake's time-sync sets the
+  # inverter's own clock with it, and that clock drives its daily energy reset.
+  offset: 3600
+  eu_dst: true
+  # Data cadence on the open session. Must stay below the inverter's idle
+  # timeout of roughly 90 s; the schema allows 10-60 s.
+  update_interval: 30s
+
+# No wifi:, no api:, no ota: a pure 802.15.4 node
+zigbee:
+  id: zb
+  model: HMS-2000-4WB Bridge
+  power_source: MAINS_SINGLE_PHASE
+
+sensor:
+  # ---------- HiFlow Pro (BLE, hiflow_ble) ----------
+  # Every sensor is one Zigbee endpoint, numbered in the order of this list
+  # (tools/ha_fix_bridge_entities.py maps them to entity ids).
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: ac_power
+    name: "HiFlow AC Power"
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 1
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: ac_voltage
+    name: "HiFlow AC Voltage"
+    unit_of_measurement: V
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 1
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: ac_current
+    name: "HiFlow AC Current"
+    unit_of_measurement: A
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: ac_frequency
+    name: "HiFlow AC Frequency"
+    unit_of_measurement: Hz
+    device_class: frequency
+    state_class: measurement
+    accuracy_decimals: 2
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: temperature
+    name: "HiFlow Temperature"
+    unit_of_measurement: "°C"
+    device_class: temperature
+    state_class: measurement
+    accuracy_decimals: 1
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: energy_total
+    name: "HiFlow Energy Total"
+    unit_of_measurement: Wh
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 0
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: energy_daily
+    name: "HiFlow Energy Daily"
+    unit_of_measurement: Wh
+    device_class: energy
+    state_class: measurement
+    accuracy_decimals: 0
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: port1_power
+    name: "HiFlow Port1 Power"
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 1
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: port1_voltage
+    name: "HiFlow Port1 Voltage"
+    unit_of_measurement: V
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 1
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: port1_current
+    name: "HiFlow Port1 Current"
+    unit_of_measurement: A
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: port2_power
+    name: "HiFlow Port2 Power"
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 1
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: port2_voltage
+    name: "HiFlow Port2 Voltage"
+    unit_of_measurement: V
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 1
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: port2_current
+    name: "HiFlow Port2 Current"
+    unit_of_measurement: A
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: port3_power
+    name: "HiFlow Port3 Power"
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 1
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: port3_voltage
+    name: "HiFlow Port3 Voltage"
+    unit_of_measurement: V
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 1
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: port3_current
+    name: "HiFlow Port3 Current"
+    unit_of_measurement: A
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: port4_power
+    name: "HiFlow Port4 Power"
+    unit_of_measurement: W
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 1
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: port4_voltage
+    name: "HiFlow Port4 Voltage"
+    unit_of_measurement: V
+    device_class: voltage
+    state_class: measurement
+    accuracy_decimals: 1
+
+  - platform: hiflow_ble
+    # force: report every change instead of relying on the coordinator's
+    # reporting configuration (ZHA sometimes sets very long intervals).
+    report: force
+    hiflow_ble_id: hiflow
+    type: port4_current
+    name: "HiFlow Port4 Current"
+    unit_of_measurement: A
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+
+  # Session state as a number (the only remote diagnosis at the site):
+  #   0 waiting for a connection (also normal at night)
+  #   2 V0 pairing · 3 login · 4 PIN · 5 time-sync · 6 ready · 7 reading data
+  # From 8 on the bridge is waiting after a failure, and the value names it:
+  #   9 login refused (the link died during the handshake)
+  #  10 no connection came up (radio, placement, power)
+  #  11 a request went unanswered
+  #  13 the BLE PIN is missing or was refused
+  #  14 the session key does not fit, even after a pairing
+  #  15 the radio link timed out (supervision timeout, check coexistence)
+  # Deliberately at the end so the endpoints of the measurements stay put
+  # (otherwise the whole ZHA entity mapping shifts).
+  - platform: hiflow_ble
+    hiflow_ble_id: hiflow
+    type: status
+    name: "HiFlow Status"
+    report: force

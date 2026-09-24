@@ -1,0 +1,26 @@
+# Energy dashboard source for the Zigbee bridge: paste into Home Assistant's
+# configuration.yaml (merge with an existing `template:` block), then reload the
+# template entities (Developer tools -> YAML -> Template entities). Without an
+# earlier `template:` block that reload entry does not exist yet: restart Home
+# Assistant instead. The same
+# sensor can be created as a UI template helper; put the availability template
+# under its advanced options.
+#
+# Why a template sensor: ZHA exposes the bridge's lifetime counter as an
+# analog input, which can only be `measurement`. The energy dashboard needs
+# `total_increasing`. The bridge never publishes a falling total, and the
+# availability guard keeps a missing value (0 right after a boot) from looking
+# like a meter reset.
+#
+# Then pick sensor.inverter_energy as the solar production in the energy
+# dashboard, with sensor.inverter_zb_ac_power as the power sensor. The entity ids
+# assume tools/ha_fix_bridge_entities.py was run; adjust them otherwise.
+template:
+  - sensor:
+      - name: "Inverter energy"
+        unique_id: inverter_energy
+        unit_of_measurement: kWh
+        device_class: energy
+        state_class: total_increasing
+        availability: "{{ states('sensor.inverter_zb_energy_total') | float(0) > 0 }}"
+        state: "{{ (states('sensor.inverter_zb_energy_total') | float(0) / 1000) | round(3) }}"

@@ -1,0 +1,282 @@
+{
+  "meta": {
+    "enc_rand_hex": "00112233445566778899aabbccddeeff",
+    "sn": "0000000000AA",
+    "service_uuid": "0000e0ff-3c17-d293-8e48-14fe2e4da212",
+    "tx_uuid": "0000ffe1-0000-1000-8000-00805f9b34fb",
+    "rx_uuid": "0000ffe2-0000-1000-8000-00805f9b34fb",
+    "mtu": 512,
+    "salt_v0": "Hoymiles@#123456"
+  },
+  "crc16_modbus": [
+    {
+      "data_hex": "",
+      "crc": 65535
+    },
+    {
+      "data_hex": "00",
+      "crc": 16575
+    },
+    {
+      "data_hex": "010203",
+      "crc": 24929
+    },
+    {
+      "data_hex": "484d",
+      "crc": 34295
+    },
+    {
+      "data_hex": "000102030405060708090a0b0c0d0e0f",
+      "crc": 59316
+    },
+    {
+      "data_hex": "54686520717569636b2062726f776e20666f78",
+      "crc": 6704
+    }
+  ],
+  "v1_key_nonce_aad": [
+    {
+      "cmd": 41753,
+      "tid": 0,
+      "key_hex": "1a87826e0e5b80bd5ac6e98afe660876",
+      "nonce_hex": "15e0468c96ece9c650eea6f2",
+      "aad_hex": "19a30000"
+    },
+    {
+      "cmd": 41752,
+      "tid": 1,
+      "key_hex": "1a87826e0e5b80bd5ac6e98afe660876",
+      "nonce_hex": "dfd0cbb5ec50b861ac5969df",
+      "aad_hex": "18a30100"
+    },
+    {
+      "cmd": 41731,
+      "tid": 4660,
+      "key_hex": "1a87826e0e5b80bd5ac6e98afe660876",
+      "nonce_hex": "8728be3075fc6c54d8858371",
+      "aad_hex": "03a33412"
+    }
+  ],
+  "v1_frames": [
+    {
+      "cmd": 41753,
+      "tid": 0,
+      "plaintext_hex": "0801100022050a033132302804",
+      "frame_hex": "484da31900004a6d00177598aaac18187ed4243bc8029d9290544b69b88926f623e884939e6369",
+      "crc": 19053
+    },
+    {
+      "cmd": 41752,
+      "tid": 7,
+      "plaintext_hex": "0840",
+      "frame_hex": "484da31800070e50000cc0a8db8f5283a79ccb77481c70462789c97c",
+      "crc": 3664
+    },
+    {
+      "cmd": 41731,
+      "tid": 4660,
+      "plaintext_hex": "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f2021222324252627",
+      "frame_hex": "484da30312345e3a0031ed98da6d32e290ba4808b3185cc260a8e3242657111a14b4e481ba5ff6bb1c7d827c914338200b3de4521b79b6825251c23805ea0a4cbe",
+      "crc": 24122
+    }
+  ],
+  "v0_key_iv": [
+    {
+      "cmd": 41473,
+      "tid": 0,
+      "key_hex": "948980bccc461e5508c6fe5f23071ee9",
+      "iv_hex": "ae70e344ffd5e4d61b32d45e51448f86"
+    },
+    {
+      "cmd": 35073,
+      "tid": 3,
+      "key_hex": "948980bccc461e5508c6fe5f23071ee9",
+      "iv_hex": "3e13e299bf291abb5e8e1146f499314d"
+    }
+  ],
+  "v0_frames": [
+    {
+      "cmd": 41473,
+      "tid": 0,
+      "plaintext_hex": "0a033132301001",
+      "frame_hex": "484da20100003ac5001afbbca7b8b7786448303e33a7a211a8d8"
+    },
+    {
+      "cmd": 35073,
+      "tid": 3,
+      "plaintext_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "frame_hex": "484d89010003409c003a0921cb526c658595d76de459c4ebc24fbc07e06f7ddef74c3b25171804e491562f5c784f1e8c97edcee0bc9340dba52a"
+    }
+  ],
+  "cmds": {
+    "app_info_req": 41473,
+    "comm_cmd_res": 41752,
+    "comm_cmd_status": 41753,
+    "real_data_res": 41731,
+    "hb_req": 41730
+  },
+  "synthetic_inputs": {
+    "pin": "00000000",
+    "ble_id": "1",
+    "mac": "AA:BB:CC:DD:EE:FF"
+  },
+  "protobuf_realdata_new": {
+    "fields": {
+      "sgs_data": [
+        {
+          "active_power": 1234,
+          "voltage": 2311,
+          "frequency": 5002,
+          "temperature": 421
+        }
+      ],
+      "pv_data": [
+        {
+          "voltage": 4001,
+          "current": 150,
+          "power": 600,
+          "energy_total": 123456,
+          "energy_daily": 789,
+          "error_code": 0
+        },
+        {
+          "voltage": 3987,
+          "current": 145,
+          "power": 578,
+          "energy_total": 98765,
+          "energy_daily": 654,
+          "error_code": 0
+        },
+        {
+          "voltage": 0,
+          "current": 0,
+          "power": 0,
+          "energy_total": 5,
+          "energy_daily": 0,
+          "error_code": 50331648
+        },
+        {
+          "voltage": 0,
+          "current": 0,
+          "power": 0,
+          "energy_total": 0,
+          "energy_daily": 0,
+          "error_code": 0
+        }
+      ]
+    },
+    "wire_hex": "4a0c188712208a2728d20948a5035a1018a11f20960128d80430c0c4073895065a1018931f20910128c20430cd8306388e055a07300540808080185a00",
+    "scaling": {
+      "active_power": "x0.1 W",
+      "voltage": "x0.1 V",
+      "current": "x0.01 A",
+      "frequency": "x0.01 Hz",
+      "temperature": "x0.1 C"
+    }
+  },
+  "request_payloads": {
+    "time": 1774000000,
+    "offset": 7200,
+    "time_ymd_hms": "2026-03-20 11:46:40",
+    "ble_id": "1",
+    "pin": "00000000",
+    "login": {
+      "action": 64,
+      "hex": "0880aff4cd0610402880aff4cd06320131"
+    },
+    "pin_cmd": {
+      "action": 82,
+      "hex": "0880aff4cd0610522880aff4cd0632083030303030303030"
+    },
+    "time_sync": {
+      "action": 104,
+      "data": "1774000000,7200\r",
+      "hex": "0880aff4cd0610682880aff4cd063210313737343030303030302c373230300d"
+    },
+    "status_poll": {
+      "64": "0880aff4cd0610402080aff4cd06",
+      "82": "0880aff4cd0610522080aff4cd06",
+      "104": "0880aff4cd0610682080aff4cd06"
+    },
+    "real_data_new": {
+      "cp0_hex": "0a13323032362d30332d32302031313a34363a343020a0382880aff4cd06",
+      "cp1_hex": "0a13323032362d30332d32302031313a34363a3430100120a0382880aff4cd06"
+    },
+    "app_info_v0": {
+      "hex": "0a13323032362d30332d32302031313a34363a343010a0382880aff4cd06"
+    }
+  },
+  "status_replies": [
+    {
+      "action": 64,
+      "sts": 0,
+      "hex": "18405800"
+    },
+    {
+      "action": 64,
+      "sts": 1,
+      "hex": "18405801"
+    },
+    {
+      "action": 64,
+      "sts": 3,
+      "hex": "18405803"
+    },
+    {
+      "action": 82,
+      "sts": 0,
+      "hex": "18525800"
+    },
+    {
+      "action": 82,
+      "sts": 1,
+      "hex": "18525801"
+    },
+    {
+      "action": 104,
+      "sts": 0,
+      "hex": "18685800"
+    }
+  ],
+  "protobuf_realdata_new_pages": {
+    "ap": 2,
+    "single_page_hex": "0a0c54455354445455303030303118014a0f18811220862728bb3f38e10248f4025a12100118a11f20960128f52e30c0c4073895065a12100218931f20910128942d30cd8306388e05",
+    "page0_hex": "0a0c54455354445455303030303118024a0f18811220862728bb3f38e10248f4025a12100118a11f20960128f52e30c0c4073895065a12100218931f20910128942d30cd8306388e05",
+    "page1_hex": "0a0c544553544454553030303031180220015a12100318bc1e208c0128d42a3083b20338c1025a12100418d81d20820128cc26309cdb0238d201",
+    "merged": {
+      "ac_power_w": 812.3,
+      "ac_voltage_v": 230.5,
+      "ac_current_a": 3.53,
+      "ac_frequency_hz": 49.98,
+      "temperature_c": 37.2,
+      "energy_total_wh": 322220,
+      "energy_daily_wh": 1974,
+      "ports": [
+        {
+          "port": 1,
+          "power_w": 600.5,
+          "voltage_v": 400.1,
+          "current_a": 1.5
+        },
+        {
+          "port": 2,
+          "power_w": 578.0,
+          "voltage_v": 398.7,
+          "current_a": 1.45
+        },
+        {
+          "port": 3,
+          "power_w": 546.0,
+          "voltage_v": 390.0,
+          "current_a": 1.4
+        },
+        {
+          "port": 4,
+          "power_w": 494.0,
+          "voltage_v": 380.0,
+          "current_a": 1.3
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,18 @@
+# your credentials (template: hiflow_secrets.example.yaml)
+hiflow_secrets.yaml
+# ESPHome build tree
+.esphome/
+# DEBUG copies written by tools/quicktest.sh
+*-debug.yaml
+# host-test build products
+test/host/test_hiflow_frame
+test/host/test_pb
+test/host/test_clock
+test/host/test_proto
+test/host/test_session
+test/host/vectors.h
+test/host/vectors_pb.h
+test/host/vectors_proto.h
+__pycache__/
+.venv/
+*.log

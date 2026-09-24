@@ -1,0 +1,20 @@
+# nanopb generator options for CommandPB.proto
+# (command / status messages on the 0xA305 control-command path)
+CommandResDTO.data                    max_size:64
+CommandResDTO.es_to_sn                max_count:4
+CommandResDTO.mi_to_sn                max_count:4
+CommandResDTO.mi_sn_item_a            max_count:4
+CommandResDTO.mi_sn_item_b            max_count:4
+CommandResDTO.mi_sn_item_c            max_count:4
+CommandReqDTO.dtu_sn                  max_size:24
+CommandStatusReqDTO.dtu_sn            max_size:24
+CommandStatusReqDTO.es_sns_sucs       max_count:4
+CommandStatusReqDTO.mi_sns_sucs       max_count:4
+CommandStatusReqDTO.es_sns_failds     max_count:4
+CommandStatusReqDTO.mi_sns_failds     max_count:4
+CommandStatusReqDTO.es_mOperatingStatus max_count:4
+CommandStatusReqDTO.mi_mOperatingStatus max_count:4
+CommandStatusReqDTO.mi_mErrorStatus   max_count:4
+CommandStatusReqDTO.es_mSucStatus     max_count:4
+CommandStatusReqDTO.es_mErrorStatus   max_count:4
+ESOperatingStatusMO.es_sn             max_size:24

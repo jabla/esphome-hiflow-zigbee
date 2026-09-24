@@ -1,0 +1,3 @@
+# nanopb generator options for CommCmdPB.proto (handshake messages)
+# bleId is up to 18 digits; PIN ~8 chars; time-sync "<unix>,<tz>\r" ~20 chars.
+CommCmdResDTO.data max_size:48

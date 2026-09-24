@@ -1,0 +1,17 @@
+# nanopb generator options for RealDataNew.proto
+# (used with: nanopb_generator.py RealDataNew.proto)
+#
+# Repeated fields need an explicit max_count for nanopb static allocation.
+# The HiFlow Pro HMS-2000-4WB has 1 SGS block and up to 4 PV strings; a little
+# headroom is kept so a slightly larger frame still fits.
+RealDataNewReqDTO.device_serial_number max_size:24
+RealDataNewReqDTO.meter_data           max_count:4
+RealDataNewReqDTO.rp_data              max_count:4
+RealDataNewReqDTO.rsd_data             max_count:4
+RealDataNewReqDTO.sgs_data             max_count:2
+RealDataNewReqDTO.tgs_data             max_count:4
+RealDataNewReqDTO.pv_data              max_count:8
+
+# int32 fields are fine as-is: the largest value in the test corpus is
+# error_code = 50331648 (< 2^31), so int32_t holds it losslessly.
+# int64 fields (serial_number) default to 64-bit in nanopb.

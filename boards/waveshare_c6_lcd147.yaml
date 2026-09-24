@@ -1,0 +1,88 @@
+# Waveshare ESP32-C6-LCD-1.47 (non-touch): the board carries a 1.47" 172x320
+# IPS panel with an ST7789 controller, wired to SCLK GPIO7 / MOSI GPIO6 /
+# LCD_CS GPIO14 / LCD_DC GPIO15 / LCD_RST GPIO21 / LCD_BL GPIO22. ESPHome ships
+# that pin map as the `WAVESHARE-ESP32-C6-LCD-1.47` model of the mipi_spi
+# driver, so no pins are configured here.
+#
+# This board has no RF switch and no U.FL socket (patch antenna only), so the
+# `external_antenna` substitution is unused with it.
+#
+# RAM: the C6 has no PSRAM, so the driver keeps its buffer below 20 KB
+# (`buffer_size` stays at its default) and draws the frame in several passes
+# instead of holding a full 172*320*2 = 110 KB frame buffer.
+#
+# The panel shows the values on site, without Home Assistant: the session
+# status (the only diagnosis the bridge has), AC power, energy of the day and
+# the free heap.
+
+# The panel is driven over the SPI bus of the board (SCLK GPIO7, MOSI GPIO6).
+# CS, DC, RST and the backlight come from the board definition of the driver.
+spi:
+  clk_pin: GPIO7
+  mosi_pin: GPIO6
+
+# The board definition does not drive the backlight (GPIO22), so the panel would
+# stay dark. Tied to the display, no Home Assistant entity: the bridge has no
+# API, WiFi or switch endpoints.
+output:
+  - platform: gpio
+    id: lcd_backlight
+    pin:
+      number: GPIO22
+      mode: {output: true}
+
+esphome:
+  on_boot:
+    - priority: 600
+      then:
+        - output.turn_on: lcd_backlight
+
+font:
+  # One font is enough for a 1.47" panel; the glyph list keeps the flash cost
+  # down. Google Fonts are fetched at build time.
+  - file: "gfonts://Roboto"
+    id: lcd_font
+    size: 26
+    glyphs: " 0123456789.,:%-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÄÖÜ"
+
+display:
+  - platform: mipi_spi
+    id: on_board_lcd
+    model: WAVESHARE-ESP32-C6-LCD-1.47
+    # The BLE session polls every 30 s (hiflow_ble: update_interval), so a
+    # faster refresh would only redraw the same numbers.
+    update_interval: 30s
+    lambda: |-
+      #include <cmath>
+      #include "esp_heap_caps.h"
+      // Session state of the bridge; the numbers are the ones the status sensor
+      // reports, see docs/development.md.
+      const int st = std::isnan(id(hiflow_status).state) ? -1 : (int) id(hiflow_status).state;
+      const char *state = "WAITING";
+      switch (st) {
+        case 2: state = "PAIRING"; break;
+        case 3: state = "LOGIN"; break;
+        case 4: state = "PIN"; break;
+        case 5: state = "TIME SYNC"; break;
+        case 6: state = "READY"; break;
+        case 7: state = "READING"; break;
+        case 9: state = "LOGIN REFUSED"; break;
+        case 10: state = "NO LINK"; break;
+        case 11: state = "NO ANSWER"; break;
+        case 13: state = "PIN MISSING"; break;
+        case 14: state = "KEY MISMATCH"; break;
+        case 15: state = "LINK TIMEOUT"; break;
+        default: break;
+      }
+      const Color state_color = (st == 6 || st == 7) ? Color(0, 220, 0)
+                               : (st == 0 || st == -1) ? Color(255, 165, 0)
+                                                       : Color(255, 64, 64);
+      it.fill(Color::BLACK);
+      it.printf(6, 6, id(lcd_font), Color(128, 128, 128), "HiFlow Pro");
+      it.printf(6, 40, id(lcd_font), state_color, "%s", state);
+      it.printf(6, 90, id(lcd_font), Color::WHITE, "%.0f W", id(ac_power).state);
+      it.printf(6, 130, id(lcd_font), Color::WHITE, "%.1f V", id(ac_voltage).state);
+      it.printf(6, 170, id(lcd_font), Color::WHITE, "%.1f C", id(temperature).state);
+      it.printf(6, 210, id(lcd_font), Color::WHITE, "%.2f kWh", id(energy_daily).state / 1000.0f);
+      it.printf(6, 260, id(lcd_font), Color(128, 128, 128), "%u kB free",
+                (unsigned) (esp_get_free_heap_size() / 1024));

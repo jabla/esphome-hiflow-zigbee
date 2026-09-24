@@ -9,7 +9,7 @@ on:
 
 jobs:
   host-tests:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
       - name: Install build dependencies
@@ -26,7 +26,7 @@ jobs:
           git diff --exit-code -- esp32c6-bleonly.yaml
 
   esphome:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       matrix:
         config: [esp32c6.yaml, esp32c6-bleonly.yaml]

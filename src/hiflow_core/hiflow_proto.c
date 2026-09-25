@@ -275,6 +275,9 @@ int hiflow_merge_real_data(hiflow_measurements_t *acc, const uint8_t *pt, size_t
         acc->ac_current = sgs->current;
         acc->ac_frequency = sgs->frequency;
         acc->ac_temperature = sgs->temperature;
+        acc->ac_reactive_power = sgs->reactive_power;
+        acc->ac_power_factor = sgs->power_factor;
+        acc->ac_warning_count = sgs->warning_number;
     } else if (!acc->have_ac && acc->page.tgs_data_count > 0) {
         const TGSMO *tgs = &acc->page.tgs_data[0];
         acc->have_ac = 1;
@@ -283,6 +286,9 @@ int hiflow_merge_real_data(hiflow_measurements_t *acc, const uint8_t *pt, size_t
         acc->ac_current = tgs->current_phase_A;
         acc->ac_frequency = tgs->frequency;
         acc->ac_temperature = tgs->temperature;
+        acc->ac_reactive_power = tgs->reactive_power;
+        acc->ac_power_factor = tgs->power_factor;
+        acc->ac_warning_count = tgs->warning_number;
     }
 
     for (i = 0; i < acc->page.pv_data_count; i++) {
@@ -327,6 +333,9 @@ void hiflow_measurements_to_data(const hiflow_measurements_t *acc, hiflow_data_t
     out->ac_current_a = (float) acc->ac_current * 0.01f;
     out->ac_frequency_hz = (float) acc->ac_frequency * 0.01f;
     out->temperature_c = (float) acc->ac_temperature * 0.1f;
+    out->reactive_power_var = (float) acc->ac_reactive_power * 0.1f;
+    out->power_factor_pct = (float) acc->ac_power_factor * 0.1f;
+    out->warning_count = (float) acc->ac_warning_count;
 
     for (i = 0; i < HIFLOW_MAX_PORTS; i++) {
         const hiflow_port_t *port = &acc->ports[i];
@@ -339,6 +348,8 @@ void hiflow_measurements_to_data(const hiflow_measurements_t *acc, hiflow_data_t
         out->ports[i].power_w = (float) port->power * 0.1f;
         out->ports[i].voltage_v = (float) port->voltage * 0.1f;
         out->ports[i].current_a = (float) port->current * 0.01f;
+        out->ports[i].energy_total_wh = (float) port->energy_total;
+        out->ports[i].energy_daily_wh = (float) port->energy_daily;
         energy_total += port->energy_total;
         energy_daily += port->energy_daily;
     }

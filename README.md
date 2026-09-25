@@ -9,8 +9,10 @@ inverter ──BLE──> ESP32-C6 ──Zigbee──> coordinator ──ZHA─�
 ```
 
 It keeps one **persistent** BLE session (log in once, poll every 30 s over the same link) and
-exposes 20 values: AC power/voltage/current/frequency, temperature, energy total/today,
-power/voltage/current for the four PV ports, plus the session status.
+exposes 31 values: AC power/voltage/current/frequency, reactive power, power factor,
+temperature, energy total/today, the inverter's daily warning count, power/voltage/current and
+energy total/today for each of the four PV ports, plus the session status. A value is reported
+when it changes noticeably or after a few minutes at the latest, not on every 30 s poll.
 
 The protocol implementation is a C port of [TheTiEr/hiflow-ble](https://github.com/TheTiEr/hiflow-ble),
 the library behind the [ha-hiflow-ble](https://github.com/TheTiEr/ha-hiflow-ble) integration. It
@@ -108,8 +110,9 @@ Put the board at the inverter and power it from a USB charger. The deployed imag
   30 s later). The energy total is not affected, so the energy dashboard stays correct.
 - Read-only: no power limit. The ESPHome Zigbee component cannot expose `number` entities on the
   ESP32 yet.
-- About 20 of the roughly 40 values the inverter reports are exposed. Alarms, grid profile and
-  the rest are not.
+- All measurements that ha-hiflow-ble shows are exposed, except the per-port error code (in
+  practice the same `0x03000000` on every port while the inverter feeds in). The warning count
+  says how many warnings there were, not which ones.
 
 ## Credits and license
 

@@ -110,10 +110,24 @@ sensor:
 ```
 
 `type:` is one of `ac_power`, `ac_voltage`, `ac_current`, `ac_frequency`,
-`temperature`, `energy_total`, `energy_daily`, `port{1..4}_{power,voltage,
-current}` and `status` (the session state as a number). Unit / device class /
-state class / accuracy default to the physically correct values and can be
-overridden.
+`reactive_power`, `power_factor`, `temperature`, `energy_total`,
+`energy_daily`, `warnings` (the inverter's warning count since dawn),
+`port{1..4}_{power,voltage,current,energy_total,energy_daily}` and `status`
+(the session state as a number). Unit / device class / state class / accuracy
+default to the physically correct values and can be overridden.
+
+Every sensor publishes on every poll. To send fewer Zigbee reports, give it
+ESPHome's standard filters, as `esp32c6.yaml` does:
+
+```yaml
+    filters:
+      - or:
+          - throttle: 300s   # at the latest every 5 minutes
+          - delta: 5         # or as soon as it moved by more than 5 W
+```
+
+The status is the exception: the component publishes it on change and every
+5 minutes, and reports the short state 7 (a data request in flight) as 6.
 
 There is no `enc_rand:` option: the inverter rotates its session key, so the
 session fetches it with a V0 pairing after every boot and after every failed

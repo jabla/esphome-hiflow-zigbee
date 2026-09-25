@@ -70,10 +70,14 @@ Each point below cost at least one debugging session. Don't undo them casually.
   without `-b 115200` it stops silently after "send uart reset") while Home Assistant is
   stopped. Other coordinators are untested.
 - **`report: force`** on every sensor. Otherwise ZHA leaves analog-input entities `unknown`.
+  With `force`, every published value is a report, so the `or: throttle/delta` filters in
+  `esp32c6.yaml` keep repeated values off the air. The session status goes out on change and every
+  5 minutes as a keep-alive.
 - **After changing the sensor list, re-interview in ZHA.** Every sensor is one endpoint, numbered
   in list order. ZHA binds entities by unique id and otherwise mixes old names with new values.
   Remove the device, let it re-join, then run `tools/ha_fix_bridge_entities.py`. Add new
-  sensors before the status sensor, so the status keeps the last endpoint.
+  sensors at the end of the list, so the existing endpoints keep their numbers and entity ids.
+  ZHA only picks up new endpoints on that re-join.
 - **Energy dashboard:** ZHA analog inputs are always `measurement`. Use the template sensor from
   `docs/ha-energy-template.yaml`, which is `total_increasing` and ignores missing values.
 

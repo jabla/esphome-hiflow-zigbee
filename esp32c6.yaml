@@ -86,12 +86,20 @@ sensor:
   # Every sensor is one Zigbee endpoint, numbered in the order of this list
   # (tools/ha_fix_bridge_entities.py maps them to entity ids).
   #
+  # report: force sends every published value as a Zigbee report instead of
+  # relying on the coordinator's reporting configuration (ZHA sometimes sets
+  # very long intervals). The filters decide what gets published: a value goes
+  # out when it moved by more than the delta, or when the throttle time has
+  # passed since the last one, whichever comes first. The session polls every
+  # 30 s, and without the filters every poll would be one report per sensor,
+  # most of them repeating the last value. Zigbee and BLE share the C6's one
+  # radio, so fewer reports leave more air time to the BLE link.
+  # The display of the Waveshare board reads the unfiltered values.
+  #
   # The sensors that the on-board display of the Waveshare board shows carry an
   # `id:` so the display lambda can read them. An id does not affect the Zigbee
   # endpoint numbering, and it stays unused on a board without a display.
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: ac_power
@@ -101,10 +109,12 @@ sensor:
     device_class: power
     state_class: measurement
     accuracy_decimals: 1
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 5
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: ac_voltage
@@ -114,10 +124,12 @@ sensor:
     device_class: voltage
     state_class: measurement
     accuracy_decimals: 1
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 1
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: ac_current
@@ -126,10 +138,12 @@ sensor:
     device_class: current
     state_class: measurement
     accuracy_decimals: 2
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 0.05
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: ac_frequency
@@ -139,10 +153,12 @@ sensor:
     device_class: frequency
     state_class: measurement
     accuracy_decimals: 2
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 0.05
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: temperature
@@ -152,10 +168,12 @@ sensor:
     device_class: temperature
     state_class: measurement
     accuracy_decimals: 1
+    filters:
+      - or:
+          - throttle: 600s
+          - delta: 0.5
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: energy_total
@@ -165,10 +183,12 @@ sensor:
     device_class: energy
     state_class: total_increasing
     accuracy_decimals: 0
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 10
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: energy_daily
@@ -178,10 +198,12 @@ sensor:
     device_class: energy
     state_class: measurement
     accuracy_decimals: 0
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 10
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: port1_power
@@ -190,10 +212,12 @@ sensor:
     device_class: power
     state_class: measurement
     accuracy_decimals: 1
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 5
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: port1_voltage
@@ -202,10 +226,12 @@ sensor:
     device_class: voltage
     state_class: measurement
     accuracy_decimals: 1
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 1
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: port1_current
@@ -214,10 +240,12 @@ sensor:
     device_class: current
     state_class: measurement
     accuracy_decimals: 2
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 0.05
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: port2_power
@@ -226,10 +254,12 @@ sensor:
     device_class: power
     state_class: measurement
     accuracy_decimals: 1
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 5
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: port2_voltage
@@ -238,10 +268,12 @@ sensor:
     device_class: voltage
     state_class: measurement
     accuracy_decimals: 1
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 1
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: port2_current
@@ -250,10 +282,12 @@ sensor:
     device_class: current
     state_class: measurement
     accuracy_decimals: 2
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 0.05
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: port3_power
@@ -262,10 +296,12 @@ sensor:
     device_class: power
     state_class: measurement
     accuracy_decimals: 1
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 5
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: port3_voltage
@@ -274,10 +310,12 @@ sensor:
     device_class: voltage
     state_class: measurement
     accuracy_decimals: 1
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 1
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: port3_current
@@ -286,10 +324,12 @@ sensor:
     device_class: current
     state_class: measurement
     accuracy_decimals: 2
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 0.05
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: port4_power
@@ -298,10 +338,12 @@ sensor:
     device_class: power
     state_class: measurement
     accuracy_decimals: 1
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 5
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: port4_voltage
@@ -310,10 +352,12 @@ sensor:
     device_class: voltage
     state_class: measurement
     accuracy_decimals: 1
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 1
 
   - platform: hiflow_ble
-    # force: report every change instead of relying on the coordinator's
-    # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: port4_current
@@ -322,10 +366,14 @@ sensor:
     device_class: current
     state_class: measurement
     accuracy_decimals: 2
+    filters:
+      - or:
+          - throttle: 300s
+          - delta: 0.05
 
   # Session state as a number (the only remote diagnosis at the site):
   #   0 waiting for a connection (also normal at night)
-  #   2 V0 pairing · 3 login · 4 PIN · 5 time-sync · 6 ready · 7 reading data
+  #   2 V0 pairing · 3 login · 4 PIN · 5 time-sync · 6 ready (also while reading data)
   # From 8 on the bridge is waiting after a failure, and the value names it:
   #   9 login refused (the link died during the handshake)
   #  10 no connection came up (radio, placement, power)
@@ -341,3 +389,160 @@ sensor:
     id: hiflow_status
     name: "HiFlow Status"
     report: force
+
+  # ---------- added after the status (endpoints 21 on) ----------
+  # Values that change slowly or matter little report at a lower rate.
+
+  - platform: hiflow_ble
+    report: force
+    hiflow_ble_id: hiflow
+    type: reactive_power
+    name: "HiFlow Reactive Power"
+    unit_of_measurement: var
+    device_class: reactive_power
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - or:
+          - throttle: 900s
+          - delta: 10
+
+  - platform: hiflow_ble
+    report: force
+    hiflow_ble_id: hiflow
+    type: power_factor
+    name: "HiFlow Power Factor"
+    unit_of_measurement: "%"
+    device_class: power_factor
+    state_class: measurement
+    accuracy_decimals: 1
+    filters:
+      - or:
+          - throttle: 900s
+          - delta: 1
+
+  # The inverter's count of warnings since dawn (what they were is not part
+  # of the data). Reported on every change.
+  - platform: hiflow_ble
+    report: force
+    hiflow_ble_id: hiflow
+    type: warnings
+    name: "HiFlow Warnings"
+    state_class: measurement
+    accuracy_decimals: 0
+    filters:
+      - or:
+          - throttle: 1800s
+          - delta: 0.5
+
+  - platform: hiflow_ble
+    report: force
+    hiflow_ble_id: hiflow
+    type: port1_energy_total
+    name: "HiFlow Port1 Energy Total"
+    unit_of_measurement: Wh
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 0
+    filters:
+      - or:
+          - throttle: 900s
+          - delta: 50
+
+  - platform: hiflow_ble
+    report: force
+    hiflow_ble_id: hiflow
+    type: port1_energy_daily
+    name: "HiFlow Port1 Energy Daily"
+    unit_of_measurement: Wh
+    device_class: energy
+    state_class: measurement
+    accuracy_decimals: 0
+    filters:
+      - or:
+          - throttle: 900s
+          - delta: 50
+
+  - platform: hiflow_ble
+    report: force
+    hiflow_ble_id: hiflow
+    type: port2_energy_total
+    name: "HiFlow Port2 Energy Total"
+    unit_of_measurement: Wh
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 0
+    filters:
+      - or:
+          - throttle: 900s
+          - delta: 50
+
+  - platform: hiflow_ble
+    report: force
+    hiflow_ble_id: hiflow
+    type: port2_energy_daily
+    name: "HiFlow Port2 Energy Daily"
+    unit_of_measurement: Wh
+    device_class: energy
+    state_class: measurement
+    accuracy_decimals: 0
+    filters:
+      - or:
+          - throttle: 900s
+          - delta: 50
+
+  - platform: hiflow_ble
+    report: force
+    hiflow_ble_id: hiflow
+    type: port3_energy_total
+    name: "HiFlow Port3 Energy Total"
+    unit_of_measurement: Wh
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 0
+    filters:
+      - or:
+          - throttle: 900s
+          - delta: 50
+
+  - platform: hiflow_ble
+    report: force
+    hiflow_ble_id: hiflow
+    type: port3_energy_daily
+    name: "HiFlow Port3 Energy Daily"
+    unit_of_measurement: Wh
+    device_class: energy
+    state_class: measurement
+    accuracy_decimals: 0
+    filters:
+      - or:
+          - throttle: 900s
+          - delta: 50
+
+  - platform: hiflow_ble
+    report: force
+    hiflow_ble_id: hiflow
+    type: port4_energy_total
+    name: "HiFlow Port4 Energy Total"
+    unit_of_measurement: Wh
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 0
+    filters:
+      - or:
+          - throttle: 900s
+          - delta: 50
+
+  - platform: hiflow_ble
+    report: force
+    hiflow_ble_id: hiflow
+    type: port4_energy_daily
+    name: "HiFlow Port4 Energy Daily"
+    unit_of_measurement: Wh
+    device_class: energy
+    state_class: measurement
+    accuracy_decimals: 0
+    filters:
+      - or:
+          - throttle: 900s
+          - delta: 50

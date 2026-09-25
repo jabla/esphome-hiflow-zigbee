@@ -124,6 +124,9 @@ typedef struct {
     int32_t         ac_current;     /* x0.01 A */
     int32_t         ac_frequency;   /* x0.01 Hz */
     int32_t         ac_temperature; /* x0.1 C  */
+    int32_t         ac_reactive_power; /* x0.1 var */
+    int32_t         ac_power_factor;   /* x0.1 %   */
+    int32_t         ac_warning_count;  /* warnings since dawn */
     hiflow_port_t   ports[HIFLOW_MAX_PORTS];
     int32_t         page_count;     /* ap of the last page  */
     int32_t         last_page;      /* cp of the last page  */
@@ -139,12 +142,17 @@ typedef struct {
     float ac_current_a;
     float ac_frequency_hz;
     float temperature_c;
+    float reactive_power_var;
+    float power_factor_pct;
+    float warning_count;  /* the inverter's daily warning counter, 0 at dawn */
     struct {
         int   present;
         int32_t port_number;
         float power_w;
         float voltage_v;
         float current_a;
+        float energy_total_wh;
+        float energy_daily_wh;
     } ports[HIFLOW_MAX_PORTS];
     float energy_total_wh;
     float energy_daily_wh;

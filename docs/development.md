@@ -23,12 +23,12 @@ The config is board independent; `boards/<board>.yaml` carries the hardware, and
 | `board` | Hardware |
 |---|---|
 | `xiao_esp32c6` | Seeed Studio XIAO ESP32-C6. Drives the FM8625H RF switch (GPIO3/GPIO14); `external_antenna` picks the U.FL socket instead of the ceramic antenna. No display. |
-| `waveshare_c6_lcd147` | Waveshare ESP32-C6-LCD-1.47 (non-touch). Shows status, AC power, voltage, temperature, the energy of the day and the free heap on the on-board 172x320 panel. No RF switch, no U.FL socket; `external_antenna` is unused. |
+| `waveshare_c6_lcd147` | Waveshare ESP32-C6-LCD-1.47 (non-touch). Shows status, AC power, grid voltage and frequency, temperature, and the energy of the day and in total on the on-board 172x320 panel. No RF switch, no U.FL socket; `external_antenna` is unused. |
 
 A second board only needs a new file under `boards/` plus the substitution in the secrets file. The
-display lambda reads the sensors by `id` (`ac_power`, `ac_voltage`, `temperature`, `energy_daily`,
-`hiflow_status`); those ids are declared in `esp32c6.yaml` and do not affect the Zigbee endpoint
-numbering, so they are harmless on a board without a panel.
+display lambda reads the sensors by `id` (`ac_power`, `ac_voltage`, `ac_frequency`, `temperature`,
+`energy_daily`, `energy_total`, `hiflow_status`); those ids are declared in `esp32c6.yaml` and do
+not affect the Zigbee endpoint numbering, so they are harmless on a board without a panel.
 
 Build another board variant without touching the secrets file:
 
@@ -50,9 +50,14 @@ the driver allocates at runtime: without PSRAM `buffer_size` defaults to 1/6 of 
 full 110 KB buffer. The OTA slot is 0x1B0000 = 1.77 MB, so the display image still leaves ~595 KB
 free.
 
-A hardware run of the Waveshare variant reported **247 kB free heap** after boot while the bridge
-was waiting for a BLE connection. This leaves ample runtime headroom; an active HiFlow session
-was not connected during this measurement.
+A temporary free-heap readout on the panel (`esp_get_free_heap_size()`, removed again) showed
+**247 kB** after boot, before the first BLE connection, and **240 kB** with the HiFlow session up
+and reading data (25.09.2026), so the panel leaves ample runtime headroom.
+
+The Waveshare board carries **8 MB** of flash, the XIAO 4 MB. The config keeps `flash_size: 4MB`
+for both, so the partition table is the same and the upper 4 MB stay unused. Switching between
+the two boards therefore needs no special flash layout; `tools/flash_config.sh` still erases the
+flash when the board comes from other firmware, such as a vendor demo image.
 
 ## Build, test, flash
 

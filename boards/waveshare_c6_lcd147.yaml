@@ -12,8 +12,8 @@
 # instead of holding a full 172*320*2 = 110 KB frame buffer.
 #
 # The panel shows the values on site, without Home Assistant: the session
-# status (the only diagnosis the bridge has), AC power, energy of the day and
-# the free heap.
+# status (the only diagnosis the bridge has), AC power, grid voltage and
+# frequency, temperature, and the energy of the day and in total.
 
 # The panel is driven over the SPI bus of the board (SCLK GPIO7, MOSI GPIO6).
 # CS, DC, RST and the backlight come from the board definition of the driver.
@@ -43,7 +43,12 @@ font:
   - file: "gfonts://Roboto"
     id: lcd_font
     size: 26
-    glyphs: " 0123456789.,:%-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyzÄÖÜ"
+    glyphs: " 0123456789.,:%-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+  # Row labels, small and grey next to the values.
+  - file: "gfonts://Roboto"
+    id: lcd_font_small
+    size: 16
+    glyphs: " acdefgilmopqrtwy"
 
 display:
   - platform: mipi_spi
@@ -53,13 +58,14 @@ display:
     # faster refresh would only redraw the same numbers.
     update_interval: 30s
     lambda: |-
-      #include <cmath>
-      #include "esp_heap_caps.h"
       // Session state of the bridge; the numbers are the ones the status sensor
-      // reports, see docs/development.md.
+      // reports, see docs/development.md. A code without a label shows as its
+      // number, so a new code is never mistaken for another one.
       const int st = std::isnan(id(hiflow_status).state) ? -1 : (int) id(hiflow_status).state;
-      const char *state = "WAITING";
+      const char *state = nullptr;
       switch (st) {
+        case -1:
+        case 0: state = "WAITING"; break;
         case 2: state = "PAIRING"; break;
         case 3: state = "LOGIN"; break;
         case 4: state = "PIN"; break;
@@ -79,10 +85,25 @@ display:
                                                        : Color(255, 64, 64);
       it.fill(Color::BLACK);
       it.printf(6, 6, id(lcd_font), Color(128, 128, 128), "HiFlow Pro");
-      it.printf(6, 40, id(lcd_font), state_color, "%s", state);
-      it.printf(6, 90, id(lcd_font), Color::WHITE, "%.0f W", id(ac_power).state);
-      it.printf(6, 130, id(lcd_font), Color::WHITE, "%.1f V", id(ac_voltage).state);
-      it.printf(6, 170, id(lcd_font), Color::WHITE, "%.1f C", id(temperature).state);
-      it.printf(6, 210, id(lcd_font), Color::WHITE, "%.2f kWh", id(energy_daily).state / 1000.0f);
-      it.printf(6, 260, id(lcd_font), Color(128, 128, 128), "%u kB free",
-                (unsigned) (esp_get_free_heap_size() / 1024));
+      if (state != nullptr)
+        it.printf(6, 40, id(lcd_font), state_color, "%s", state);
+      else
+        it.printf(6, 40, id(lcd_font), state_color, "STATUS %d", st);
+      // One row per value: a small grey label on the left, the value right
+      // aligned. A sensor is NaN until its first reading (after boot, at night).
+      int y = 80;
+      auto row = [&](const char *label, float v, int decimals, const char *unit) {
+        it.print(6, y + 8, id(lcd_font_small), Color(128, 128, 128), label);
+        if (std::isnan(v))
+          it.printf(166, y, id(lcd_font), Color::WHITE, TextAlign::TOP_RIGHT, "-- %s", unit);
+        else
+          it.printf(166, y, id(lcd_font), Color::WHITE, TextAlign::TOP_RIGHT, "%.*f %s", decimals, v,
+                    unit);
+        y += 38;
+      };
+      row("power", id(ac_power).state, 0, "W");
+      row("grid", id(ac_voltage).state, 1, "V");
+      row("freq", id(ac_frequency).state, 2, "Hz");
+      row("temp", id(temperature).state, 1, "C");
+      row("today", id(energy_daily).state / 1000.0f, 2, "kWh");
+      row("total", id(energy_total).state / 1000.0f, 0, "kWh");

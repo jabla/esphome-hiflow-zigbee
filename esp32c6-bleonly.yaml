@@ -118,6 +118,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: ac_frequency
+    id: ac_frequency
     name: "HiFlow AC Frequency"
     unit_of_measurement: Hz
     device_class: frequency
@@ -137,6 +138,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: energy_total
+    id: energy_total
     name: "HiFlow Energy Total"
     unit_of_measurement: Wh
     device_class: energy

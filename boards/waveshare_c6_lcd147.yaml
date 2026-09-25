@@ -22,20 +22,24 @@ spi:
   mosi_pin: GPIO6
 
 # The board definition does not drive the backlight (GPIO22), so the panel would
-# stay dark. Tied to the display, no Home Assistant entity: the bridge has no
-# API, WiFi or switch endpoints.
+# stay dark. It runs dimmed through LEDC PWM: the backlight is the board's
+# largest load, and the board sits in a closed box next to the inverter. White
+# and green on black stay readable at 25 %. 20 kHz is above what a camera or
+# the eye picks up as flicker. Tied to the display, no Home Assistant entity
+# (on the ESP32 only sensors and binary sensors become Zigbee endpoints).
 output:
-  - platform: gpio
+  - platform: ledc
     id: lcd_backlight
-    pin:
-      number: GPIO22
-      mode: {output: true}
+    pin: GPIO22
+    frequency: 20kHz
 
 esphome:
   on_boot:
     - priority: 600
       then:
-        - output.turn_on: lcd_backlight
+        - output.set_level:
+            id: lcd_backlight
+            level: 25%
 
 font:
   # One font is enough for a 1.47" panel; the glyph list keeps the flash cost

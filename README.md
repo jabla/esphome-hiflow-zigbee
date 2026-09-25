@@ -56,14 +56,18 @@ models that work with ha-hiflow-ble should work too. Zigbee2MQTT is untested. Re
 4. **Open pairing, then flash** over USB. In Home Assistant, open ZHA, click *Add device* and leave
    it open, then run:
    ```bash
-   esphome run esp32c6.yaml
+   DEV=/dev/ttyACM0 tools/flash_config.sh esp32c6.yaml
    ```
-   The board looks for a network only during its first seconds after a boot, then only every
-   10 minutes.
+   `DEV` is the board's port (`ls /dev/serial/by-id/`, it shows up as *Espressif USB JTAG*); with
+   a Zigbee stick on the same computer, make sure it is not the stick. The board looks for a
+   network only during its first seconds after a boot, then only every 10 minutes.
 
-   If the board ran another Zigbee firmware before, erase it first
-   (`esptool --chip esp32c6 --port /dev/ttyACM0 erase_flash`). Name the port: with a Zigbee
-   stick on the same computer, esptool may otherwise probe the stick.
+   The script erases the whole flash first if the board ran any other firmware before: a BLE
+   proxy, another ESPHome config, another Zigbee firmware. It compares the partition table on
+   the board with the new one. The old firmware's settings would otherwise end up inside the
+   bridge's, and neither BLE nor Zigbee comes up. Reflashing the bridge keeps its settings and
+   its Zigbee pairing. Flash with `esphome run` only if you erase first
+   (`esptool --chip esp32c6 --port /dev/ttyACM0 erase_flash`).
 
    The board joins as `HMS-2000-4WB Bridge`. If it missed the pairing window, open
    *Add device* again and reset the board (RESET button or re-plug).

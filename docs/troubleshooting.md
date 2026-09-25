@@ -49,6 +49,16 @@ Each point below cost at least one debugging session. Don't undo them casually.
 - **Open *Add device* before the board boots.** After a boot, ESPHome tries to join ten times,
   one second apart, then only every 10 minutes. A board flashed before pairing was opened sits
   there unjoined; reset it while *Add device* is open.
+- **No BLE link and `BDB Device Reboot failed` after switching firmware: erase the flash.** The
+  bridge's `nvs` and `zb_fct` partitions (`0x370000–0x3E1000`) overlap other images' data; the
+  BLE proxy this was seen with keeps its `nvs` at `0x390000`. `esphome run` only writes the
+  bootloader, the partition table and the app, so the bridge's partitions still hold the
+  proxy's data. Seen after a proxy → bridge switch: the status stayed at 10 (no link came
+  up), and after the next reset the log repeated `The BDB Device Reboot failed with
+  status(0x03)` every second. `tools/flash_config.sh` erases the flash by itself when the
+  partition table on the board differs; after an erase, open *Add device* again before the
+  board boots. The same applies the other way round: flash the proxy with
+  `tools/flash_config.sh /path/to/proxy.yaml` as well.
 - **Boot loop right after "Device rebooted": update the coordinator.** With a ConBee III on
   deCONZ firmware 0x264d0900, every reboot of a joined bridge (end device or router, with or
   without BLE) crashed in esp-zigbee-lib 2.0.4 about 5 s after boot, and the board went round in

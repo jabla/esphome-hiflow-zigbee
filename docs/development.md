@@ -60,7 +60,7 @@ was not connected during this measurement.
 make -C test/host test                  # host tests: frame/crypto, protobuf, clock, payloads, session
 components/hiflow_ble/sync_core.sh      # after changing anything under src/
 python3 tools/make_bleonly_board.py     # after changing esp32c6.yaml
-tools/flash_config.sh esp32c6.yaml      # build + flash with esptool (ESP=/ESPTOOL=/DEV= override)
+tools/flash_config.sh esp32c6.yaml      # build + flash with esptool, erases on another partition table (ESP=/ESPTOOL=/DEV=)
 bash tools/quicktest.sh 300             # DEBUG image, 5 min of log, summary of the session
 ```
 

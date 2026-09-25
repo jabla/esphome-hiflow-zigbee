@@ -48,6 +48,9 @@ jobs:
           path: ~/.cache/esphome
           key: esphome-idf-${{ runner.os }}-esphome-2026.8.2
       - name: Compile with the example credentials
+        # The component refuses the example values unless told otherwise.
+        env:
+          HIFLOW_ALLOW_EXAMPLE_SECRETS: "1"
         run: |
           cp hiflow_secrets.example.yaml hiflow_secrets.yaml
           esphome ${{ matrix.board && format('-s board {0}', matrix.board) || '' }} compile ${{ matrix.config }}

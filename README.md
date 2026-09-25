@@ -45,6 +45,9 @@ models that work with ha-hiflow-ble should work too. Zigbee2MQTT is untested. Re
    - get a `ble_id` from `python3 tools/gen_ble_id.py`, or reuse the one from ha-hiflow-ble;
    - the PIN is the Bluetooth PIN from the S-Miles app;
    - set whether the external antenna is used.
+
+   The build stops with an error while the MAC, the serial or the `ble_id` still hold the
+   example values: a bridge built with them would never find the inverter.
 2. **Time zone.** Check `offset` and `eu_dst` under `hiflow_ble:` in `esp32c6.yaml` (default:
    CET with European summer time). The inverter's own clock is set from them, and that clock
    drives its daily energy reset.

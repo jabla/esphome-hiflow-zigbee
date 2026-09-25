@@ -1,6 +1,11 @@
-# HiFlow Pro -> Zigbee bridge: a XIAO ESP32-C6 reads a Hoymiles HiFlow Pro over BLE
+# HiFlow Pro -> Zigbee bridge: an ESP32-C6 reads a Hoymiles HiFlow Pro over BLE
 # (external component hiflow_ble) and reports the values as a Zigbee end device.
 # No WiFi, no api, no ota.
+#
+# The board is not hard-coded: the `board` substitution in hiflow_secrets.yaml
+# pulls in boards/<board>.yaml, so this one config serves both supported boards.
+#   xiao_esp32c6          Seeed Studio XIAO ESP32-C6 (RF switch, optional U.FL antenna)
+#   waveshare_c6_lcd147   Waveshare ESP32-C6-LCD-1.47 (on-board 172x320 LCD)
 esphome:
   name: hiflow-zb
   friendly_name: hiflow-zb
@@ -11,28 +16,8 @@ esp32:
   framework:
     type: esp-idf
 
-# The XIAO ESP32-C6 has an FM8625H RF switch (ESPHome aliases RF_SWITCH_EN=GPIO3,
-# RF_ANT_SELECT=GPIO14). With the pins left unset the radio path is undefined:
-# measured only -94 dBm where a USB dongle at the same spot saw -78 dBm.
-#   GPIO3  LOW  = RF switch powered
-#   GPIO14 LOW  = internal ceramic antenna, HIGH = external U.FL antenna
-# gpio outputs start "off"; `external_antenna: "true"` inverts GPIO14 so "off" means
-# HIGH. The IO setup (priority HARDWARE) runs before the BLE init, so the path is
-# right before the first radio command goes out. An external antenna gained about
-# 19 dB at the reference site.
-output:
-  - platform: gpio
-    pin:
-      number: GPIO3
-      mode: {output: true}
-    id: rf_switch_en
-  - platform: gpio
-    pin:
-      number: GPIO14
-      mode: {output: true}
-      inverted: ${external_antenna}
-    id: rf_ant_select
-
+# The radio front end and any on-board display live in the board file, see
+# boards/<board>.yaml.
 logger:
   # WARN is the level for the deployed board. On a USB charger (no USB host) CDC
   # writes to USB_SERIAL_JTAG block: at INFO the board reset in a clean 5-minute
@@ -40,11 +25,16 @@ logger:
   # Raise DEBUG/VERBOSE only for a short session with a USB host attached
   # (DEBUG = handshake steps, VERBOSE = GATT errors).
   level: WARN
-  hardware_uart: USB_SERIAL_JTAG   # XIAO: log over native USB, not UART0
+  hardware_uart: USB_SERIAL_JTAG   # native USB of the C6, not UART0
 
 # Credentials and per-site settings live in hiflow_secrets.yaml (gitignored; copy
 # hiflow_secrets.example.yaml) and come in as substitutions: no secrets in this file.
 substitutions: !include hiflow_secrets.yaml
+
+# Board specific hardware: the RF switch of the XIAO, the panel of the Waveshare
+# board. Everything below this point is board independent.
+packages:
+  board: !include boards/${board}.yaml
 
 # The component from components/hiflow_ble (flat copies of the C core, see
 # components/hiflow_ble/README.md; refresh them with sync_core.sh).
@@ -95,12 +85,17 @@ sensor:
   # ---------- HiFlow Pro (BLE, hiflow_ble) ----------
   # Every sensor is one Zigbee endpoint, numbered in the order of this list
   # (tools/ha_fix_bridge_entities.py maps them to entity ids).
+  #
+  # The sensors that the on-board display of the Waveshare board shows carry an
+  # `id:` so the display lambda can read them. An id does not affect the Zigbee
+  # endpoint numbering, and it stays unused on a board without a display.
   - platform: hiflow_ble
     # force: report every change instead of relying on the coordinator's
     # reporting configuration (ZHA sometimes sets very long intervals).
     report: force
     hiflow_ble_id: hiflow
     type: ac_power
+    id: ac_power
     name: "HiFlow AC Power"
     unit_of_measurement: W
     device_class: power
@@ -113,6 +108,7 @@ sensor:
     report: force
     hiflow_ble_id: hiflow
     type: ac_voltage
+    id: ac_voltage
     name: "HiFlow AC Voltage"
     unit_of_measurement: V
     device_class: voltage
@@ -137,6 +133,7 @@ sensor:
     report: force
     hiflow_ble_id: hiflow
     type: ac_frequency
+    id: ac_frequency
     name: "HiFlow AC Frequency"
     unit_of_measurement: Hz
     device_class: frequency
@@ -149,6 +146,7 @@ sensor:
     report: force
     hiflow_ble_id: hiflow
     type: temperature
+    id: temperature
     name: "HiFlow Temperature"
     unit_of_measurement: "°C"
     device_class: temperature
@@ -161,6 +159,7 @@ sensor:
     report: force
     hiflow_ble_id: hiflow
     type: energy_total
+    id: energy_total
     name: "HiFlow Energy Total"
     unit_of_measurement: Wh
     device_class: energy
@@ -173,6 +172,7 @@ sensor:
     report: force
     hiflow_ble_id: hiflow
     type: energy_daily
+    id: energy_daily
     name: "HiFlow Energy Daily"
     unit_of_measurement: Wh
     device_class: energy
@@ -338,5 +338,6 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: status
+    id: hiflow_status
     name: "HiFlow Status"
     report: force

@@ -23,8 +23,12 @@ models that work with ha-hiflow-ble should work too. Zigbee2MQTT is untested. Re
 
 ## What you need
 
-- A **Seeed Studio XIAO ESP32-C6**. The config drives its RF switch (GPIO3/GPIO14). On another
-  ESP32-C6 board, remove the `output:` block from `esp32c6.yaml`.
+<img src="docs/img/waveshare-panel.png" align="right" width="188" alt="Waveshare ESP32-C6-LCD-1.47 panel: session status, AC power, grid voltage and frequency, temperature, energy today and total">
+
+- A **Seeed Studio XIAO ESP32-C6** or a **Waveshare ESP32-C6-LCD-1.47**. The board is picked with
+  the `board` setting in `hiflow_secrets.yaml` (see *Boards* in `docs/development.md`): the XIAO
+  variant drives its RF switch and can use an external U.FL antenna, the Waveshare variant shows
+  the values on its on-board 172x320 display (rendering on the right, example values).
 - A Zigbee coordinator in Home Assistant (ZHA), on current firmware. Tested with a ConBee III on
   deCONZ firmware **0x26550900**.
 - ESPHome with native Zigbee on the ESP32-C6 (tested with **2026.8.2**), plus Python 3 for the
@@ -37,11 +41,15 @@ models that work with ha-hiflow-ble should work too. Zigbee2MQTT is untested. Re
 
 1. **Credentials.** Copy `hiflow_secrets.example.yaml` to `hiflow_secrets.yaml` and fill it in.
    The comments in the file say where each value comes from:
+   - set `board` to `xiao_esp32c6` or `waveshare_c6_lcd147`;
    - the serial tail comes from the inverter's BLE name `RMI-XXXXXXXXXXXX`, the MAC address from
      a BLE scanner app or Home Assistant's Bluetooth panel (the two differ);
    - get a `ble_id` from `python3 tools/gen_ble_id.py`, or reuse the one from ha-hiflow-ble;
    - the PIN is the Bluetooth PIN from the S-Miles app;
    - set whether the external antenna is used.
+
+   The build stops with an error while the MAC, the serial or the `ble_id` still hold the
+   example values: a bridge built with them would never find the inverter.
 2. **Time zone.** Check `offset` and `eu_dst` under `hiflow_ble:` in `esp32c6.yaml` (default:
    CET with European summer time). The inverter's own clock is set from them, and that clock
    drives its daily energy reset.
@@ -53,14 +61,18 @@ models that work with ha-hiflow-ble should work too. Zigbee2MQTT is untested. Re
 4. **Open pairing, then flash** over USB. In Home Assistant, open ZHA, click *Add device* and leave
    it open, then run:
    ```bash
-   esphome run esp32c6.yaml
+   DEV=/dev/ttyACM0 tools/flash_config.sh esp32c6.yaml
    ```
-   The board looks for a network only during its first seconds after a boot, then only every
-   10 minutes.
+   `DEV` is the board's port (`ls /dev/serial/by-id/`, it shows up as *Espressif USB JTAG*); with
+   a Zigbee stick on the same computer, make sure it is not the stick. The board looks for a
+   network only during its first seconds after a boot, then only every 10 minutes.
 
-   If the board ran another Zigbee firmware before, erase it first
-   (`esptool --chip esp32c6 --port /dev/ttyACM0 erase_flash`). Name the port: with a Zigbee
-   stick on the same computer, esptool may otherwise probe the stick.
+   The script erases the whole flash first if the board ran any other firmware before: a BLE
+   proxy, another ESPHome config, another Zigbee firmware. It compares the partition table on
+   the board with the new one. The old firmware's settings would otherwise end up inside the
+   bridge's, and neither BLE nor Zigbee comes up. Reflashing the bridge keeps its settings and
+   its Zigbee pairing. Flash with `esphome run` only if you erase first
+   (`esptool --chip esp32c6 --port /dev/ttyACM0 erase_flash`).
 
    The board joins as `HMS-2000-4WB Bridge`. If it missed the pairing window, open
    *Add device* again and reset the board (RESET button or re-plug).

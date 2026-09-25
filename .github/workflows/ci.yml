@@ -29,7 +29,12 @@ jobs:
     runs-on: ubuntu-26.04
     strategy:
       matrix:
-        config: [esp32c6.yaml, esp32c6-bleonly.yaml]
+        # Both supported boards, plus the generated BLE-only variant.
+        include:
+          - config: esp32c6.yaml
+          - config: esp32c6-bleonly.yaml
+          - config: esp32c6.yaml
+            board: waveshare_c6_lcd147
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -43,6 +48,9 @@ jobs:
           path: ~/.cache/esphome
           key: esphome-idf-${{ runner.os }}-esphome-2026.8.2
       - name: Compile with the example credentials
+        # The component refuses the example values unless told otherwise.
+        env:
+          HIFLOW_ALLOW_EXAMPLE_SECRETS: "1"
         run: |
           cp hiflow_secrets.example.yaml hiflow_secrets.yaml
-          esphome compile ${{ matrix.config }}
+          esphome ${{ matrix.board && format('-s board {0}', matrix.board) || '' }} compile ${{ matrix.config }}

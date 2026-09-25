@@ -1,0 +1,24 @@
+# Seeed Studio XIAO ESP32-C6: radio front end.
+#
+# The board has an FM8625H RF switch (ESPHome aliases RF_SWITCH_EN=GPIO3,
+# RF_ANT_SELECT=GPIO14). With the pins left unset the radio path is undefined:
+# measured only -94 dBm where a USB dongle at the same spot saw -78 dBm.
+#   GPIO3  LOW  = RF switch powered
+#   GPIO14 LOW  = internal ceramic antenna, HIGH = external U.FL antenna
+# gpio outputs start "off"; `external_antenna: "true"` inverts GPIO14 so "off"
+# means HIGH. The IO setup (priority HARDWARE) runs before the BLE init, so the
+# path is right before the first radio command goes out. An external antenna
+# gained about 19 dB at the reference site.
+
+output:
+  - platform: gpio
+    pin:
+      number: GPIO3
+      mode: {output: true}
+    id: rf_switch_en
+  - platform: gpio
+    pin:
+      number: GPIO14
+      mode: {output: true}
+      inverted: ${external_antenna}
+    id: rf_ant_select

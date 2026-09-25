@@ -11,11 +11,14 @@ flat, ESPHome-loadable copies in this directory are produced by
 ``./sync_core.sh`` (see README.md).
 """
 
+import os
+
 import esphome.codegen as cg
 from esphome.components import ble_client, esp32_ble_tracker
 import esphome.config_validation as cv
-from esphome.const import CONF_ID, CONF_UPDATE_INTERVAL
+from esphome.const import CONF_ID, CONF_MAC_ADDRESS, CONF_UPDATE_INTERVAL
 from esphome.core import TimePeriod
+import esphome.final_validate as fv
 
 DEPENDENCIES = ["ble_client"]
 AUTO_LOAD = ["sensor"]
@@ -58,6 +61,39 @@ CONFIG_SCHEMA = cv.Schema(
         ),
     }
 ).extend(cv.COMPONENT_SCHEMA)
+
+# The values of hiflow_secrets.example.yaml. A build that still carries one of
+# them runs, but never finds the inverter (the MAC) or never logs in (SN,
+# ble_id), and nothing on the device says why. CI compiles with the example
+# file on purpose and sets HIFLOW_ALLOW_EXAMPLE_SECRETS=1.
+EXAMPLE_MAC = "AA:BB:CC:DD:EE:FF"
+EXAMPLE_SN = "XXXXXXXXXXXX"
+EXAMPLE_BLE_ID = "000000000000000000"
+ALLOW_EXAMPLE_ENV = "HIFLOW_ALLOW_EXAMPLE_SECRETS"
+
+
+def _final_validate(config):
+    if os.environ.get(ALLOW_EXAMPLE_ENV) == "1":
+        return config
+    left = []
+    if config[CONF_SN] == EXAMPLE_SN:
+        left.append("hiflow_sn")
+    if config[CONF_BLE_ID] == EXAMPLE_BLE_ID:
+        left.append("hiflow_ble_id")
+    for client in fv.full_config.get().get("ble_client", []):
+        if client[CONF_ID] == config[CONF_BLE_CLIENT_ID] and str(
+            client[CONF_MAC_ADDRESS]
+        ) == EXAMPLE_MAC:
+            left.append("hiflow_mac")
+    if left:
+        raise cv.Invalid(
+            f"hiflow_secrets.yaml still holds the example value of {', '.join(left)}; "
+            f"fill in your inverter's values (set {ALLOW_EXAMPLE_ENV}=1 to build anyway)"
+        )
+    return config
+
+
+FINAL_VALIDATE_SCHEMA = _final_validate
 
 
 async def to_code(config):

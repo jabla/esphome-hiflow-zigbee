@@ -50,6 +50,10 @@ the driver allocates at runtime: without PSRAM `buffer_size` defaults to 1/6 of 
 full 110 KB buffer. The OTA slot is 0x1B0000 = 1.77 MB, so the display image still leaves ~595 KB
 free.
 
+A hardware run of the Waveshare variant reported **247 kB free heap** after boot while the bridge
+was waiting for a BLE connection. This leaves ample runtime headroom; an active HiFlow session
+was not connected during this measurement.
+
 ## Build, test, flash
 
 ```bash

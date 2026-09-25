@@ -25,12 +25,14 @@ models that work with ha-hiflow-ble should work too. Zigbee2MQTT is untested. Re
 
 <img src="docs/img/waveshare-panel.png" align="right" width="188" alt="Waveshare ESP32-C6-LCD-1.47 panel: session status, AC power, grid voltage and frequency, temperature, energy today and total">
 
-- A **Seeed Studio XIAO ESP32-C6** or a **Waveshare ESP32-C6-LCD-1.47**. The board is picked with
-  the `board` setting in `hiflow_secrets.yaml` (see *Boards* in `docs/development.md`): the XIAO
-  variant drives its RF switch and can use an external U.FL antenna, the Waveshare variant shows
-  the values on its on-board 172x320 display (rendering on the right, example values).
-- A Zigbee coordinator in Home Assistant (ZHA), on current firmware. Tested with a ConBee III on
-  deCONZ firmware **0x26550900**.
+- A **Seeed Studio XIAO ESP32-C6** ([Amazon.de](https://www.amazon.de/dp/B0D2NKVB34)) or a
+  **Waveshare ESP32-C6-LCD-1.47** ([Amazon.de](https://www.amazon.de/dp/B0DHTMYTCY)). The board
+  is picked with the `board` setting in `hiflow_secrets.yaml` (see *Boards* in
+  `docs/development.md`): the XIAO variant drives its RF switch and can use an external U.FL
+  antenna, the Waveshare variant shows the values on its on-board 172x320 display (rendering on
+  the right, example values).
+- A Zigbee coordinator in Home Assistant (ZHA), on current firmware. Tested with a ConBee III
+  ([Amazon.de](https://www.amazon.de/dp/B0C8HV79N7)) on deCONZ firmware **0x26550900**.
 - ESPHome with native Zigbee on the ESP32-C6 (tested with **2026.8.2**), plus Python 3 for the
   helper scripts.
 - The inverter within BLE range of the board. An external U.FL antenna is optional.

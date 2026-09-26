@@ -93,6 +93,17 @@ Each point below cost at least one debugging session. Don't undo them casually.
   it is joined, and no values arrive until you start over at step 2.
 - **Energy dashboard:** ZHA analog inputs are always `measurement`. Use the template sensor from
   `docs/ha-energy-template.yaml`, which is `total_increasing` and ignores missing values.
+- **Zigbee2MQTT.** Tested with z2m 2.14.1 on a ConBee III (0x26550900), using a build of the same
+  Zigbee side with test values instead of BLE. z2m logs the model as not supported, but builds
+  a generated definition with all 31 values, their names and units. Three quirks:
+  - Reactive power has no unit. ESPHome's Zigbee unit table has kvar but not var, and ZHA
+    shows the same.
+  - Configuring the device fails with `TABLE_FULL` after 16 binds, because the ESP Zigbee
+    binding table holds 16 entries. No data is lost: every sensor reports with `force`
+    straight to the coordinator, bound or not.
+  - On the bound endpoints (z2m binds from 31 downwards), every value that moved by 1 or more
+    arrives twice within a second: the forced report plus the one from z2m's reporting
+    configuration.
 
 ## USB and logging
 

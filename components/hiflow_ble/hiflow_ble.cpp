@@ -115,10 +115,8 @@ void HiflowBle::loop() {
 
   hiflow_session_tick(&this->session_, now);
 
-  if (now >= this->next_status_refresh_ms_) {
-    this->next_status_refresh_ms_ = now + STATUS_REFRESH_MS;
-    this->publish_(HIFLOW_STATUS, static_cast<float>(hiflow_session_status(&this->session_)));
-  }
+  if (now >= this->next_status_refresh_ms_)
+    this->publish_status_(hiflow_session_status(&this->session_), true);
   this->flush_prefs_();
 }
 
@@ -333,6 +331,8 @@ void HiflowBle::session_set_link_allowed(bool allowed) {
 void HiflowBle::session_on_data(const hiflow_data_t *data) {
   static const uint8_t PORT_BASE[HIFLOW_MAX_PORTS] = {HIFLOW_PORT1_POWER, HIFLOW_PORT2_POWER,
                                                       HIFLOW_PORT3_POWER, HIFLOW_PORT4_POWER};
+  static const uint8_t PORT_ENERGY_BASE[HIFLOW_MAX_PORTS] = {HIFLOW_PORT1_ENERGY_TOTAL, HIFLOW_PORT2_ENERGY_TOTAL,
+                                                             HIFLOW_PORT3_ENERGY_TOTAL, HIFLOW_PORT4_ENERGY_TOTAL};
 
   if (data->have_ac) {
     this->publish_(HIFLOW_AC_POWER, data->ac_power_w);
@@ -340,6 +340,9 @@ void HiflowBle::session_on_data(const hiflow_data_t *data) {
     this->publish_(HIFLOW_AC_CURRENT, data->ac_current_a);
     this->publish_(HIFLOW_AC_FREQUENCY, data->ac_frequency_hz);
     this->publish_(HIFLOW_TEMPERATURE, data->temperature_c);
+    this->publish_(HIFLOW_REACTIVE_POWER, data->reactive_power_var);
+    this->publish_(HIFLOW_POWER_FACTOR, data->power_factor_pct);
+    this->publish_(HIFLOW_WARNINGS, data->warning_count);
   }
 
   for (size_t i = 0; i < HIFLOW_MAX_PORTS; i++) {
@@ -349,26 +352,16 @@ void HiflowBle::session_on_data(const hiflow_data_t *data) {
     this->publish_(base + 0, data->ports[i].power_w);
     this->publish_(base + 1, data->ports[i].voltage_v);
     this->publish_(base + 2, data->ports[i].current_a);
+    base = PORT_ENERGY_BASE[i];  // enum order per port: ENERGY_TOTAL, ENERGY_DAILY
+    this->publish_total_(base + 0, data->ports[i].energy_total_wh, this->last_port_energy_total_[i]);
+    this->publish_(base + 1, data->ports[i].energy_daily_wh);
   }
 
-  // The lifetime counter feeds a total_increasing sensor: a value that drops
-  // would look like a meter reset in Home Assistant's statistics.
-  if (data->energy_total_wh > 0.0f) {
-    if (data->energy_total_wh + 0.5f >= this->last_energy_total_) {
-      this->last_energy_total_ = data->energy_total_wh;
-      this->publish_(HIFLOW_ENERGY_TOTAL, data->energy_total_wh);
-    } else {
-      ESP_LOGW(TAG, "ignoring a total energy of %.0f Wh below the last %.0f Wh",
-               data->energy_total_wh, this->last_energy_total_);
-    }
-  }
+  this->publish_total_(HIFLOW_ENERGY_TOTAL, data->energy_total_wh, this->last_energy_total_);
   this->publish_(HIFLOW_ENERGY_DAILY, data->energy_daily_wh);
 }
 
-void HiflowBle::session_on_status(uint8_t status) {
-  this->publish_(HIFLOW_STATUS, static_cast<float>(status));
-  this->next_status_refresh_ms_ = this->now_ms_() + STATUS_REFRESH_MS;
-}
+void HiflowBle::session_on_status(uint8_t status) { this->publish_status_(status, false); }
 
 void HiflowBle::session_log(int level, const char *msg) {
   switch (level) {
@@ -391,6 +384,20 @@ void HiflowBle::session_log(int level, const char *msg) {
 // publishing
 // ---------------------------------------------------------------------------
 
+// The lifetime counters feed total_increasing sensors: a value that drops would
+// look like a meter reset in Home Assistant's statistics, and 0 is a missing
+// value, not a reading.
+void HiflowBle::publish_total_(uint8_t type, float value, float &last) {
+  if (!(value > 0.0f))
+    return;
+  if (value + 0.5f < last) {
+    ESP_LOGW(TAG, "ignoring a lifetime energy of %.0f Wh below the last %.0f Wh (sensor %u)", value, last, (unsigned) type);
+    return;
+  }
+  last = value;
+  this->publish_(type, value);
+}
+
 void HiflowBle::publish_(uint8_t type, float value) {
   if (type >= HIFLOW_SENSOR_TYPE_COUNT)
     return;
@@ -398,6 +405,21 @@ void HiflowBle::publish_(uint8_t type, float value) {
   if (sensor == nullptr || std::isnan(value))
     return;
   sensor->publish_state(value);
+}
+
+// Every published value is a Zigbee report, so the status goes out when it
+// changes and as a keep-alive every STATUS_REFRESH_MS (at night it is the only
+// traffic). READING is folded into READY: it lasts for one request, and sending
+// both would cost two reports per data cycle without telling anything; a
+// request that hangs ends in status 11.
+void HiflowBle::publish_status_(uint8_t status, bool refresh) {
+  if (status == HIFLOW_STATUS_READING)
+    status = HIFLOW_STATUS_READY;
+  if (!refresh && status == this->last_status_)
+    return;
+  this->last_status_ = status;
+  this->next_status_refresh_ms_ = this->now_ms_() + STATUS_REFRESH_MS;
+  this->publish_(HIFLOW_STATUS, static_cast<float>(status));
 }
 
 }  // namespace hiflow_ble

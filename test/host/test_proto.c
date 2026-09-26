@@ -19,6 +19,8 @@
 #include <string.h>
 
 #include "hiflow_proto.h"
+#include "pb_encode.h"
+#include "RealDataNew.pb.h"
 #include "vectors_proto.h"
 
 static int g_pass;
@@ -256,6 +258,76 @@ static void test_paging(void)
           "undecodable page reported");
 }
 
+/* ---------- values beyond the reference vectors ---------- */
+
+/* Encodes one single-page reply with nanopb. `sgs` picks the single-phase
+   block, otherwise the three-phase one carries the grid values. */
+static size_t encode_page(uint8_t *buf, size_t cap, int sgs)
+{
+    static RealDataNewReqDTO m; /* ~4 kB, keep it off the stack */
+    pb_ostream_t os = pb_ostream_from_buffer(buf, cap);
+
+    memset(&m, 0, sizeof(m));
+    strcpy(m.device_serial_number, "TESTDTU00001");
+    m.ap = 1;
+    if (sgs) {
+        m.sgs_data_count = 1;
+        m.sgs_data[0].active_power = 8123;
+        m.sgs_data[0].reactive_power = -769;
+        m.sgs_data[0].power_factor = 997;
+        m.sgs_data[0].warning_number = 7;
+    } else {
+        m.tgs_data_count = 1;
+        m.tgs_data[0].active_power = 8123;
+        m.tgs_data[0].reactive_power = 412;
+        m.tgs_data[0].power_factor = 985;
+        m.tgs_data[0].warning_number = 3;
+    }
+    m.pv_data_count = 2;
+    m.pv_data[0].port_number = 1;
+    m.pv_data[0].energy_total = 11023;
+    m.pv_data[0].energy_daily = 1028;
+    m.pv_data[1].port_number = 2;
+    m.pv_data[1].energy_total = 9876;
+    m.pv_data[1].energy_daily = 954;
+    if (!pb_encode(&os, RealDataNewReqDTO_fields, &m))
+        return 0;
+    return os.bytes_written;
+}
+
+static void test_extra_values(void)
+{
+    static hiflow_measurements_t acc;
+    hiflow_data_t data;
+    uint8_t page[512];
+    size_t len;
+
+    printf("[5] reactive power, power factor, warnings, energy per port\n");
+
+    len = encode_page(page, sizeof(page), 1);
+    check(len > 0, "single-phase page encodes");
+    hiflow_measurements_reset(&acc);
+    check_int(hiflow_merge_real_data(&acc, page, len, NULL, NULL), HIFLOW_OK, "single-phase page decodes");
+    hiflow_measurements_to_data(&acc, &data);
+    check_float(data.reactive_power_var, -76.9f, "reactive power (x0.1 var, signed)");
+    check_float(data.power_factor_pct, 99.7f, "power factor (x0.1 %)");
+    check_float(data.warning_count, 7.0f, "warning count");
+    check_float(data.ports[0].energy_total_wh, 11023.0f, "port 1 energy total");
+    check_float(data.ports[0].energy_daily_wh, 1028.0f, "port 1 energy daily");
+    check_float(data.ports[1].energy_total_wh, 9876.0f, "port 2 energy total");
+    check_float(data.ports[1].energy_daily_wh, 954.0f, "port 2 energy daily");
+    check_float(data.energy_total_wh, 11023.0f + 9876.0f, "total is still the sum of the ports");
+
+    len = encode_page(page, sizeof(page), 0);
+    check(len > 0, "three-phase page encodes");
+    hiflow_measurements_reset(&acc);
+    check_int(hiflow_merge_real_data(&acc, page, len, NULL, NULL), HIFLOW_OK, "three-phase page decodes");
+    hiflow_measurements_to_data(&acc, &data);
+    check_float(data.reactive_power_var, 41.2f, "three-phase reactive power");
+    check_float(data.power_factor_pct, 98.5f, "three-phase power factor");
+    check_float(data.warning_count, 3.0f, "three-phase warning count");
+}
+
 /* ---------- reassembly ---------- */
 
 static void feed_chunks(hiflow_rx_t *rx, const uint8_t *frame, size_t len, size_t chunk,
@@ -356,6 +428,7 @@ int main(void)
     test_replies();
     test_paging();
     test_rx();
+    test_extra_values();
 
     printf("\n=== summary ===\n");
     printf("%d checks passed, %d failed\n", g_pass, g_fail);

@@ -95,7 +95,7 @@ against a simulated inverter.
 |---|---|
 | 0 | waiting for a connection (also the normal state at night) |
 | 2 / 3 / 4 / 5 | V0 pairing · login · PIN · time-sync |
-| 6 / 7 | ready · reading data |
+| 6 | ready, the session reads data every 30 s |
 | 9 | login refused: the link died during the handshake |
 | 10 | no connection came up (radio, placement, power) |
 | 11 | a request went unanswered |
@@ -104,4 +104,7 @@ against a simulated inverter.
 | 15 | the radio link timed out (supervision timeout) |
 
 Codes 9–11 now and then are normal: the bridge waits (30 s, then doubling up to 5 min) and comes
-back by itself. During daylight it should alternate between 6 and 7.
+back by itself. During daylight it should stay at 6.
+
+The session also has a state 7 (a data request in flight). The bridge reports it as 6: it lasts
+for one request and would cost two Zigbee reports per poll. A request that hangs shows as 11.

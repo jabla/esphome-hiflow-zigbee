@@ -34,7 +34,7 @@ from pathlib import Path
 import websockets
 
 # Endpoint -> (entity suffix, name). The order is the order of the sensors in
-# esp32c6.yaml; the status stays last so the measurements keep their endpoints.
+# esp32c6.yaml; new sensors go after the status so the older endpoints stay put.
 LAYOUT: dict[int, tuple[str, str]] = {
     1: ("ac_power", "AC power"),
     2: ("ac_voltage", "AC voltage"),
@@ -56,6 +56,18 @@ LAYOUT: dict[int, tuple[str, str]] = {
     18: ("port4_voltage", "Port 4 voltage"),
     19: ("port4_current", "Port 4 current"),
     20: ("status", "Session status"),
+    # added after the status, so the endpoints above stay put
+    21: ("reactive_power", "Reactive power"),
+    22: ("power_factor", "Power factor"),
+    23: ("warnings", "Warnings today"),
+    24: ("port1_energy_total", "Port 1 energy total"),
+    25: ("port1_energy_daily", "Port 1 energy today"),
+    26: ("port2_energy_total", "Port 2 energy total"),
+    27: ("port2_energy_daily", "Port 2 energy today"),
+    28: ("port3_energy_total", "Port 3 energy total"),
+    29: ("port3_energy_daily", "Port 3 energy today"),
+    30: ("port4_energy_total", "Port 4 energy total"),
+    31: ("port4_energy_daily", "Port 4 energy today"),
 }
 VISIBLE = "ac_power"  # the one entity --hide-extras leaves visible
 

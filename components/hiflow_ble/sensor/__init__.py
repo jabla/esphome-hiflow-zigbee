@@ -15,6 +15,8 @@ from esphome.const import (
     DEVICE_CLASS_ENERGY,
     DEVICE_CLASS_FREQUENCY,
     DEVICE_CLASS_POWER,
+    DEVICE_CLASS_POWER_FACTOR,
+    DEVICE_CLASS_REACTIVE_POWER,
     DEVICE_CLASS_TEMPERATURE,
     DEVICE_CLASS_VOLTAGE,
     STATE_CLASS_MEASUREMENT,
@@ -22,7 +24,9 @@ from esphome.const import (
     UNIT_AMPERE,
     UNIT_CELSIUS,
     UNIT_HERTZ,
+    UNIT_PERCENT,
     UNIT_VOLT,
+    UNIT_VOLT_AMPS_REACTIVE,
     UNIT_WATT,
     UNIT_WATT_HOURS,
 )
@@ -76,10 +80,27 @@ _STATUS = dict(
     state_class=STATE_CLASS_MEASUREMENT,
     accuracy_decimals=0,
 )
+_REACTIVE_POWER = dict(
+    unit_of_measurement=UNIT_VOLT_AMPS_REACTIVE,
+    device_class=DEVICE_CLASS_REACTIVE_POWER,
+    state_class=STATE_CLASS_MEASUREMENT,
+    accuracy_decimals=1,
+)
+_POWER_FACTOR = dict(
+    unit_of_measurement=UNIT_PERCENT,
+    device_class=DEVICE_CLASS_POWER_FACTOR,
+    state_class=STATE_CLASS_MEASUREMENT,
+    accuracy_decimals=1,
+)
+_WARNINGS = dict(
+    # The inverter's own counter of warnings since dawn; a count, no unit.
+    state_class=STATE_CLASS_MEASUREMENT,
+    accuracy_decimals=0,
+)
 _ENERGY_DAILY = dict(
     unit_of_measurement=UNIT_WATT_HOURS,
     device_class=DEVICE_CLASS_ENERGY,
-    state_class=STATE_CLASS_MEASUREMENT,
+    state_class=STATE_CLASS_TOTAL_INCREASING,
     accuracy_decimals=0,
 )
 
@@ -111,6 +132,17 @@ SENSOR_TYPES = {
     "port4_voltage": (_enum("HIFLOW_PORT4_VOLTAGE"), _VOLTAGE),
     "port4_current": (_enum("HIFLOW_PORT4_CURRENT"), _CURRENT),
     "status": (_enum("HIFLOW_STATUS"), _STATUS),
+    "reactive_power": (_enum("HIFLOW_REACTIVE_POWER"), _REACTIVE_POWER),
+    "power_factor": (_enum("HIFLOW_POWER_FACTOR"), _POWER_FACTOR),
+    "warnings": (_enum("HIFLOW_WARNINGS"), _WARNINGS),
+    "port1_energy_total": (_enum("HIFLOW_PORT1_ENERGY_TOTAL"), _ENERGY_TOTAL),
+    "port1_energy_daily": (_enum("HIFLOW_PORT1_ENERGY_DAILY"), _ENERGY_DAILY),
+    "port2_energy_total": (_enum("HIFLOW_PORT2_ENERGY_TOTAL"), _ENERGY_TOTAL),
+    "port2_energy_daily": (_enum("HIFLOW_PORT2_ENERGY_DAILY"), _ENERGY_DAILY),
+    "port3_energy_total": (_enum("HIFLOW_PORT3_ENERGY_TOTAL"), _ENERGY_TOTAL),
+    "port3_energy_daily": (_enum("HIFLOW_PORT3_ENERGY_DAILY"), _ENERGY_DAILY),
+    "port4_energy_total": (_enum("HIFLOW_PORT4_ENERGY_TOTAL"), _ENERGY_TOTAL),
+    "port4_energy_daily": (_enum("HIFLOW_PORT4_ENERGY_DAILY"), _ENERGY_DAILY),
 }
 
 

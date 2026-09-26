@@ -1,16 +1,18 @@
 # HiFlow Pro to Zigbee bridge (ESP32-C6)
 
 An ESPHome firmware that reads a **Hoymiles HiFlow Pro** inverter locally over **Bluetooth LE**
-and reports its measurements as a **Zigbee end device** to Home Assistant (ZHA). No WiFi, no
-cloud: only BLE (to the inverter) and 802.15.4 (to your Zigbee coordinator).
+and reports its measurements as a **Zigbee end device** to Home Assistant (ZHA or Zigbee2MQTT).
+No WiFi, no cloud: only BLE (to the inverter) and 802.15.4 (to your Zigbee coordinator).
 
 ```
-inverter ──BLE──> ESP32-C6 ──Zigbee──> coordinator ──ZHA──> Home Assistant
+inverter ──BLE──> ESP32-C6 ──Zigbee──> coordinator ──ZHA / Zigbee2MQTT──> Home Assistant
 ```
 
 It keeps one **persistent** BLE session (log in once, poll every 30 s over the same link) and
-exposes 20 values: AC power/voltage/current/frequency, temperature, energy total/today,
-power/voltage/current for the four PV ports, plus the session status.
+exposes 31 values: AC power/voltage/current/frequency, reactive power, power factor,
+temperature, energy total/today, the inverter's daily warning count, power/voltage/current and
+energy total/today for each of the four PV ports, plus the session status. A value is reported
+when it changes noticeably or after a few minutes at the latest, not on every 30 s poll.
 
 The protocol implementation is a C port of [TheTiEr/hiflow-ble](https://github.com/TheTiEr/hiflow-ble),
 the library behind the [ha-hiflow-ble](https://github.com/TheTiEr/ha-hiflow-ble) integration. It
@@ -18,19 +20,23 @@ is checked against reference vectors generated with that library.
 
 ## Status
 
-Tested on one **HMS-2000-4WB** with a Seeed **XIAO ESP32-C6** and ZHA. Other HiFlow Pro / HMS-WB
-models that work with ha-hiflow-ble should work too. Zigbee2MQTT is untested. Reports are welcome.
+Works with **ZHA** and **Zigbee2MQTT**. Tested on one **HMS-2000-4WB** with a Seeed **XIAO
+ESP32-C6** and a **Waveshare ESP32-C6-LCD-1.47**. Other HiFlow Pro / HMS-WB models that work
+with ha-hiflow-ble should work too. Reports are welcome.
 
 ## What you need
 
 <img src="docs/img/waveshare-panel.png" align="right" width="188" alt="Waveshare ESP32-C6-LCD-1.47 panel: session status, AC power, grid voltage and frequency, temperature, energy today and total">
 
-- A **Seeed Studio XIAO ESP32-C6** or a **Waveshare ESP32-C6-LCD-1.47**. The board is picked with
-  the `board` setting in `hiflow_secrets.yaml` (see *Boards* in `docs/development.md`): the XIAO
-  variant drives its RF switch and can use an external U.FL antenna, the Waveshare variant shows
-  the values on its on-board 172x320 display (rendering on the right, example values).
-- A Zigbee coordinator in Home Assistant (ZHA), on current firmware. Tested with a ConBee III on
-  deCONZ firmware **0x26550900**.
+- A **Seeed Studio XIAO ESP32-C6** ([Amazon.de](https://www.amazon.de/dp/B0D2NKVB34)) or a
+  **Waveshare ESP32-C6-LCD-1.47** ([Amazon.de](https://www.amazon.de/dp/B0DHTMYTCY)). The board
+  is picked with the `board` setting in `hiflow_secrets.yaml` (see *Boards* in
+  `docs/development.md`): the XIAO variant drives its RF switch and can use an external U.FL
+  antenna, the Waveshare variant shows the values on its on-board 172x320 display (rendering on
+  the right, example values).
+- A Zigbee coordinator in ZHA or Zigbee2MQTT (2.8.0 or newer), on current firmware. Tested with
+  a ConBee III ([Amazon.de](https://www.amazon.de/dp/B0C8HV79N7)) on deCONZ firmware
+  **0x26550900**.
 - ESPHome with native Zigbee on the ESP32-C6 (tested with **2026.8.2**), plus Python 3 for the
   helper scripts.
 - The inverter within BLE range of the board. An external U.FL antenna is optional.
@@ -57,9 +63,10 @@ models that work with ha-hiflow-ble should work too. Zigbee2MQTT is untested. Re
    ```bash
    esphome compile esp32c6.yaml
    ```
-   The first build compiles ESP-IDF and takes several minutes, longer than ZHA's pairing window.
-4. **Open pairing, then flash** over USB. In Home Assistant, open ZHA, click *Add device* and leave
-   it open, then run:
+   The first build compiles ESP-IDF and takes several minutes, longer than the coordinator's
+   pairing window.
+4. **Open pairing, then flash** over USB. In ZHA click *Add device*, in Zigbee2MQTT *Permit join*,
+   and leave it open, then run:
    ```bash
    DEV=/dev/ttyACM0 tools/flash_config.sh esp32c6.yaml
    ```
@@ -75,8 +82,9 @@ models that work with ha-hiflow-ble should work too. Zigbee2MQTT is untested. Re
    (`esptool --chip esp32c6 --port /dev/ttyACM0 erase_flash`).
 
    The board joins as `HMS-2000-4WB Bridge`. If it missed the pairing window, open
-   *Add device* again and reset the board (RESET button or re-plug).
-5. **Optional: name the entities.** ZHA names analog inputs generically. This command gives
+   pairing again and reset the board (RESET button or re-plug). Zigbee2MQTT builds a generated
+   definition for it, with the sensor names from `esp32c6.yaml`.
+5. **Optional, ZHA: name the entities.** ZHA names analog inputs generically. This command gives
    them the ids `sensor.inverter_zb_*` and English names by endpoint:
    ```bash
    python3 -m venv .venv && .venv/bin/pip install websockets
@@ -106,8 +114,9 @@ Put the board at the inverter and power it from a USB charger. The deployed imag
   30 s later). The energy total is not affected, so the energy dashboard stays correct.
 - Read-only: no power limit. The ESPHome Zigbee component cannot expose `number` entities on the
   ESP32 yet.
-- About 20 of the roughly 40 values the inverter reports are exposed. Alarms, grid profile and
-  the rest are not.
+- All measurements that ha-hiflow-ble shows are exposed, except the per-port error code (in
+  practice the same `0x03000000` on every port while the inverter feeds in). The warning count
+  says how many warnings there were, not which ones.
 
 ## Credits and license
 

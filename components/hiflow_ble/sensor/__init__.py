@@ -100,7 +100,7 @@ _WARNINGS = dict(
 _ENERGY_DAILY = dict(
     unit_of_measurement=UNIT_WATT_HOURS,
     device_class=DEVICE_CLASS_ENERGY,
-    state_class=STATE_CLASS_MEASUREMENT,
+    state_class=STATE_CLASS_TOTAL_INCREASING,
     accuracy_decimals=0,
 )
 

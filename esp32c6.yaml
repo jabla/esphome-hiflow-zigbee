@@ -86,14 +86,20 @@ sensor:
   # Every sensor is one Zigbee endpoint, numbered in the order of this list
   # (tools/ha_fix_bridge_entities.py maps them to entity ids).
   #
-  # report: force sends every published value as a Zigbee report instead of
-  # relying on the coordinator's reporting configuration (ZHA sometimes sets
-  # very long intervals). The filters decide what gets published: a value goes
-  # out when it moved by more than the delta, or when the throttle time has
-  # passed since the last one, whichever comes first. The session polls every
-  # 30 s, and without the filters every poll would be one report per sensor,
-  # most of them repeating the last value. Zigbee and BLE share the C6's one
-  # radio, so fewer reports leave more air time to the BLE link.
+  # Every sensor has `report` set to `force`: each published value goes out as a
+  # Zigbee report, instead of relying on the coordinator's reporting
+  # configuration (ZHA sometimes sets very long intervals). The filters decide
+  # what gets published. The session polls every 30 s, and without the filters
+  # every poll would be one report per sensor, most of them repeating the last
+  # value. Zigbee and BLE share the C6's one radio, so fewer reports leave more
+  # air time to the BLE link. A value goes out when
+  #   - the throttle time has passed since the last value the throttle passed,
+  #   - it moved by more than the delta from the last value the delta filter
+  #     passed (the filters keep separate references, so a value the throttle
+  #     published does not reset the delta's), or
+  #   - no new value came for 90 s (debounce): the link dropped or the inverter
+  #     went dark at dusk. The last reading then still reaches the coordinator
+  #     instead of waiting for a poll that does not come until the morning.
   # The display of the Waveshare board reads the unfiltered values.
   #
   # The sensors that the on-board display of the Waveshare board shows carry an
@@ -113,6 +119,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 5
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -128,6 +135,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 1
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -142,6 +150,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 0.05
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -157,6 +166,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 0.05
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -172,6 +182,7 @@ sensor:
       - or:
           - throttle: 600s
           - delta: 0.5
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -187,6 +198,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 10
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -196,12 +208,13 @@ sensor:
     name: "HiFlow Energy Daily"
     unit_of_measurement: Wh
     device_class: energy
-    state_class: measurement
+    state_class: total_increasing
     accuracy_decimals: 0
     filters:
       - or:
           - throttle: 300s
           - delta: 10
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -216,6 +229,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 5
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -230,6 +244,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 1
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -244,6 +259,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 0.05
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -258,6 +274,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 5
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -272,6 +289,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 1
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -286,6 +304,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 0.05
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -300,6 +319,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 5
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -314,6 +334,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 1
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -328,6 +349,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 0.05
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -342,6 +364,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 5
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -356,6 +379,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 1
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -370,6 +394,7 @@ sensor:
       - or:
           - throttle: 300s
           - delta: 0.05
+          - debounce: 90s
 
   # Session state as a number (the only remote diagnosis at the site):
   #   0 waiting for a connection (also normal at night)
@@ -406,6 +431,7 @@ sensor:
       - or:
           - throttle: 900s
           - delta: 10
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -420,6 +446,7 @@ sensor:
       - or:
           - throttle: 900s
           - delta: 1
+          - debounce: 90s
 
   # The inverter's count of warnings since dawn (what they were is not part
   # of the data). Reported on every change.
@@ -434,6 +461,7 @@ sensor:
       - or:
           - throttle: 1800s
           - delta: 0.5
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -448,6 +476,7 @@ sensor:
       - or:
           - throttle: 900s
           - delta: 50
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -456,12 +485,13 @@ sensor:
     name: "HiFlow Port1 Energy Daily"
     unit_of_measurement: Wh
     device_class: energy
-    state_class: measurement
+    state_class: total_increasing
     accuracy_decimals: 0
     filters:
       - or:
           - throttle: 900s
           - delta: 50
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -476,6 +506,7 @@ sensor:
       - or:
           - throttle: 900s
           - delta: 50
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -484,12 +515,13 @@ sensor:
     name: "HiFlow Port2 Energy Daily"
     unit_of_measurement: Wh
     device_class: energy
-    state_class: measurement
+    state_class: total_increasing
     accuracy_decimals: 0
     filters:
       - or:
           - throttle: 900s
           - delta: 50
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -504,6 +536,7 @@ sensor:
       - or:
           - throttle: 900s
           - delta: 50
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -512,12 +545,13 @@ sensor:
     name: "HiFlow Port3 Energy Daily"
     unit_of_measurement: Wh
     device_class: energy
-    state_class: measurement
+    state_class: total_increasing
     accuracy_decimals: 0
     filters:
       - or:
           - throttle: 900s
           - delta: 50
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -532,6 +566,7 @@ sensor:
       - or:
           - throttle: 900s
           - delta: 50
+          - debounce: 90s
 
   - platform: hiflow_ble
     report: force
@@ -540,9 +575,10 @@ sensor:
     name: "HiFlow Port4 Energy Daily"
     unit_of_measurement: Wh
     device_class: energy
-    state_class: measurement
+    state_class: total_increasing
     accuracy_decimals: 0
     filters:
       - or:
           - throttle: 900s
           - delta: 50
+          - debounce: 90s

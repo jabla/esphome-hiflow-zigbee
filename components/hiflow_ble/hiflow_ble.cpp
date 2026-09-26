@@ -353,23 +353,11 @@ void HiflowBle::session_on_data(const hiflow_data_t *data) {
     this->publish_(base + 1, data->ports[i].voltage_v);
     this->publish_(base + 2, data->ports[i].current_a);
     base = PORT_ENERGY_BASE[i];  // enum order per port: ENERGY_TOTAL, ENERGY_DAILY
-    // Same rule as the sum below: a lifetime counter of 0 is a missing value.
-    if (data->ports[i].energy_total_wh > 0.0f)
-      this->publish_(base + 0, data->ports[i].energy_total_wh);
+    this->publish_total_(base + 0, data->ports[i].energy_total_wh, this->last_port_energy_total_[i]);
     this->publish_(base + 1, data->ports[i].energy_daily_wh);
   }
 
-  // The lifetime counter feeds a total_increasing sensor: a value that drops
-  // would look like a meter reset in Home Assistant's statistics.
-  if (data->energy_total_wh > 0.0f) {
-    if (data->energy_total_wh + 0.5f >= this->last_energy_total_) {
-      this->last_energy_total_ = data->energy_total_wh;
-      this->publish_(HIFLOW_ENERGY_TOTAL, data->energy_total_wh);
-    } else {
-      ESP_LOGW(TAG, "ignoring a total energy of %.0f Wh below the last %.0f Wh",
-               data->energy_total_wh, this->last_energy_total_);
-    }
-  }
+  this->publish_total_(HIFLOW_ENERGY_TOTAL, data->energy_total_wh, this->last_energy_total_);
   this->publish_(HIFLOW_ENERGY_DAILY, data->energy_daily_wh);
 }
 
@@ -395,6 +383,20 @@ void HiflowBle::session_log(int level, const char *msg) {
 // ---------------------------------------------------------------------------
 // publishing
 // ---------------------------------------------------------------------------
+
+// The lifetime counters feed total_increasing sensors: a value that drops would
+// look like a meter reset in Home Assistant's statistics, and 0 is a missing
+// value, not a reading.
+void HiflowBle::publish_total_(uint8_t type, float value, float &last) {
+  if (!(value > 0.0f))
+    return;
+  if (value + 0.5f < last) {
+    ESP_LOGW(TAG, "ignoring a lifetime energy of %.0f Wh below the last %.0f Wh (sensor %u)", value, last, (unsigned) type);
+    return;
+  }
+  last = value;
+  this->publish_(type, value);
+}
 
 void HiflowBle::publish_(uint8_t type, float value) {
   if (type >= HIFLOW_SENSOR_TYPE_COUNT)

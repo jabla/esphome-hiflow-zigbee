@@ -114,6 +114,8 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   void report_link_up_();
   void report_link_down_(int reason);
   void publish_(uint8_t type, float value);
+  // Publishes a lifetime counter unless it is 0 (missing) or below the last one.
+  void publish_total_(uint8_t type, float value, float &last);
   void publish_status_(uint8_t status, bool refresh);
   void flush_prefs_();
 
@@ -148,6 +150,7 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   // --- publishing ---
   sensor::Sensor *sensors_[HIFLOW_SENSOR_TYPE_COUNT]{};
   float last_energy_total_{0.0f};
+  float last_port_energy_total_[HIFLOW_MAX_PORTS]{};
   int64_t next_status_refresh_ms_{0};
   int last_status_{-1};
 };

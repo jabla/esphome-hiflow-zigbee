@@ -319,6 +319,7 @@ static void test_extra_values(void)
     check_float(data.energy_total_wh, 11023.0f + 9876.0f, "total is still the sum of the ports");
 
     len = encode_page(page, sizeof(page), 0);
+    check(len > 0, "three-phase page encodes");
     hiflow_measurements_reset(&acc);
     check_int(hiflow_merge_real_data(&acc, page, len, NULL, NULL), HIFLOW_OK, "three-phase page decodes");
     hiflow_measurements_to_data(&acc, &data);

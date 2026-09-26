@@ -77,7 +77,20 @@ Each point below cost at least one debugging session. Don't undo them casually.
   in list order. ZHA binds entities by unique id and otherwise mixes old names with new values.
   Remove the device, let it re-join, then run `tools/ha_fix_bridge_entities.py`. Add new
   sensors at the end of the list, so the existing endpoints keep their numbers and entity ids.
-  ZHA only picks up new endpoints on that re-join.
+  ZHA only picks up new endpoints on that re-join. The order matters:
+  1. Flash the new firmware (`tools/flash_config.sh esp32c6.yaml`). The board re-joins as
+     before, and ZHA still shows the old endpoints.
+  2. *Remove* the device in ZHA and **wait until it has gone from the device list**. The remove
+     returns at once, but ZHA drops the device only after its leave requests time out, which
+     took about 2.5 minutes here.
+  3. Open pairing (*Add device*).
+  4. Erase the board's Zigbee settings:
+     `esptool --chip esp32c6 --port /dev/ttyACM0 erase_region 0x370000 0x90000`. The firmware
+     stays, the board resets, joins as a new device and ZHA interviews every endpoint.
+
+  If the board re-joins before step 2 has finished, ZHA takes it for the known device: no new
+  interview, only the old endpoints. When the removal then completes, the board still believes
+  it is joined, and no values arrive until you start over at step 2.
 - **Energy dashboard:** ZHA analog inputs are always `measurement`. Use the template sensor from
   `docs/ha-energy-template.yaml`, which is `total_increasing` and ignores missing values.
 
@@ -91,7 +104,8 @@ Each point below cost at least one debugging session. Don't undo them casually.
 - **Opening the USB-Serial/JTAG port can hold the chip in reset.** With the default modem lines
   (DTR asserted) the board stops: no log lines, no BLE, and the values in HA freeze. Open it with
   `serial.Serial(); s.dtr = False; s.rts = False; s.open()`, as `tools/quicktest.sh` does.
-  Closing the port can reset the board too. `esphome logs` is unreliable on this port.
+  Closing the port can reset the board too, and the Waveshare board resets once even when the
+  port is opened this way. `esphome logs` is unreliable on this port.
 - **After a physical re-plug the console often stays silent.** Run
   `esptool --after hard_reset flash_id` to re-initialise it.
 - On Linux, `/dev/ttyACM0` needs a udev rule such as

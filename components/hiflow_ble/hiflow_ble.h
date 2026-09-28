@@ -17,6 +17,10 @@
 // ./sync_core.sh; the originals live under src/hiflow_core and src/hiflow_pb.
 #include "hiflow_session.h"
 
+#ifdef USE_ZIGBEE
+#include "esphome/components/zigbee/zigbee_esp32.h"
+#endif
+
 namespace esphome {
 namespace hiflow_ble {
 
@@ -91,6 +95,18 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   void set_tx_uuid16(uint16_t uuid) { this->tx_uuid_ = espbt::ESPBTUUID::from_uint16(uuid); }
   void set_rx_uuid16(uint16_t uuid) { this->rx_uuid_ = espbt::ESPBTUUID::from_uint16(uuid); }
   void register_sensor(sensor::Sensor *sensor, uint8_t type);
+#ifdef USE_ZIGBEE
+  /// The power limit slider on `endpoint` (see hiflow_power_limit.h).
+  void set_power_limit_slider(zigbee::ZigbeeComponent *zb, uint8_t endpoint) {
+    this->slider_zb_ = zb;
+    this->slider_endpoint_ = endpoint;
+  }
+  /// The inverter's on/off switch on `endpoint` (see hiflow_inverter_switch.h).
+  void set_inverter_switch(zigbee::ZigbeeComponent *zb, uint8_t endpoint) {
+    this->switch_zb_ = zb;
+    this->switch_endpoint_ = endpoint;
+  }
+#endif
 
   // --- session callbacks, reached through the trampolines in the .cpp ---
   int session_send(const uint8_t *frame, size_t len);
@@ -98,6 +114,8 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   void session_set_link_allowed(bool allowed);
   void session_on_data(const hiflow_data_t *data);
   void session_on_status(uint8_t status);
+  void session_on_power_limit(int32_t tenths);
+  void session_on_inverter_power(bool on, bool confirmed);
   void session_log(int level, const char *msg);
 
  protected:
@@ -118,6 +136,8 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   void publish_total_(uint8_t type, float value, float &last);
   void publish_status_(uint8_t status, bool refresh);
   void flush_prefs_();
+  void poll_slider_(int64_t now);
+  void poll_switch_(int64_t now);
 
   // --- transport ---
   espbt::ESPBTUUID service_uuid_{};
@@ -153,6 +173,33 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   float last_port_energy_total_[HIFLOW_MAX_PORTS]{};
   int64_t next_status_refresh_ms_{0};
   int last_status_{-1};
+
+#ifdef USE_ZIGBEE
+  // --- power limit slider ---
+  zigbee::ZigbeeComponent *slider_zb_{nullptr};
+  uint8_t slider_endpoint_{0};
+  float slider_set_{NAN};        // the value we put there ourselves
+  float slider_seen_{NAN};       // the value read last, for the quiet period
+  int64_t slider_seen_ms_{0};
+  bool slider_publish_{false};   // slider_set_ still has to reach the attribute
+  int64_t next_slider_poll_ms_{0};
+
+  // --- inverter on/off switch ---
+  /// The state the inverter was last switched to (the inverter reports none).
+  struct SwitchPref {
+    uint16_t magic;
+    uint8_t on;
+  };
+  zigbee::ZigbeeComponent *switch_zb_{nullptr};
+  uint8_t switch_endpoint_{0};
+  ESPPreferenceObject switch_pref_{};
+  bool switch_state_{true};      // confirmed, saved in flash
+  bool switch_pending_{false};   // a request is with the session
+  bool switch_publish_{false};   // switch_state_ still has to reach the attribute
+  int switch_seen_{-1};          // the value read last, for the quiet period
+  int64_t switch_seen_ms_{0};
+  int64_t next_switch_poll_ms_{0};
+#endif
 };
 
 }  // namespace hiflow_ble

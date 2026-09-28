@@ -9,10 +9,13 @@ inverter ──BLE──> ESP32-C6 ──Zigbee──> coordinator ──ZHA / Z
 ```
 
 It keeps one **persistent** BLE session (log in once, poll every 30 s over the same link) and
-exposes 31 values: AC power/voltage/current/frequency, reactive power, power factor,
+exposes 32 values: AC power/voltage/current/frequency, reactive power, power factor,
 temperature, energy total/today, the inverter's daily warning count, power/voltage/current and
-energy total/today for each of the four PV ports, plus the session status. A value is reported
-when it changes noticeably or after a few minutes at the latest, not on every 30 s poll.
+energy total/today for each of the four PV ports, plus the session status and the board's
+uptime. A value is reported when it changes noticeably or after a few minutes at the latest,
+not on every 30 s poll.
+It also adds a slider for the inverter's power limit and, optionally, a switch that turns the
+inverter on and off.
 
 The protocol implementation is a C port of [TheTiEr/hiflow-ble](https://github.com/TheTiEr/hiflow-ble),
 the library behind the [ha-hiflow-ble](https://github.com/TheTiEr/ha-hiflow-ble) integration. It
@@ -100,6 +103,50 @@ with ha-hiflow-ble should work too. Reports are welcome.
 Put the board at the inverter and power it from a USB charger. The deployed image logs at
 `WARN`, which matters on a charger (see `docs/troubleshooting.md`).
 
+## Power limit
+
+The bridge adds a slider for the inverter's power limit: percent of the rated power, in 10 %
+steps, as a Zigbee Analog Output on endpoint 32. ZHA shows it as a number entity, Zigbee2MQTT as
+`hiflow_power_limit_32`. It is on by default (`power_limit: true` under `hiflow_ble:` in
+`esp32c6.yaml`); `false` leaves the endpoint out. It is meant for a limit you set now and then,
+not for zero-export regulation:
+
+- The inverter keeps the limit in its own flash. The bridge writes only when you move the
+  slider, never on a boot or a reconnect, never the value that is already set, and at most once
+  a minute. A slider drag becomes one write, 5 s after the last move.
+- The slider shows what the inverter reports. The bridge reads the limit after every login and
+  every hour (so it follows changes made in the S-Miles app) and reads it back after each write.
+  A value off the 10 % grid, e.g. 87 from an automation, ends up as 90.
+- 0 % switches the inverter's output off.
+- A change that cannot reach the inverter within two minutes (at night, for example) is dropped
+  and the slider returns to the inverter's value.
+
+Endpoint 32 is new, so an existing bridge has to re-join after the flash: follow *After changing
+the sensor list* in `docs/troubleshooting.md`. In ZHA, reload the integration once after the
+re-join (see there).
+
+## Inverter on/off (optional)
+
+With `inverter_control: true` under `hiflow_ble:`, the bridge adds a switch that turns the
+inverter's output on and off, as a Zigbee On/Off cluster on endpoint 34. ZHA shows it as a
+switch entity.
+
+- The inverter does not report whether it is on or off. The switch shows the state the bridge
+  last switched it to, and the bridge keeps that state in its flash across reboots. A change made
+  in the S-Miles app does not show.
+- A command goes out only when you flip the switch, never on a boot or a reconnect. The bridge
+  sends it between two data polls and keeps the new state only when the inverter acknowledges
+  it. Otherwise, or when the command cannot reach the inverter within two minutes (at night,
+  for example), the switch goes back.
+- Off stops the feed-in within seconds and counts as a warning in the inverter's daily warning
+  counter.
+- ha-hiflow-ble's buttons send these commands without a timestamp, and the inverter ignores
+  them ([ha-hiflow-ble#23](https://github.com/TheTiEr/ha-hiflow-ble/issues/23)). The bridge
+  sends the current time.
+
+Endpoint 34 is new, so an existing bridge has to re-join after the flash, as for the power
+limit.
+
 ## More documentation
 
 - [`docs/troubleshooting.md`](docs/troubleshooting.md): radio, inverter, Zigbee and USB details
@@ -112,8 +159,8 @@ Put the board at the inverter and power it from a USB charger. The deployed imag
 
 - Right after a boot, ZHA shows 0 for the measurements until the first data page arrives (about
   30 s later). The energy total is not affected, so the energy dashboard stays correct.
-- Read-only: no power limit. The ESPHome Zigbee component cannot expose `number` entities on the
-  ESP32 yet.
+- The power limit is percent only. The inverter's rated power is not read, so there is no watt
+  slider.
 - All measurements that ha-hiflow-ble shows are exposed, except the per-port error code (in
   practice the same `0x03000000` on every port while the inverter feeds in). The warning count
   says how many warnings there were, not which ones.

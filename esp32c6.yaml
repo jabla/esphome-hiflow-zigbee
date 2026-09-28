@@ -74,6 +74,14 @@ hiflow_ble:
   # Data cadence on the open session. Must stay below the inverter's idle
   # timeout of roughly 90 s; the schema allows 10-60 s.
   update_interval: 30s
+  # A slider for the inverter's power limit (percent, 10 % steps) on Zigbee
+  # endpoint 32. The bridge writes the limit only when the slider moves; see
+  # "Power limit" in the README. false leaves the endpoint out.
+  power_limit: true
+  # A switch that turns the inverter's output on and off, on Zigbee endpoint
+  # 34. The inverter reports no on/off state, so the switch shows the state
+  # the bridge last switched it to. See "Inverter on/off" in the README.
+  inverter_control: false
 
 # No wifi:, no api:, no ota: a pure 802.15.4 node
 zigbee:
@@ -582,3 +590,14 @@ sensor:
           - throttle: 900s
           - delta: 50
           - debounce: 90s
+
+  # ---------- the bridge itself ----------
+  # Seconds since the board booted: a drop shows a reset (power, brownout,
+  # watchdog) that the status alone does not. On a fixed endpoint, 33, so it
+  # keeps its number with or without the power limit slider on 32. Every 5
+  # minutes, like the status keep-alive.
+  - platform: uptime
+    name: "Bridge Uptime"
+    endpoint: 33
+    report: force
+    update_interval: 300s

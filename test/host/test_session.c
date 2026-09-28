@@ -12,6 +12,10 @@
  *   - a failure ends the connection instead of logging in again on the link
  *   - while waiting after a failure no connection is held at all
  *   - the handshake keeps the reference's poll counts and fallbacks
+ *   - the power limit is only ever written on request, never twice for the
+ *     same value, at most once a minute, and a failure keeps the connection
+ *   - an on/off command goes out once per request, with the inverter's serial
+ *     number and the current time, and its outcome is always reported
  *
  * Build/run:  make -C test/host test-session
  */
@@ -90,6 +94,11 @@ typedef struct {
     uint8_t last_saved_key[HIFLOW_ENC_RAND_LEN];
     uint8_t status_seen[WORLD_MAX_STATUS];
     int     status_count;
+    int     limit_reports;
+    int32_t last_limit;    /* tenths, -1 = never reported */
+    int     power_reports;
+    int     last_power_on;
+    int     last_power_confirmed;
 } world_t;
 
 static int world_send(void *ctx, const uint8_t *frame, size_t len)
@@ -160,6 +169,23 @@ static void world_on_status(void *ctx, uint8_t status)
 
     if (w->status_count < WORLD_MAX_STATUS)
         w->status_seen[w->status_count++] = status;
+}
+
+static void world_on_power_limit(void *ctx, int32_t tenths)
+{
+    world_t *w = (world_t *) ctx;
+
+    w->limit_reports++;
+    w->last_limit = tenths;
+}
+
+static void world_on_inverter_power(void *ctx, int on, int confirmed)
+{
+    world_t *w = (world_t *) ctx;
+
+    w->power_reports++;
+    w->last_power_on = on;
+    w->last_power_confirmed = confirmed;
 }
 
 static void world_log(void *ctx, int level, const char *msg)
@@ -241,7 +267,7 @@ static const uint8_t ROTATED_KEY[HIFLOW_ENC_RAND_LEN] = {
 #define TEST_BLE_ID "176354289012345678"
 #define TEST_PIN    "4711"
 
-static void world_init(world_t *w, int have_key, const char *pin)
+static void world_init_ex(world_t *w, int have_key, const char *pin, int power_limit)
 {
     hiflow_session_config_t cfg;
     hiflow_session_ops_t ops;
@@ -252,6 +278,7 @@ static void world_init(world_t *w, int have_key, const char *pin)
     w->link_down_at = -1;
     w->chunk = WORLD_CHUNK;
     w->now = 1000;
+    w->last_limit = -1;
 
     fake_init(&w->fi, TEST_KEY, TEST_SN, TEST_PIN);
     fake_set_pages(&w->fi, VEC_HEX_PAGE_SINGLE, NULL);
@@ -264,6 +291,7 @@ static void world_init(world_t *w, int have_key, const char *pin)
         memcpy(cfg.enc_rand, TEST_KEY, HIFLOW_ENC_RAND_LEN);
         cfg.have_enc_rand = 1;
     }
+    cfg.power_limit = power_limit;
 
     memset(&ops, 0, sizeof(ops));
     ops.ctx = w;
@@ -273,9 +301,23 @@ static void world_init(world_t *w, int have_key, const char *pin)
     ops.on_data = world_on_data;
     ops.on_enc_rand = world_on_enc_rand;
     ops.on_status = world_on_status;
+    ops.on_power_limit = world_on_power_limit;
+    ops.on_inverter_power = world_on_inverter_power;
     ops.log = world_log;
 
     hiflow_session_init(&w->s, &cfg, &ops, w->now, 1774000000, 0);
+}
+
+static void world_init(world_t *w, int have_key, const char *pin)
+{
+    world_init_ex(w, have_key, pin, 0);
+}
+
+/* With inverter control on (and the power limit off). */
+static void world_init_control(world_t *w)
+{
+    world_init_ex(w, 1, TEST_PIN, 0);
+    w->s.cfg.inverter_control = 1;
 }
 
 /* A one-page reply (ap = 1) with the AC block and ports 1 and 2. */
@@ -763,6 +805,336 @@ static void test_empty_data_reply(void)
     expect_int(w.fi.logins_seen, 1, "without a new login");
 }
 
+/* ---------- power limit ---------- */
+
+static void test_limit_read(void)
+{
+    world_t w;
+
+    printf("[22] power limit: read once per connection and hourly, never written unasked\n");
+    world_init(&w, 1, TEST_PIN);
+    world_run(&w, 70000);
+    expect_int(w.fi.config_reads, 0, "disabled: no config read");
+    expect_int(w.limit_reports, 0, "disabled: nothing reported");
+    expect_int(hiflow_session_request_power_limit(&w.s, w.now, 90.0f), -1,
+               "disabled: a request is refused");
+    world_run(&w, 70000);
+    expect_int(w.fi.limit_writes, 0, "disabled: no write");
+
+    world_init_ex(&w, 1, TEST_PIN, 1);
+    world_run(&w, 5000);
+    expect_int(w.data_count, 1, "data first");
+    expect_int(w.fi.config_reads, 1, "then one config read");
+    expect_int(w.last_limit, 1000, "the device's 100 % is reported");
+    expect_int(hiflow_session_status(&w.s), HIFLOW_STATUS_READY, "back to ready");
+
+    world_run(&w, 3600000);
+    expect_int(w.fi.config_reads, 2, "read again after an hour");
+    expect(w.fi.data_requests >= 119 && w.fi.data_requests <= 121,
+           "the 30 s data cadence is unchanged");
+    expect_int(w.connects, 1, "one connection");
+
+    /* The app changes the limit; the next hourly read picks it up. */
+    w.fi.limit_tenths = 700;
+    world_run(&w, 3600000);
+    expect_int(w.last_limit, 700, "a change made elsewhere is picked up");
+
+    world_drop_link(&w, HIFLOW_LINK_RADIO_TIMEOUT);
+    world_run(&w, 60000);
+    expect_int(w.connects, 2, "reconnected");
+    expect_int(w.fi.config_reads, 4, "read again on the new connection");
+    expect_int(w.fi.limit_writes, 0, "never written without a request");
+}
+
+static void test_limit_write(void)
+{
+    world_t w;
+
+    printf("[23] power limit: one write, read back, no write on reconnect\n");
+    world_init_ex(&w, 1, TEST_PIN, 1);
+    world_run(&w, 5000);
+
+    expect_int(hiflow_session_request_power_limit(&w.s, w.now, 90.0f), 90, "90 % accepted");
+    world_run(&w, 5000);
+    expect_int(w.fi.limit_writes, 1, "one write");
+    expect_int(w.fi.limit_tenths, 900, "the device took 90 %");
+    expect_int(w.fi.config_reads, 2, "read back after the write");
+    expect_int(w.last_limit, 900, "the read-back value is reported");
+    expect_int(w.connects, 1, "on the same connection");
+
+    world_run(&w, 60000);
+    expect_int(w.data_count >= 3, 1, "data keeps flowing");
+
+    world_drop_link(&w, HIFLOW_LINK_PEER_CLOSED);
+    world_run(&w, 60000);
+    expect_int(w.connects, 2, "reconnected");
+    expect_int(w.fi.limit_writes, 1, "no write on the reconnect");
+    expect_int(w.last_limit, 900, "still 90 %");
+}
+
+static void test_limit_dedup_and_rounding(void)
+{
+    world_t w;
+    int reports;
+
+    printf("[24] power limit: the value already set is not written, off-grid values round\n");
+    world_init_ex(&w, 1, TEST_PIN, 1);
+    world_run(&w, 5000);
+
+    reports = w.limit_reports;
+    expect_int(hiflow_session_request_power_limit(&w.s, w.now, 100.0f), 100, "100 % accepted");
+    world_run(&w, 2000);
+    expect_int(w.fi.limit_writes, 0, "100 % is already set: no write");
+    expect_int(w.limit_reports, reports + 1, "but the value is reported again");
+    expect_int(w.last_limit, 1000, "as 100 %");
+
+    expect_int(hiflow_session_request_power_limit(&w.s, w.now, 96.0f), 100, "96 rounds to 100");
+    world_run(&w, 2000);
+    expect_int(w.fi.limit_writes, 0, "and needs no write either");
+
+    expect_int(hiflow_session_request_power_limit(&w.s, w.now, 87.0f), 90, "87 rounds to 90");
+    world_run(&w, 5000);
+    expect_int(w.fi.limit_writes, 1, "one write");
+    expect_int(w.fi.limit_tenths, 900, "of 90 %");
+    expect_int(w.last_limit, 900, "reported as 90 %");
+}
+
+static void test_limit_rate(void)
+{
+    world_t w;
+
+    printf("[25] power limit: at most one write a minute, the newest request wins\n");
+    world_init_ex(&w, 1, TEST_PIN, 1);
+    world_run(&w, 5000);
+
+    hiflow_session_request_power_limit(&w.s, w.now, 90.0f);
+    world_run(&w, 5000);
+    expect_int(w.fi.limit_writes, 1, "first write");
+
+    hiflow_session_request_power_limit(&w.s, w.now, 70.0f);
+    world_run(&w, 1000);
+    hiflow_session_request_power_limit(&w.s, w.now, 60.0f);
+    world_run(&w, 1000);
+    hiflow_session_request_power_limit(&w.s, w.now, 50.0f);
+    world_run(&w, 40000);
+    expect_int(w.fi.limit_writes, 1, "nothing within the minute");
+    expect_int(w.last_limit, 900, "the slider still shows the confirmed 90 %");
+
+    world_run(&w, 20000);
+    expect_int(w.fi.limit_writes, 2, "one write after the minute");
+    expect_int(w.fi.limit_tenths, 500, "with the newest value");
+    expect_int(w.last_limit, 500, "read back as 50 %");
+
+    world_run(&w, 300000);
+    expect_int(w.fi.limit_writes, 2, "and nothing after that");
+}
+
+static void test_limit_failures(void)
+{
+    world_t w;
+
+    printf("[26] power limit: failures keep the connection and the confirmed value\n");
+    world_init_ex(&w, 1, TEST_PIN, 1);
+    world_run(&w, 5000);
+
+    /* The command goes unanswered. */
+    w.fi.silent_on_limit = 1;
+    hiflow_session_request_power_limit(&w.s, w.now, 80.0f);
+    world_run(&w, 25000);
+    expect_int(w.fi.limit_writes, 1, "one write, no retry");
+    expect_int(w.fi.config_reads, 2, "read back anyway");
+    expect_int(w.last_limit, 1000, "the unchanged 100 % is reported");
+    expect_int(w.connects, 1, "the connection stays");
+    expect_int((long) hiflow_session_failures(&w.s), 0, "not a session failure");
+    world_run(&w, 60000);
+    expect_int(w.fi.limit_writes, 1, "still no retry");
+
+    /* The device refuses the value. */
+    w.fi.silent_on_limit = 0;
+    w.fi.limit_err_code = 3;
+    hiflow_session_request_power_limit(&w.s, w.now, 80.0f);
+    world_run(&w, 5000);
+    expect_int(w.fi.limit_writes, 2, "second write");
+    expect_int(w.last_limit, 1000, "refused: 100 % is reported");
+
+    /* It acknowledges but keeps the old value: the read-back tells. */
+    w.fi.limit_err_code = 0;
+    w.fi.limit_ignored = 1;
+    world_run(&w, 60000);
+    hiflow_session_request_power_limit(&w.s, w.now, 80.0f);
+    world_run(&w, 5000);
+    expect_int(w.fi.limit_writes, 3, "third write");
+    expect_int(w.last_limit, 1000, "ignored: 100 % is reported");
+
+    /* The config read goes unanswered: the link stays, data keeps flowing. */
+    world_init_ex(&w, 1, TEST_PIN, 1);
+    w.fi.silent_on_config = 1;
+    world_run(&w, 60000);
+    expect_int(w.fi.config_reads, 1, "one config read");
+    expect_int(w.limit_reports, 0, "nothing to report");
+    expect_int(w.connects, 1, "the connection stays");
+    expect(w.data_count >= 2, "data keeps flowing");
+    hiflow_session_request_power_limit(&w.s, w.now, 50.0f);
+    world_run(&w, 300000);
+    expect_int(w.fi.limit_writes, 0, "no write while the current value is unknown");
+    expect_int(w.fi.config_reads, 2, "the read is retried after five minutes");
+    w.fi.silent_on_config = 0;
+    world_run(&w, 300000);
+    expect_int(w.last_limit, 1000, "known again");
+    expect_int(w.fi.limit_writes, 0, "and the stale request is not written");
+}
+
+static void test_limit_offline(void)
+{
+    world_t w;
+
+    printf("[27] power limit: a request while offline is dropped after two minutes\n");
+    world_init_ex(&w, 1, TEST_PIN, 1);
+    world_run(&w, 5000);
+
+    /* Dusk: the link goes and the inverter does not answer any more. */
+    w.fi.kill_link_on_login = 1;
+    world_drop_link(&w, HIFLOW_LINK_PEER_CLOSED);
+    world_run(&w, 1000);
+    hiflow_session_request_power_limit(&w.s, w.now, 60.0f);
+    world_run(&w, 600000);
+    w.fi.kill_link_on_login = 0;
+    world_run(&w, 600000);
+    expect(w.fi.logins_seen >= 3, "logged in again later");
+    expect_int(w.fi.limit_writes, 0, "the request from the evening is not written");
+    expect_int(w.last_limit, 1000, "the slider shows 100 %");
+
+    /* A request that arrives during a data read waits for it. */
+    hiflow_session_request_power_limit(&w.s, w.now, 0.0f);
+    world_run(&w, 5000);
+    expect_int(w.fi.limit_writes, 1, "0 % is written");
+    expect_int(w.fi.limit_tenths, 0, "the output is off");
+    expect_int(w.last_limit, 0, "0 % is read back although it is not on the wire");
+}
+
+static void test_limit_link_killed(void)
+{
+    world_t w;
+
+    printf("[28] power limit: the inverter drops the link on the config read\n");
+    world_init_ex(&w, 1, TEST_PIN, 1);
+    w.fi.kill_link_on_config = 1;
+    world_run(&w, 600000);
+    expect_int(w.fi.config_reads, 1, "one config read");
+    expect_int(w.connects, 2, "one reconnect, no loop");
+    expect_int(w.fi.logins_seen, 2, "two logins in ten minutes");
+    expect(w.data_count >= 18, "data keeps flowing");
+    expect_int((long) hiflow_session_failures(&w.s), 0, "not a handshake failure");
+    hiflow_session_request_power_limit(&w.s, w.now, 40.0f);
+    world_run(&w, 600000);
+    expect_int(w.fi.limit_writes, 0, "no write while the limit is unknown");
+
+    w.fi.kill_link_on_config = 0;
+    world_run(&w, 3000000);
+    expect_int(w.fi.config_reads, 2, "read again after the hour");
+    expect_int(w.last_limit, 1000, "and known");
+    expect_int(w.connects, 2, "on the same connection");
+}
+
+/* ---------- inverter on/off ---------- */
+
+static void test_power_switch(void)
+{
+    world_t w;
+
+    printf("[29] inverter on/off: one command per request, serial number and time on it\n");
+    world_init(&w, 1, TEST_PIN);
+    expect_int(hiflow_session_request_inverter_power(&w.s, w.now, 0), -1, "disabled: refused");
+    world_run(&w, 60000);
+    expect_int(w.fi.power_commands, 0, "disabled: nothing sent");
+
+    world_init_control(&w);
+    /* Asked before the first data round: the serial number is not known yet. */
+    expect_int(hiflow_session_request_inverter_power(&w.s, w.now, 0), 0, "off accepted");
+    world_run(&w, 5000);
+    expect_int(w.fi.power_commands, 1, "one command once the data named the inverter");
+    expect(w.fi.last_power_sn == VEC_INVERTER_SN, "addressed to the inverter's serial number");
+    expect_int(w.fi.power_untimed, 0, "the command carries the time");
+    expect_int(w.fi.output_on, 0, "the output is off");
+    expect_int(w.power_reports, 1, "one report");
+    expect_int(w.last_power_on, 0, "reported: off");
+    expect_int(w.last_power_confirmed, 1, "reported: confirmed");
+    world_run(&w, 60000);
+    expect_int(w.fi.power_commands, 1, "no repeat");
+    expect_int(w.connects, 1, "the connection stays");
+    expect(w.data_count >= 3, "data keeps flowing");
+
+    hiflow_session_request_inverter_power(&w.s, w.now, 1);
+    world_run(&w, 5000);
+    expect_int(w.fi.power_commands, 2, "second command");
+    expect_int(w.fi.output_on, 1, "the output is on again");
+    expect_int(w.last_power_on, 1, "reported: on");
+    expect_int(w.last_power_confirmed, 1, "reported: confirmed");
+
+    /* A newer request replaces one that has not gone out. */
+    world_init_control(&w);
+    hiflow_session_request_inverter_power(&w.s, w.now, 0);
+    hiflow_session_request_inverter_power(&w.s, w.now, 1);
+    world_run(&w, 5000);
+    expect_int(w.fi.power_commands, 1, "replaced: one command");
+    expect_int(w.fi.output_on, 1, "replaced: the newest (on) went out");
+    expect_int(w.power_reports, 1, "replaced: one report");
+}
+
+static void test_power_failures(void)
+{
+    world_t w;
+
+    printf("[30] inverter on/off: failures are reported, never retried\n");
+    world_init_control(&w);
+    world_run(&w, 5000);
+
+    w.fi.silent_on_power = 1;
+    hiflow_session_request_inverter_power(&w.s, w.now, 0);
+    world_run(&w, 25000);
+    expect_int(w.fi.power_commands, 1, "unanswered: one command");
+    expect_int(w.power_reports, 1, "unanswered: reported");
+    expect_int(w.last_power_confirmed, 0, "unanswered: not confirmed");
+    expect_int(w.connects, 1, "unanswered: the connection stays");
+    expect_int((long) hiflow_session_failures(&w.s), 0, "unanswered: not a session failure");
+    world_run(&w, 120000);
+    expect_int(w.fi.power_commands, 1, "unanswered: no retry");
+
+    w.fi.silent_on_power = 0;
+    w.fi.power_err_code = 3;
+    hiflow_session_request_inverter_power(&w.s, w.now, 0);
+    world_run(&w, 5000);
+    expect_int(w.fi.power_commands, 2, "refused: one command");
+    expect_int(w.last_power_confirmed, 0, "refused: not confirmed");
+    expect_int(w.fi.output_on, 1, "refused: the output stays on");
+
+    /* The link dies on the command: reported, not retried after the reconnect. */
+    w.fi.power_err_code = 0;
+    w.fi.kill_link_on_power = 1;
+    hiflow_session_request_inverter_power(&w.s, w.now, 0);
+    world_run(&w, 5000);
+    expect_int(w.fi.power_commands, 3, "killed: one command");
+    expect_int(w.power_reports, 3, "killed: reported");
+    expect_int(w.last_power_confirmed, 0, "killed: not confirmed");
+    w.fi.kill_link_on_power = 0;
+    world_run(&w, 120000);
+    expect_int(w.connects, 2, "killed: reconnected");
+    expect_int(w.fi.power_commands, 3, "killed: no retry after the reconnect");
+    expect(w.data_count >= 4, "killed: data again");
+
+    /* Asked while no link can come up (at night): dropped after two minutes. */
+    world_init_control(&w);
+    w.fi.kill_link_on_login = 1;
+    hiflow_session_request_inverter_power(&w.s, w.now, 0);
+    world_run(&w, 180000);
+    expect_int(w.fi.power_commands, 0, "offline: nothing sent");
+    expect_int(w.power_reports, 1, "offline: the drop is reported");
+    expect_int(w.last_power_confirmed, 0, "offline: not confirmed");
+    w.fi.kill_link_on_login = 0;
+    world_run(&w, 600000);
+    expect_int(w.fi.power_commands, 0, "offline: the stale request never goes out");
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "-v") == 0)
@@ -789,6 +1161,15 @@ int main(int argc, char **argv)
     test_start_without_key();
     test_clock_behind_after_reboot();
     test_empty_data_reply();
+    test_limit_read();
+    test_limit_write();
+    test_limit_dedup_and_rounding();
+    test_limit_rate();
+    test_limit_failures();
+    test_limit_offline();
+    test_limit_link_killed();
+    test_power_switch();
+    test_power_failures();
 
     printf("\n=== summary ===\n");
     printf("%d checks passed, %d failed\n", g_pass, g_fail);

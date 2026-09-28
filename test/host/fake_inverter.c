@@ -6,6 +6,7 @@
 #include "pb_decode.h"
 
 #include "CommCmdPB.pb.h"
+#include "CommandPB.pb.h"
 #include "RealDataNew.pb.h"
 
 /* ---------- small protobuf writers (the device's own layouts) ---------- */
@@ -64,6 +65,8 @@ void fake_init(fake_inverter_t *fi, const uint8_t enc_rand[HIFLOW_ENC_RAND_LEN],
     fi->login_sts = 1;
     fi->pages = 1;
     fi->device_time = 1774000000;
+    fi->limit_tenths = 1000;
+    fi->output_on = 1;
 }
 
 void fake_link_up(fake_inverter_t *fi)
@@ -247,6 +250,81 @@ static int handle_data_request(fake_inverter_t *fi, uint16_t tid, const uint8_t 
     return reply_v1(fi, 0xA211, tid, fi->page[cp], fi->page_len[cp]);
 }
 
+static int handle_config_read(fake_inverter_t *fi, uint16_t tid)
+{
+    static const char ssid[] = "synthetic-ssid";
+    uint8_t out[128];
+    size_t n = 0;
+
+    fi->config_reads++;
+    if (fi->kill_link_on_config) {
+        fi->kill_link = 1;
+        return 0;
+    }
+    if (fi->silent_on_config)
+        return 0;
+    /* A few neighbours around field 5, and a string the decoder has to skip.
+       proto3: a limit of 0 is not on the wire. */
+    n += put_varint_field(out + n, 1, 3600);
+    n += put_varint_field(out + n, 2, (uint64_t) fi->device_time);
+    n += put_varint_field(out + n, 4, 7);
+    if (fi->limit_tenths != 0)
+        n += put_varint_field(out + n, 5, (uint64_t) fi->limit_tenths);
+    n += put_varint_field(out + n, 7, 1);
+    n += put_bytes_field(out + n, 16, (const uint8_t *) ssid, sizeof(ssid) - 1);
+    return reply_v1(fi, 0xA209, tid, out, n);
+}
+
+static int handle_command(fake_inverter_t *fi, uint16_t tid, const uint8_t *pt, size_t len)
+{
+    CommandResDTO req = CommandResDTO_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(pt, len);
+    uint8_t out[64];
+    size_t n = 0;
+    int tenths = -1;
+
+    if (!pb_decode(&is, CommandResDTO_fields, &req))
+        return 0;
+    if (req.action == HIFLOW_ACTION_MI_START || req.action == HIFLOW_ACTION_MI_SHUTDOWN) {
+        fi->power_commands++;
+        fi->last_power_sn = req.mi_to_sn_count > 0 ? req.mi_to_sn[0] : 0;
+        /* Seen on the real inverter: no time, no reply and no effect. */
+        if (req.time == 0) {
+            fi->power_untimed++;
+            return 0;
+        }
+        if (fi->kill_link_on_power) {
+            fi->kill_link = 1;
+            return 0;
+        }
+        if (fi->silent_on_power)
+            return 0;
+        if (fi->power_err_code == 0)
+            fi->output_on = req.action == HIFLOW_ACTION_MI_START;
+        n += put_varint_field(out + n, 2, (uint64_t) fi->device_time);
+        n += put_varint_field(out + n, 3, (uint64_t) req.action);
+        if (fi->power_err_code != 0)
+            n += put_varint_field(out + n, 5, (uint64_t) fi->power_err_code);
+        n += put_varint_field(out + n, 6, (uint64_t) req.tid);
+        return reply_v1(fi, 0xA205, tid, out, n);
+    }
+    if (req.action != HIFLOW_ACTION_LIMIT_POWER)
+        return 0;
+    fi->limit_writes++;
+    if (fi->silent_on_limit)
+        return 0;
+    if (sscanf(req.data, "A:%d,", &tenths) == 1 && !fi->limit_ignored && fi->limit_err_code == 0 &&
+        tenths >= 0 && tenths <= 1000)
+        fi->limit_tenths = tenths;
+
+    n += put_varint_field(out + n, 2, (uint64_t) fi->device_time);
+    n += put_varint_field(out + n, 3, HIFLOW_ACTION_LIMIT_POWER);
+    if (fi->limit_err_code != 0)
+        n += put_varint_field(out + n, 5, (uint64_t) fi->limit_err_code);
+    n += put_varint_field(out + n, 6, (uint64_t) req.tid);
+    return reply_v1(fi, 0xA205, tid, out, n);
+}
+
 int fake_handle_frame(fake_inverter_t *fi, const uint8_t *frame, size_t len)
 {
     uint8_t pt[FAKE_MAX_PAYLOAD];
@@ -291,6 +369,10 @@ int fake_handle_frame(fake_inverter_t *fi, const uint8_t *frame, size_t len)
         return handle_status_poll(fi, tid, pt, pt_len);
     case HIFLOW_CMD_REAL_DATA:
         return handle_data_request(fi, tid, pt, pt_len);
+    case HIFLOW_CMD_GET_CONFIG:
+        return handle_config_read(fi, tid);
+    case HIFLOW_CMD_COMMAND:
+        return handle_command(fi, tid, pt, pt_len);
     default:
         return 0;
     }

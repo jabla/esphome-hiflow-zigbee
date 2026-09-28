@@ -15,6 +15,10 @@
  *   - rotate the session key, and hand out either the new or the stale one on a
  *     V0 pairing
  *   - split replies across notifications of a given size
+ *   - keep a power limit, answer the config read with it, and take a new
+ *     one from the 0xA305 command (or swallow either request)
+ *   - switch its output on and off with the 0xA305 actions 6/7, ignoring a
+ *     command without a timestamp, as the real inverter does
  *
  * It also counts what it received, so a test can assert that exactly one login
  * went out per connection.
@@ -53,6 +57,16 @@ typedef struct {
     int v0_without_time;    /* the V0 reply leaves out its timestamp          */
     int silent_on_data;     /* swallow the data request                       */
     int pages;              /* 1 or 2 data pages                              */
+    int limit_tenths;       /* power limit, tenths of a percent (1000)        */
+    int silent_on_config;   /* swallow the config read                        */
+    int kill_link_on_config; /* drop the link on the config read              */
+    int silent_on_limit;    /* swallow the power limit command                */
+    int limit_err_code;     /* err_code of the acknowledgement                */
+    int limit_ignored;      /* acknowledge the command but keep the old limit */
+    int output_on;          /* on/off state of the output (1)                 */
+    int silent_on_power;    /* swallow the on/off command                     */
+    int kill_link_on_power; /* drop the link on the on/off command            */
+    int power_err_code;     /* err_code of the on/off acknowledgement         */
 
     /* data pages the device replies with (raw RealDataNewReqDTO payloads) */
     uint8_t page[FAKE_MAX_PAGES][FAKE_MAX_PAYLOAD];
@@ -68,6 +82,11 @@ typedef struct {
     int pin_polls;
     int time_syncs;
     int data_requests;
+    int config_reads;
+    int limit_writes;
+    int power_commands;   /* on/off commands, including ignored ones          */
+    int power_untimed;    /* on/off commands ignored for a missing time       */
+    int64_t last_power_sn; /* mi_to_sn[0] of the last on/off command          */
     int v0_requests;
     int bad_key_frames;   /* frames that did not authenticate                 */
     int pin_ok;

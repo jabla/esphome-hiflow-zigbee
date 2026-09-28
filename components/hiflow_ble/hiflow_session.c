@@ -22,6 +22,12 @@ enum {
 #define MAX_DECODE_FAILURES 3
 /* After this long without a connection the status reports "no link". */
 #define NO_LINK_AFTER_MS 300000
+/* A config read that failed is tried again this much later. */
+#define CONFIG_RETRY_MS 300000
+/* After the link died on a config read or a write, neither is sent for this
+   long: otherwise every new connection would read, lose the link and log in
+   again, twice a minute. */
+#define SIDE_BLOCK_MS 3600000
 
 static void enter_backoff(hiflow_session_t *s, int64_t now_ms, uint32_t delay_ms);
 static void enter_wait_link(hiflow_session_t *s, int64_t now_ms);
@@ -136,6 +142,9 @@ static uint8_t status_code(const hiflow_session_t *s, int64_t now_ms)
     case HIFLOW_STATE_READY:
         return HIFLOW_STATUS_READY;
     case HIFLOW_STATE_WAIT_DATA:
+    case HIFLOW_STATE_WAIT_CONFIG:
+    case HIFLOW_STATE_WAIT_LIMIT:
+    case HIFLOW_STATE_WAIT_POWER:
         return HIFLOW_STATUS_READING;
     default:
         return HIFLOW_STATUS_WAIT_LINK;
@@ -366,6 +375,9 @@ static void handshake_complete(hiflow_session_t *s, int64_t now_ms)
     s->decode_failures = 0;
     s->key_unchanged = 0;
     slog(s, 2, "handshake complete (session %u), reading data", (unsigned) s->sessions);
+    /* The limit may have changed in the app while we were away: read it once
+       per connection, as soon as the first data round is done. */
+    s->config_due_ms = now_ms;
     set_state(s, HIFLOW_STATE_READY);
     s->current_page = 0;
     request_data(s, now_ms);
@@ -507,6 +519,8 @@ static void handle_data(hiflow_session_t *s, int64_t now_ms, const uint8_t *pt, 
     }
 
     hiflow_measurements_to_data(&s->data, &out);
+    if (s->data.inverter_sn != 0)
+        s->inverter_sn = s->data.inverter_sn;
     s->data_seen = 1;
     s->fail_streak = 0;
     s->fail_reason = HIFLOW_FAIL_NONE;
@@ -521,6 +535,202 @@ static void handle_data(hiflow_session_t *s, int64_t now_ms, const uint8_t *pt, 
         s->ops.on_data(s->ops.ctx, &out);
     set_state(s, HIFLOW_STATE_READY);
     set_timer(s, HT_DATA_POLL, now_ms + (int64_t) s->cfg.poll_interval_ms);
+}
+
+/* ---------- power limit (side requests between two data polls) ---------- */
+
+static void report_limit(hiflow_session_t *s)
+{
+    if (s->limit_known && s->ops.on_power_limit != NULL)
+        s->ops.on_power_limit(s->ops.ctx, s->limit_tenths);
+}
+
+/* Back to READY with the data poll deadline the side request had parked. */
+static void end_side_request(hiflow_session_t *s)
+{
+    s->expected_cmd = 0;
+    set_state(s, HIFLOW_STATE_READY);
+    set_timer(s, HT_DATA_POLL, s->data_due_ms);
+}
+
+static void send_config_read(hiflow_session_t *s, int64_t now_ms)
+{
+    int64_t unix_time = unix_now(s, now_ms);
+    size_t len = 0;
+
+    if (hiflow_encode_get_config(s->tx_pt, sizeof(s->tx_pt), &len, unix_time,
+                                 utc_offset(s, unix_time)) != HIFLOW_OK) {
+        slog(s, 0, "could not encode the config read");
+        s->config_due_ms = now_ms + CONFIG_RETRY_MS;
+        return;
+    }
+    slog(s, 3, "reading the config (power limit)");
+    set_state(s, HIFLOW_STATE_WAIT_CONFIG);
+    send_payload(s, now_ms, HIFLOW_CMD_GET_CONFIG, s->tx_pt, len);
+}
+
+static void send_limit_write(hiflow_session_t *s, int64_t now_ms)
+{
+    int32_t percent = s->limit_request;
+    size_t len = 0;
+
+    s->limit_request = -1;
+    if (hiflow_encode_set_power_limit(s->tx_pt, sizeof(s->tx_pt), &len, unix_now(s, now_ms),
+                                      percent) != HIFLOW_OK) {
+        slog(s, 0, "could not encode the power limit %d %%", (int) percent);
+        report_limit(s);
+        return;
+    }
+    slog(s, percent == 0 ? 1 : 2, "power limit: writing %d %% (was %d.%d %%)%s", (int) percent,
+         (int) (s->limit_tenths / 10), (int) (s->limit_tenths % 10),
+         percent == 0 ? " - this switches the output off" : "");
+    s->limit_written = 1;
+    s->limit_write_ms = now_ms;
+    /* Whatever the reply says, the device is the judge: read it back. */
+    s->config_due_ms = now_ms + (int64_t) s->cfg.limit_readback_ms;
+    set_state(s, HIFLOW_STATE_WAIT_LIMIT);
+    send_payload(s, now_ms, HIFLOW_CMD_COMMAND, s->tx_pt, len);
+}
+
+static void report_power(hiflow_session_t *s, int on, int confirmed)
+{
+    if (s->ops.on_inverter_power != NULL)
+        s->ops.on_inverter_power(s->ops.ctx, on, confirmed);
+}
+
+static void send_power_command(hiflow_session_t *s, int64_t now_ms)
+{
+    int on = s->power_request;
+    size_t len = 0;
+
+    s->power_request = -1;
+    if (hiflow_encode_inverter_power(s->tx_pt, sizeof(s->tx_pt), &len, unix_now(s, now_ms), on,
+                                     s->inverter_sn) != HIFLOW_OK) {
+        slog(s, 0, "could not encode the inverter %s command", on ? "on" : "off");
+        report_power(s, on, 0);
+        return;
+    }
+    slog(s, on ? 2 : 1, "switching the inverter %s", on ? "on" : "off");
+    s->power_sent = on;
+    s->data_due_ms = s->timer == HT_DATA_POLL ? s->deadline_ms : now_ms;
+    set_state(s, HIFLOW_STATE_WAIT_POWER);
+    send_payload(s, now_ms, HIFLOW_CMD_COMMAND, s->tx_pt, len);
+}
+
+/* Checked on every tick, in any state: at night no connection comes up for
+   hours, and the switch should not show a state that never reached the
+   inverter until the morning. */
+static void expire_power_request(hiflow_session_t *s, int64_t now_ms)
+{
+    if (s->power_request < 0 ||
+        now_ms - s->power_request_ms <= (int64_t) s->cfg.power_request_ttl_ms)
+        return;
+    slog(s, 1, "inverter %s could not be sent in time - dropped", s->power_request ? "on" : "off");
+    report_power(s, s->power_request, 0);
+    s->power_request = -1;
+}
+
+/* Starts an on/off command, a config read or a limit write if one is due.
+   Only called in READY, i.e. between two data polls on a logged-in
+   connection. */
+static void start_side_request(hiflow_session_t *s, int64_t now_ms)
+{
+    /* The command names the inverter by the serial number in the data, so it
+       waits for the first data round. The hour-long block after a lost link
+       does not apply: it keeps the automatic config reads from looping, and
+       an on/off command only ever goes out once per request. */
+    if (s->power_request >= 0 && s->inverter_sn != 0) {
+        send_power_command(s, now_ms);
+        return;
+    }
+
+    if (!s->cfg.power_limit)
+        return;
+
+    if (s->limit_request >= 0 &&
+        now_ms - s->limit_request_ms > (int64_t) s->cfg.limit_request_ttl_ms) {
+        slog(s, 1, "power limit %d %% could not be written in time - dropped",
+             (int) s->limit_request);
+        s->limit_request = -1;
+        report_limit(s);
+    }
+    if (now_ms < s->side_blocked_until_ms)
+        return;
+
+    if (now_ms >= s->config_due_ms) {
+        s->data_due_ms = s->timer == HT_DATA_POLL ? s->deadline_ms : now_ms;
+        send_config_read(s, now_ms);
+        return;
+    }
+    /* A write needs the device's current value first: that is what keeps a
+       request for the value already set from wearing the device's flash. */
+    if (s->limit_request < 0 || !s->limit_known)
+        return;
+    if (s->limit_request * 10 == s->limit_tenths) {
+        slog(s, 3, "power limit already %d %% - no write", (int) s->limit_request);
+        s->limit_request = -1;
+        report_limit(s);
+        return;
+    }
+    if (s->limit_written &&
+        now_ms - s->limit_write_ms < (int64_t) s->cfg.limit_write_gap_ms)
+        return;
+    s->data_due_ms = s->timer == HT_DATA_POLL ? s->deadline_ms : now_ms;
+    send_limit_write(s, now_ms);
+}
+
+static void handle_config_reply(hiflow_session_t *s, int64_t now_ms, const uint8_t *pt, size_t len)
+{
+    int32_t tenths = 0;
+
+    if (hiflow_decode_power_limit(pt, len, &tenths) != HIFLOW_OK) {
+        slog(s, 1, "config reply did not decode (%u bytes) - power limit unknown", (unsigned) len);
+        s->config_due_ms = now_ms + CONFIG_RETRY_MS;
+        report_limit(s);
+        end_side_request(s);
+        return;
+    }
+    if (!s->limit_known || tenths != s->limit_tenths)
+        slog(s, 2, "power limit is %d.%d %%", (int) (tenths / 10), (int) (tenths % 10));
+    s->limit_known = 1;
+    s->limit_tenths = tenths;
+    s->config_due_ms = now_ms + (int64_t) s->cfg.config_interval_ms;
+    report_limit(s);
+    end_side_request(s);
+}
+
+static void handle_power_reply(hiflow_session_t *s, int64_t now_ms, const uint8_t *pt, size_t len)
+{
+    int32_t action = 0, err_code = 0;
+    int32_t expected = s->power_sent ? HIFLOW_ACTION_MI_START : HIFLOW_ACTION_MI_SHUTDOWN;
+    int ok = 0;
+
+    if (hiflow_decode_command_reply(pt, len, &action, &err_code) != HIFLOW_OK)
+        slog(s, 1, "inverter on/off: the acknowledgement did not decode");
+    else if (err_code != 0)
+        slog(s, 1, "inverter on/off: the device answered with error %d", (int) err_code);
+    else if (action != expected)
+        slog(s, 1, "inverter on/off: acknowledgement for action %d, expected %d", (int) action,
+             (int) expected);
+    else
+        ok = 1;
+    if (ok)
+        slog(s, 2, "inverter switched %s", s->power_sent ? "on" : "off");
+    report_power(s, s->power_sent, ok);
+    end_side_request(s);
+}
+
+static void handle_limit_reply(hiflow_session_t *s, int64_t now_ms, const uint8_t *pt, size_t len)
+{
+    int32_t action = 0, err_code = 0;
+
+    if (hiflow_decode_command_reply(pt, len, &action, &err_code) != HIFLOW_OK)
+        slog(s, 1, "power limit: the acknowledgement did not decode");
+    else if (err_code != 0)
+        slog(s, 1, "power limit: the device answered with error %d", (int) err_code);
+    else
+        slog(s, 3, "power limit: acknowledged (action %d)", (int) action);
+    end_side_request(s);
 }
 
 /* ---------- frame dispatch ---------- */
@@ -590,6 +800,15 @@ static void handle_frame(hiflow_session_t *s, int64_t now_ms, const uint8_t *fra
     case HIFLOW_STATE_WAIT_DATA:
         handle_data(s, now_ms, s->rx_pt, pt_len);
         break;
+    case HIFLOW_STATE_WAIT_CONFIG:
+        handle_config_reply(s, now_ms, s->rx_pt, pt_len);
+        break;
+    case HIFLOW_STATE_WAIT_LIMIT:
+        handle_limit_reply(s, now_ms, s->rx_pt, pt_len);
+        break;
+    case HIFLOW_STATE_WAIT_POWER:
+        handle_power_reply(s, now_ms, s->rx_pt, pt_len);
+        break;
     default:
         slog(s, 3, "unsolicited frame 0x%04X ignored", (unsigned) cmd);
         break;
@@ -613,6 +832,13 @@ void hiflow_session_config_defaults(hiflow_session_config_t *cfg)
     cfg->backoff_min_ms = 30000;
     cfg->backoff_max_ms = 300000;
     cfg->pin_backoff_ms = 1800000;
+    cfg->power_limit = 0;
+    cfg->config_interval_ms = 3600000;
+    cfg->limit_write_gap_ms = 60000;
+    cfg->limit_readback_ms = 2000;
+    cfg->limit_request_ttl_ms = 120000;
+    cfg->inverter_control = 0;
+    cfg->power_request_ttl_ms = 120000;
 }
 
 void hiflow_session_init(hiflow_session_t *s, const hiflow_session_config_t *cfg,
@@ -636,6 +862,8 @@ void hiflow_session_init(hiflow_session_t *s, const hiflow_session_config_t *cfg
     s->status = 0xFF; /* forces the first status report */
     s->state = HIFLOW_STATE_BACKOFF;
     s->link_allowed = -1; /* forces the first set_link_allowed callback */
+    s->limit_request = -1;
+    s->power_request = -1;
     if (!s->cfg.have_enc_rand)
         s->need_v0 = 1;
     enter_wait_link(s, now_ms);
@@ -712,7 +940,19 @@ void hiflow_session_link_down(hiflow_session_t *s, int64_t now_ms, int reason)
         return;
     }
 
-    if (s->state == HIFLOW_STATE_READY || s->state == HIFLOW_STATE_WAIT_DATA) {
+    if (s->state == HIFLOW_STATE_WAIT_CONFIG || s->state == HIFLOW_STATE_WAIT_LIMIT) {
+        slog(s, 1, "the link died on the %s - no config read or power limit write for an hour",
+             s->state == HIFLOW_STATE_WAIT_CONFIG ? "config read" : "power limit write");
+        s->side_blocked_until_ms = now_ms + SIDE_BLOCK_MS;
+    }
+    if (s->state == HIFLOW_STATE_WAIT_POWER) {
+        /* Not retried: the command may or may not have taken effect. */
+        slog(s, 1, "the link died on the inverter %s command", s->power_sent ? "on" : "off");
+        report_power(s, s->power_sent, 0);
+    }
+    if (s->state == HIFLOW_STATE_READY || s->state == HIFLOW_STATE_WAIT_DATA ||
+        s->state == HIFLOW_STATE_WAIT_CONFIG || s->state == HIFLOW_STATE_WAIT_LIMIT ||
+        s->state == HIFLOW_STATE_WAIT_POWER) {
         if (s->data_seen) {
             /* A session that delivered data and then ended - the inverter goes
                to sleep at dusk. Try again shortly, without counting a failure. */
@@ -760,10 +1000,44 @@ void hiflow_session_tx_failed(hiflow_session_t *s, int64_t now_ms)
     fail(s, now_ms, HIFLOW_FAIL_NO_REPLY, "the transport could not write the frame");
 }
 
+int32_t hiflow_session_request_power_limit(hiflow_session_t *s, int64_t now_ms, float percent)
+{
+    int32_t rounded;
+
+    if (s == NULL || !s->cfg.power_limit)
+        return -1;
+    rounded = hiflow_power_limit_round(percent);
+    if (rounded < 0)
+        return -1;
+    if (s->limit_request >= 0 && s->limit_request != rounded)
+        slog(s, 3, "power limit request %d %% replaced", (int) s->limit_request);
+    slog(s, 2, "power limit %d %% requested", (int) rounded);
+    s->limit_request = rounded;
+    s->limit_request_ms = now_ms;
+    return rounded;
+}
+
+int hiflow_session_request_inverter_power(hiflow_session_t *s, int64_t now_ms, int on)
+{
+    if (s == NULL || !s->cfg.inverter_control)
+        return -1;
+    on = on ? 1 : 0;
+    if (s->power_request >= 0 && s->power_request != on)
+        slog(s, 3, "inverter %s request replaced", s->power_request ? "on" : "off");
+    slog(s, 2, "inverter %s requested", on ? "on" : "off");
+    s->power_request = on;
+    s->power_request_ms = now_ms;
+    return 0;
+}
+
 void hiflow_session_tick(hiflow_session_t *s, int64_t now_ms)
 {
     if (s == NULL)
         return;
+
+    expire_power_request(s, now_ms);
+    if (s->state == HIFLOW_STATE_READY)
+        start_side_request(s, now_ms);
 
     if (s->timer != HT_NONE && now_ms >= s->deadline_ms) {
         uint8_t kind = s->timer;
@@ -776,6 +1050,20 @@ void hiflow_session_tick(hiflow_session_t *s, int64_t now_ms)
                 fail(s, now_ms, handshake_fail_reason(s), "no reply during the handshake");
             } else if (s->state == HIFLOW_STATE_WAIT_DATA) {
                 fail(s, now_ms, HIFLOW_FAIL_NO_REPLY, "no reply to the data request");
+            } else if (s->state == HIFLOW_STATE_WAIT_CONFIG) {
+                /* Not worth a reconnect: the next data request shows whether
+                   the link is still alive. */
+                slog(s, 1, "no reply to the config read - power limit unknown");
+                s->config_due_ms = now_ms + CONFIG_RETRY_MS;
+                report_limit(s);
+                end_side_request(s);
+            } else if (s->state == HIFLOW_STATE_WAIT_LIMIT) {
+                slog(s, 1, "power limit: no acknowledgement - reading it back");
+                end_side_request(s);
+            } else if (s->state == HIFLOW_STATE_WAIT_POWER) {
+                slog(s, 1, "inverter on/off: no acknowledgement");
+                report_power(s, s->power_sent, 0);
+                end_side_request(s);
             }
             break;
         case HT_SEND_POLL:
@@ -831,6 +1119,12 @@ const char *hiflow_session_state_name(uint8_t state)
         return "READY";
     case HIFLOW_STATE_WAIT_DATA:
         return "WAIT_DATA";
+    case HIFLOW_STATE_WAIT_CONFIG:
+        return "WAIT_CONFIG";
+    case HIFLOW_STATE_WAIT_LIMIT:
+        return "WAIT_LIMIT";
+    case HIFLOW_STATE_WAIT_POWER:
+        return "WAIT_POWER";
     default:
         return "?";
     }

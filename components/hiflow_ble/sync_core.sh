@@ -54,7 +54,7 @@ for f in pb.h pb_common.h pb_common.c pb_decode.h pb_decode.c pb_encode.h pb_enc
 done
 
 # --- generated protobuf: the messages the session core uses ---
-for f in RealDataNew APPInfomationData CommCmdPB; do
+for f in RealDataNew APPInfomationData CommCmdPB CommandPB GetConfig; do
   copy "$GEN/$f.pb.h"
   copy "$GEN/$f.pb.c"
 done

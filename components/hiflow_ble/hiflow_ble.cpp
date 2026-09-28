@@ -1,4 +1,6 @@
 #include "hiflow_ble.h"
+#include "hiflow_inverter_switch.h"
+#include "hiflow_power_limit.h"
 
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
@@ -24,6 +26,11 @@ static const char *const TIME_PREF_NAME = "hiflow_time_v2";
 static const int64_t TIME_SAVE_INTERVAL_MS = 300000;  // every 5 minutes
 static const int64_t STATUS_REFRESH_MS = 300000;      // republish the status
 static const int64_t LINK_UP_FALLBACK_MS = 3000;      // if no CCCD write is confirmed
+static const int64_t SLIDER_POLL_MS = 500;            // present_value is polled this often
+static const int64_t SLIDER_QUIET_MS = 5000;          // a new value must stand this long
+static const int64_t SWITCH_QUIET_MS = 1000;          // merges a quick off-on into one command
+static const uint16_t SWITCH_PREF_MAGIC = 0x4853;     // 'HS'
+static const char *const SWITCH_PREF_NAME = "hiflow_switch_v1";
 
 // ---------------------------------------------------------------------------
 // trampolines: the session core is C and calls back through a context pointer
@@ -42,6 +49,12 @@ static void cb_on_data(void *ctx, const hiflow_data_t *data) {
 static void cb_on_status(void *ctx, uint8_t status) {
   static_cast<HiflowBle *>(ctx)->session_on_status(status);
 }
+static void cb_on_power_limit(void *ctx, int32_t tenths) {
+  static_cast<HiflowBle *>(ctx)->session_on_power_limit(tenths);
+}
+static void cb_on_inverter_power(void *ctx, int on, int confirmed) {
+  static_cast<HiflowBle *>(ctx)->session_on_inverter_power(on != 0, confirmed != 0);
+}
 static void cb_log(void *ctx, int level, const char *msg) {
   static_cast<HiflowBle *>(ctx)->session_log(level, msg);
 }
@@ -54,6 +67,17 @@ int64_t HiflowBle::now_ms_() const { return esp_timer_get_time() / 1000; }
 
 void HiflowBle::setup() {
   this->time_pref_ = global_preferences->make_preference<TimePref>(fnv1_hash(TIME_PREF_NAME));
+#ifdef USE_ZIGBEE
+  if (this->switch_zb_ != nullptr) {
+    // The switch shows the state the inverter was last switched to; nothing
+    // is sent to the inverter for it.
+    SwitchPref rec{};
+    this->switch_pref_ = global_preferences->make_preference<SwitchPref>(fnv1_hash(SWITCH_PREF_NAME));
+    if (this->switch_pref_.load(&rec) && rec.magic == SWITCH_PREF_MAGIC)
+      this->switch_state_ = rec.on != 0;
+    this->switch_publish_ = true;
+  }
+#endif
 }
 
 void HiflowBle::start_session_() {
@@ -69,6 +93,10 @@ void HiflowBle::start_session_() {
   cfg.std_offset = this->std_offset_;
   cfg.eu_dst = this->eu_dst_ ? 1 : 0;
   cfg.poll_interval_ms = this->poll_interval_ms_;
+#ifdef USE_ZIGBEE
+  cfg.power_limit = this->slider_zb_ != nullptr ? 1 : 0;
+  cfg.inverter_control = this->switch_zb_ != nullptr ? 1 : 0;
+#endif
 
   // No session key here (cfg.have_enc_rand stays 0): the inverter rotates it,
   // so the first connection starts with a V0 pairing, which hands out the
@@ -86,6 +114,8 @@ void HiflowBle::start_session_() {
   ops.set_link_allowed = cb_set_link_allowed;
   ops.on_data = cb_on_data;
   ops.on_status = cb_on_status;
+  ops.on_power_limit = cb_on_power_limit;
+  ops.on_inverter_power = cb_on_inverter_power;
   ops.log = cb_log;
 
   hiflow_session_init(&this->session_, &cfg, &ops, this->now_ms_(),
@@ -113,6 +143,8 @@ void HiflowBle::loop() {
     this->report_link_up_();
   }
 
+  this->poll_slider_(now);
+  this->poll_switch_(now);
   hiflow_session_tick(&this->session_, now);
 
   if (now >= this->next_status_refresh_ms_)
@@ -150,6 +182,15 @@ void HiflowBle::dump_config() {
   ESP_LOGCONFIG(TAG, "  Time offset: %d s%s", static_cast<int>(this->std_offset_),
                 this->eu_dst_ ? " + European summer time" : "");
   ESP_LOGCONFIG(TAG, "  Poll interval: %u ms", static_cast<unsigned>(this->poll_interval_ms_));
+#ifdef USE_ZIGBEE
+  if (this->slider_zb_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "  Power limit slider: Zigbee endpoint %u", this->slider_endpoint_);
+  }
+  if (this->switch_zb_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "  Inverter switch: Zigbee endpoint %u, last state %s", this->switch_endpoint_,
+                  this->switch_state_ ? "on" : "off");
+  }
+#endif
 }
 
 void HiflowBle::register_sensor(sensor::Sensor *sensor, uint8_t type) {
@@ -268,6 +309,7 @@ void HiflowBle::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t ga
     case ESP_GATTC_NOTIFY_EVT:
       if (param->notify.handle != this->rx_handle_)
         break;
+      ESP_LOGV(TAG, "notification, %u bytes", param->notify.value_len);
       hiflow_session_rx(&this->session_, this->now_ms_(), param->notify.value,
                         param->notify.value_len);
       break;
@@ -362,6 +404,135 @@ void HiflowBle::session_on_data(const hiflow_data_t *data) {
 }
 
 void HiflowBle::session_on_status(uint8_t status) { this->publish_status_(status, false); }
+
+// The session reports the limit the inverter holds: after every read, and
+// unchanged when a request needed no write or was dropped. Only this value
+// ever reaches the slider.
+void HiflowBle::session_on_power_limit(int32_t tenths) {
+#ifdef USE_ZIGBEE
+  if (this->slider_zb_ == nullptr)
+    return;
+  this->slider_set_ = static_cast<float>(tenths) / 10.0f;
+  this->slider_publish_ = true;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// power limit slider
+// ---------------------------------------------------------------------------
+
+// A write from the coordinator lands in present_value without telling us, so
+// the attribute is polled. A value that differs from the one we set ourselves
+// is a user change; it goes to the session once it has stood for
+// SLIDER_QUIET_MS, so dragging the slider costs one write at most. Nothing is
+// ever requested on boot or on a (re)join: present_value starts as NaN and
+// only the session's readback fills it.
+void HiflowBle::poll_slider_(int64_t now) {
+#ifdef USE_ZIGBEE
+  if (this->slider_zb_ == nullptr || !this->slider_zb_->is_started() || now < this->next_slider_poll_ms_)
+    return;
+  this->next_slider_poll_ms_ = now + SLIDER_POLL_MS;
+
+  if (this->slider_publish_ && this->slider_zb_->is_joined()) {
+    if (write_power_limit_attr(this->slider_zb_, this->slider_endpoint_, this->slider_set_)) {
+      this->slider_publish_ = false;
+      this->slider_seen_ = this->slider_set_;
+    }
+    return;
+  }
+
+  float value = NAN;
+  if (!read_power_limit_attr(this->slider_endpoint_, &value) || std::isnan(value))
+    return;
+  if (value == this->slider_set_ || this->slider_publish_) {
+    this->slider_seen_ = value;
+    return;
+  }
+  if (value != this->slider_seen_) {
+    ESP_LOGD(TAG, "slider moved to %.1f %%", value);
+    this->slider_seen_ = value;
+    this->slider_seen_ms_ = now;
+    return;
+  }
+  if (now - this->slider_seen_ms_ < SLIDER_QUIET_MS)
+    return;
+
+  int32_t percent = hiflow_session_request_power_limit(&this->session_, now, value);
+  ESP_LOGI(TAG, "slider set to %.1f %%, requesting %d %%", value, static_cast<int>(percent));
+  // Until the session answers, the request counts as handled; the readback
+  // (or the unchanged value, if nothing is written) replaces it.
+  this->slider_set_ = value;
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// inverter on/off switch
+// ---------------------------------------------------------------------------
+
+// The session reports every request's outcome. A confirmed state is kept and
+// saved; otherwise the switch goes back to the state it had.
+void HiflowBle::session_on_inverter_power(bool on, bool confirmed) {
+#ifdef USE_ZIGBEE
+  if (this->switch_zb_ == nullptr)
+    return;
+  this->switch_pending_ = false;
+  if (confirmed && on != this->switch_state_) {
+    SwitchPref rec{};
+    rec.magic = SWITCH_PREF_MAGIC;
+    rec.on = on ? 1 : 0;
+    this->switch_state_ = on;
+    this->switch_pref_.save(&rec);
+    global_preferences->sync();
+  }
+  if (!confirmed)
+    ESP_LOGW(TAG, "the inverter was not switched %s, the switch goes back to %s", on ? "on" : "off",
+             this->switch_state_ ? "on" : "off");
+  this->switch_publish_ = true;
+#endif
+}
+
+// Same scheme as the slider: the attribute is polled, a value that differs
+// from the confirmed state is a user change, and it goes to the session once
+// it has stood for SWITCH_QUIET_MS. Nothing is ever sent on boot or on a
+// (re)join: only a change of the attribute sends a command.
+void HiflowBle::poll_switch_(int64_t now) {
+#ifdef USE_ZIGBEE
+  if (this->switch_zb_ == nullptr || !this->switch_zb_->is_started() || now < this->next_switch_poll_ms_)
+    return;
+  this->next_switch_poll_ms_ = now + SLIDER_POLL_MS;
+
+  if (this->switch_publish_ && this->switch_zb_->is_joined()) {
+    if (write_inverter_switch_attr(this->switch_zb_, this->switch_endpoint_, this->switch_state_)) {
+      this->switch_publish_ = false;
+      this->switch_seen_ = this->switch_state_;
+    }
+    return;
+  }
+
+  bool on = true;
+  if (this->switch_pending_ || !read_inverter_switch_attr(this->switch_endpoint_, &on))
+    return;
+  if (on == this->switch_state_ || this->switch_publish_) {
+    this->switch_seen_ = on;
+    return;
+  }
+  if (static_cast<int>(on) != this->switch_seen_) {
+    ESP_LOGD(TAG, "switch set to %s", on ? "on" : "off");
+    this->switch_seen_ = on;
+    this->switch_seen_ms_ = now;
+    return;
+  }
+  if (now - this->switch_seen_ms_ < SWITCH_QUIET_MS)
+    return;
+
+  if (hiflow_session_request_inverter_power(&this->session_, now, on ? 1 : 0) == 0) {
+    ESP_LOGI(TAG, "switch set to %s, requesting it from the inverter", on ? "on" : "off");
+    this->switch_pending_ = true;
+  } else {
+    this->switch_publish_ = true;
+  }
+#endif
+}
 
 void HiflowBle::session_log(int level, const char *msg) {
   switch (level) {

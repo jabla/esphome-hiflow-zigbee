@@ -67,6 +67,23 @@ components.
   While `cp < ap - 1` the component re-requests with `cp+1`.
 * Scaling: power ×0.1 gives W, voltage ×0.1 gives V, current ×0.01 gives A,
   frequency ×0.01 gives Hz, temperature ×0.1 gives °C; energies are already Wh.
+* Power limit (only with `power_limit: true`): read with cmd **`0xA309`**
+  (`GetConfigResDTO{offset, time}`), reply field 5
+  `limit_power_mypower` in tenths of a percent (left off the wire at 0).
+  Written with cmd **`0xA305`**, `CommandResDTO{time, action = 8,
+  package_nub = 1, tid = time, data = "A:<tenths>,B:0,C:0\r"}`; the device
+  acknowledges with `err_code` and the bridge reads the value back. Both run
+  between two data polls on the logged-in connection. The reference library
+  sends the config read with the time 60 s in the past; the inverter drops the
+  link on that (like on a login whose time lags its clock) and answers the
+  current time.
+* Inverter on/off (only with `inverter_control: true`): cmd **`0xA305`**,
+  `CommandResDTO{time, action = 6 (on) / 7 (off), dev_kind = 1,
+  package_nub = 1, tid = time, mi_to_sn = [serial]}`, where the serial is
+  `serial_number` of the grid block in the data. The device acknowledges with
+  the action and `err_code`. The reference library sends no `time`; the
+  inverter ignores that request (no reply, no effect) and switches when the
+  current time is set.
 
 `RealDataNewReqDTO`/`ResDTO` are named the other way round on the wire
 compared to the vendor `.proto`: the *request* is built from `…ResDTO`, the
@@ -128,6 +145,16 @@ ESPHome's standard filters, as `esp32c6.yaml` does:
 
 The status is the exception: the component publishes it on change and every
 5 minutes, and reports the short state 7 (a data request in flight) as 6.
+
+`power_limit: true` (the default) adds the power limit slider: a Zigbee
+Analog Output on endpoint 32 (0-100 %, resolution 10). It needs the `zigbee`
+component (`zigbee_id:` picks one if there are several), so the BLE-only
+build leaves it out. See "Power limit" in the
+top-level README for how writes are limited.
+
+`inverter_control: true` (default `false`) adds the on/off switch: a Zigbee
+On/Off cluster on endpoint 34. The last confirmed state is kept in flash, since
+the inverter reports none. Like the slider, it needs the `zigbee` component.
 
 There is no `enc_rand:` option: the inverter rotates its session key, so the
 session fetches it with a V0 pairing after every boot and after every failed

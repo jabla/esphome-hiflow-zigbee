@@ -11,6 +11,8 @@
  *     ports addressed by port_number
  *   - reassembly across 20-byte notifications, and the cases that used to glue
  *     a stale fragment in front of the next reply
+ *   - the power limit command, the config read and their replies, and the
+ *     rounding to the 10 % steps the inverter accepts
  *
  * Build/run:  make -C test/host test-proto
  */
@@ -421,6 +423,91 @@ static void test_rx(void)
               "oversized frame dropped");
 }
 
+/* ---------- power limit ---------- */
+
+static void test_power_limit(void)
+{
+    uint8_t buf[HIFLOW_MAX_REQUEST];
+    uint8_t reply[1024];
+    size_t len = 0, n;
+    int32_t action = -1, err = -1, tenths = -1;
+    int i;
+
+    printf("[6] power limit command and config read\n");
+
+    check_int(hiflow_encode_set_power_limit(buf, sizeof(buf), &len, VEC_REQ_TIME, 90), HIFLOW_OK,
+              "set 90 % encodes");
+    check_payload(buf, len, VEC_HEX_SET_LIMIT_90, "set limit 90 %");
+    hiflow_encode_set_power_limit(buf, sizeof(buf), &len, VEC_REQ_TIME, 100);
+    check_payload(buf, len, VEC_HEX_SET_LIMIT_100, "set limit 100 %");
+    hiflow_encode_set_power_limit(buf, sizeof(buf), &len, VEC_REQ_TIME, 0);
+    check_payload(buf, len, VEC_HEX_SET_LIMIT_0, "set limit 0 %");
+    check(hiflow_encode_set_power_limit(buf, sizeof(buf), &len, VEC_REQ_TIME, 101) != HIFLOW_OK,
+          "set 101 % refused");
+    check(hiflow_encode_set_power_limit(buf, sizeof(buf), &len, VEC_REQ_TIME, -1) != HIFLOW_OK,
+          "set -1 % refused");
+
+    check_int(hiflow_encode_get_config(buf, sizeof(buf), &len, VEC_REQ_TIME, VEC_REQ_OFFSET),
+              HIFLOW_OK, "config read encodes");
+    check_payload(buf, len, VEC_HEX_GET_CONFIG, "config read (current time)");
+
+    n = unhex(VEC_HEX_COMMAND_OK, reply, sizeof(reply));
+    check_int(hiflow_decode_command_reply(reply, n, &action, &err), HIFLOW_OK, "command ack decodes");
+    check_int(action, HIFLOW_ACTION_LIMIT_POWER, "command ack action");
+    check_int(err, 0, "command ack err_code 0");
+    n = unhex(VEC_HEX_COMMAND_ERR, reply, sizeof(reply));
+    hiflow_decode_command_reply(reply, n, &action, &err);
+    check_int(err, 3, "command ack err_code 3");
+
+    for (i = 0; i < VEC_CONFIG_REPLY_COUNT; i++) {
+        char what[64];
+        n = unhex(VEC_CONFIG_REPLIES[i].hex, reply, sizeof(reply));
+        tenths = -1;
+        snprintf(what, sizeof(what), "config reply with %d tenths", VEC_CONFIG_REPLIES[i].tenths);
+        check_int(hiflow_decode_power_limit(reply, n, &tenths), HIFLOW_OK, what);
+        check_int(tenths, VEC_CONFIG_REPLIES[i].tenths, what);
+    }
+    check(hiflow_decode_power_limit(reply, 0, &tenths) != HIFLOW_OK, "empty config reply refused");
+    reply[0] = 0x2a; /* field 5, varint, then the buffer ends */
+    check(hiflow_decode_power_limit(reply, 1, &tenths) != HIFLOW_OK, "truncated config reply refused");
+
+    check_int(hiflow_power_limit_round(87.0f), 90, "round 87 -> 90");
+    check_int(hiflow_power_limit_round(85.0f), 90, "round 85 -> 90");
+    check_int(hiflow_power_limit_round(84.9f), 80, "round 84.9 -> 80");
+    check_int(hiflow_power_limit_round(4.9f), 0, "round 4.9 -> 0");
+    check_int(hiflow_power_limit_round(5.0f), 10, "round 5 -> 10");
+    check_int(hiflow_power_limit_round(100.0f), 100, "round 100 -> 100");
+    check_int(hiflow_power_limit_round(250.0f), 100, "round 250 -> 100");
+    check_int(hiflow_power_limit_round(-3.0f), 0, "round -3 -> 0");
+    check_int(hiflow_power_limit_round(NAN), -1, "round NaN -> -1");
+}
+
+/* ---------- inverter on/off ---------- */
+
+static void test_inverter_power(void)
+{
+    static hiflow_measurements_t acc;
+    uint8_t buf[HIFLOW_MAX_REQUEST];
+    uint8_t page[512];
+    size_t len = 0, n;
+
+    printf("[7] inverter on/off command\n");
+
+    check_int(hiflow_encode_inverter_power(buf, sizeof(buf), &len, VEC_REQ_TIME, 1, VEC_INVERTER_SN),
+              HIFLOW_OK, "on encodes");
+    check_payload(buf, len, VEC_HEX_INVERTER_ON, "inverter on (current time)");
+    check_int(hiflow_encode_inverter_power(buf, sizeof(buf), &len, VEC_REQ_TIME, 0, VEC_INVERTER_SN),
+              HIFLOW_OK, "off encodes");
+    check_payload(buf, len, VEC_HEX_INVERTER_OFF, "inverter off (current time)");
+    check(hiflow_encode_inverter_power(buf, sizeof(buf), &len, VEC_REQ_TIME, 1, 0) != HIFLOW_OK,
+          "no serial number refused");
+
+    hiflow_measurements_reset(&acc);
+    n = unhex(VEC_HEX_PAGE_SINGLE, page, sizeof(page));
+    check_int(hiflow_merge_real_data(&acc, page, n, NULL, NULL), HIFLOW_OK, "page decodes");
+    check(acc.inverter_sn == VEC_INVERTER_SN, "the grid block names the inverter's serial number");
+}
+
 int main(void)
 {
     printf("=== hiflow_proto ===\n");
@@ -429,6 +516,8 @@ int main(void)
     test_paging();
     test_rx();
     test_extra_values();
+    test_power_limit();
+    test_inverter_power();
 
     printf("\n=== summary ===\n");
     printf("%d checks passed, %d failed\n", g_pass, g_fail);

@@ -14,8 +14,9 @@ SRC = Path(__file__).resolve().parent.parent / "esp32c6.yaml"
 DST = SRC.with_name("esp32c6-bleonly.yaml")
 
 ZIGBEE_BLOCKS = ("zigbee:",)
-# Sensor options that are only valid while the zigbee component is loaded.
-ZIGBEE_ONLY_OPTIONS = ("report:",)
+# Options that are only valid while the zigbee component is loaded: the
+# sensors' `report` and `endpoint`, and the Zigbee controls of hiflow_ble.
+ZIGBEE_ONLY_OPTIONS = ("report:", "endpoint:", "power_limit:", "inverter_control:")
 
 
 def _indent(line: str) -> int:

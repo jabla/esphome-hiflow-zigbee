@@ -91,6 +91,21 @@ Each point below cost at least one debugging session. Don't undo them casually.
   If the board re-joins before step 2 has finished, ZHA takes it for the known device: no new
   interview, only the old endpoints. When the removal then completes, the board still believes
   it is joined, and no values arrive until you start over at step 2.
+- **Power limit slider in ZHA shows 0-1023 in steps of 1, without a unit.** Right after the
+  interview ZHA had not read the Analog Output's range, resolution, unit and description yet, so
+  the number entity used its defaults. Reloading the ZHA integration once (Settings → Devices &
+  services → ZHA → Reload) fixed it: 0-100 %, step 10, named "HiFlow Power Limit". The values
+  on the device were right all along.
+- **Power limit: how writes happen.** ESPHome's Zigbee component on the ESP32 has no writable
+  entities, so the bridge builds the Analog Output cluster with the esp-zigbee-lib API and polls
+  its present value twice a second. A write from the coordinator is taken as a request once it
+  has stood for 5 s; it goes to the inverter between two data polls (command 0xA305, action 8)
+  and is read back with the config request (0xA309). The slider only ever shows the value read
+  from the inverter. The session log shows each step (`power limit: writing 90 %`, `power limit
+  is 90.0 %`) at INFO, and a write of 0 % at WARN.
+  If the inverter drops the link on a config read or a write, the bridge sends neither for an
+  hour (`the link died on the config read`), so it can never end up logging in twice a minute.
+  That is what the config read with the reference library's timestamp (60 s in the past) did.
 - **Energy dashboard:** ZHA analog inputs are always `measurement`. Use the template sensor from
   `docs/ha-energy-template.yaml`, which is `total_increasing` and ignores missing values.
 - **Zigbee2MQTT.** Tested with z2m 2.14.1 on a ConBee III (0x26550900), using a build of the same

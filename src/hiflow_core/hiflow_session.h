@@ -19,6 +19,21 @@
  *     which is the only way to pick up a rotated encRand. Without a key at all
  *     (have_enc_rand = 0) the very first connection starts with it.
  *
+ * Power limit (only with cfg.power_limit): the limit is read with a config
+ * request once per connection, after the first data round, and every
+ * config_interval_ms after that. A write happens only on request
+ * (hiflow_session_request_power_limit), between two data polls, and never
+ * when the value is already set: the inverter keeps the limit in its own
+ * flash. A failed or unanswered write or read never ends the connection, and
+ * when the inverter drops the link on one, none is sent for an hour.
+ *
+ * Inverter on/off (only with cfg.inverter_control): a request
+ * (hiflow_session_request_inverter_power) goes out between two data polls,
+ * once the data have named the inverter's serial number, and ahead of any
+ * config read or limit write. The inverter reports no on/off state, so the
+ * acknowledgement is the only confirmation; on_inverter_power says whether
+ * it came.
+ *
  * Timekeeping: every entry point takes `now_ms`, a monotonic uptime in
  * milliseconds as 64-bit (esp_timer_get_time() / 1000 on target). Nothing here
  * wraps after 49.7 days.
@@ -79,7 +94,10 @@ typedef enum {
     HIFLOW_STATE_TIMESYNC,    /* action 104 sent                       */
     HIFLOW_STATE_TIMESYNC_POLL,
     HIFLOW_STATE_READY,       /* handshake done, waiting for the poll  */
-    HIFLOW_STATE_WAIT_DATA    /* data request sent                     */
+    HIFLOW_STATE_WAIT_DATA,   /* data request sent                     */
+    HIFLOW_STATE_WAIT_CONFIG, /* config read sent (power limit)        */
+    HIFLOW_STATE_WAIT_LIMIT,  /* power limit command sent              */
+    HIFLOW_STATE_WAIT_POWER   /* on/off command sent                   */
 } hiflow_session_state_t;
 
 /* ---------- configuration ---------- */
@@ -101,6 +119,13 @@ typedef struct {
     uint32_t backoff_min_ms;
     uint32_t backoff_max_ms;
     uint32_t pin_backoff_ms;            /* after a refused/missing PIN         */
+    int      power_limit;               /* 1 = read the limit, accept writes   */
+    uint32_t config_interval_ms;        /* re-read the limit this often        */
+    uint32_t limit_write_gap_ms;        /* at least this long between writes   */
+    uint32_t limit_readback_ms;         /* after a write, read back this late  */
+    uint32_t limit_request_ttl_ms;      /* a request not sent by then is dropped */
+    int      inverter_control;          /* 1 = accept on/off requests          */
+    uint32_t power_request_ttl_ms;      /* an on/off request not sent by then is dropped */
 } hiflow_session_config_t;
 
 /* Fills in the defaults that mirror the reference implementation. */
@@ -122,6 +147,14 @@ typedef struct {
     void (*on_enc_rand)(void *ctx, const uint8_t enc_rand[HIFLOW_ENC_RAND_LEN]);
     /* Status code changed (see HIFLOW_STATUS_*). */
     void (*on_status)(void *ctx, uint8_t status);
+    /* The inverter's power limit in tenths of a percent (optional). Called
+       after every config read, and with the unchanged value when a request
+       needed no write or was dropped, so a slider can snap back to it. */
+    void (*on_power_limit)(void *ctx, int32_t tenths);
+    /* The outcome of an on/off request (optional): `on` is the requested
+       state, `confirmed` 1 when the inverter acknowledged it, 0 when it was
+       refused, went unanswered or was dropped. */
+    void (*on_inverter_power)(void *ctx, int on, int confirmed);
     /* Already formatted message; level: 0 error, 1 warn, 2 info, 3 debug. */
     void (*log)(void *ctx, int level, const char *msg);
 } hiflow_session_ops_t;
@@ -157,6 +190,20 @@ typedef struct {
     uint16_t expected_cmd;         /* reply we are waiting for (0 = none) */
     int32_t  current_page;
 
+    int64_t  data_due_ms;          /* data poll deadline parked by a side request */
+    int      limit_known;          /* limit_tenths holds a value read from the device */
+    int32_t  limit_tenths;         /* last value read from the device */
+    int32_t  limit_request;        /* pending percent, -1 = none */
+    int64_t  limit_request_ms;
+    int      limit_written;        /* a write went out since boot */
+    int64_t  limit_write_ms;       /* when the last write went out */
+    int64_t  config_due_ms;        /* next config read */
+    int64_t  side_blocked_until_ms; /* no config read / write before this */
+    int64_t  inverter_sn;          /* from the data, 0 until the first round */
+    int      power_request;        /* pending on/off: 1 on, 0 off, -1 none */
+    int64_t  power_request_ms;
+    int      power_sent;           /* the on/off command in flight */
+
     uint32_t failures;             /* failed handshakes since boot */
     uint32_t sessions;             /* successful handshakes since boot */
 
@@ -185,6 +232,17 @@ void hiflow_session_rx(hiflow_session_t *s, int64_t now_ms, const uint8_t *chunk
 
 /* The transport could not write the last frame. */
 void hiflow_session_tx_failed(hiflow_session_t *s, int64_t now_ms);
+
+/* Asks for a new power limit in percent. The value is rounded to the 10 %
+   steps the inverter accepts and clamped to 0..100; a newer request replaces
+   one that has not gone out yet. Returns the rounded percent, or -1 when the
+   power limit is disabled or `percent` is NaN. */
+int32_t hiflow_session_request_power_limit(hiflow_session_t *s, int64_t now_ms, float percent);
+
+/* Asks to switch the inverter's output on (1) or off (0). A newer request
+   replaces one that has not gone out yet. Returns 0, or -1 when inverter
+   control is disabled. */
+int hiflow_session_request_inverter_power(hiflow_session_t *s, int64_t now_ms, int on);
 
 /* Drives timeouts, polls and the backoff. Call it regularly (every loop). */
 void hiflow_session_tick(hiflow_session_t *s, int64_t now_ms);

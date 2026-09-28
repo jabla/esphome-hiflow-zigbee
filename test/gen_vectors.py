@@ -49,6 +49,8 @@ out = {
         "comm_cmd_res": int.from_bytes(C.CMD_COMM_CMD_RES_DTO, "big"),
         "comm_cmd_status": int.from_bytes(C.CMD_COMM_CMD_STATUS_RES, "big"),
         "real_data_res": int.from_bytes(C.CMD_REAL_DATA_RES_DTO, "big"),
+        "command_res": int.from_bytes(C.CMD_COMMAND_RES_DTO, "big"),
+        "get_config": int.from_bytes(C.CMD_GET_CONFIG, "big"),
         "hb_req": int.from_bytes(C.CMD_HB_REQ_DTO, "big"),
     },
     "synthetic_inputs": {"pin": PIN, "ble_id": BLE_ID, "mac": MAC},  # placeholders, no real data
@@ -161,6 +163,7 @@ except Exception as exc:  # pragma: no cover
 
 REQ_TIME = 1774000000          # fixed "now" for every request vector
 REQ_OFFSET = 7200              # CEST, so the vectors also cover summer time
+INVERTER_SN = 0x1620A0000001   # synthetic; the grid block's serial_number
 
 
 def _pb_varint_encode(n: int) -> bytes:
@@ -254,6 +257,83 @@ try:
     }
     out["request_payloads"]["app_info_v0"] = {"hex": app_info.SerializeToString().hex()}
 
+    # Power limit (0xA305) and config read (0xA309), built the way hiflow.py's
+    # async_set_power_limit() and async_get_config() build them.
+    from hiflow_ble.protobuf import CommandPB_pb2 as CMDPB
+    from hiflow_ble.protobuf import GetConfig_pb2 as CFGPB
+
+    def set_power_limit(power_limit: int) -> bytes:
+        request = CMDPB.CommandResDTO()
+        request.time = REQ_TIME
+        request.action = C.CMD_ACTION_LIMIT_POWER
+        request.package_nub = 1
+        request.tid = REQ_TIME
+        request.data = f"A:{power_limit * 10},B:0,C:0\r".encode()
+        return request.SerializeToString()
+
+    # Deviation: hiflow.py sends time - 60. On the real inverter that dropped
+    # the link on every such request, while the same request with the current
+    # time was answered, so the bridge sends the current time.
+    get_config = CFGPB.GetConfigResDTO()
+    get_config.offset = REQ_OFFSET
+    get_config.time = REQ_TIME
+
+    # Inverter on/off (0xA305, actions 6/7), built the way hiflow.py's
+    # _send_inverter_action() builds them. Deviation: hiflow.py sends no time.
+    # The real inverter ignored such a request (no reply, no effect) and
+    # switched with the current time, so the bridge sends the current time.
+    def inverter_power(on: bool) -> bytes:
+        request = CMDPB.CommandResDTO()
+        request.time = REQ_TIME
+        request.action = C.CMD_ACTION_MI_START if on else C.CMD_ACTION_MI_SHUTDOWN
+        request.package_nub = 1
+        request.dev_kind = C.DEV_DTU
+        request.tid = REQ_TIME
+        request.mi_to_sn.extend([INVERTER_SN])
+        return request.SerializeToString()
+
+    out["request_payloads"]["inverter_power"] = {
+        "serial_number": INVERTER_SN,
+        "on": inverter_power(True).hex(),
+        "off": inverter_power(False).hex(),
+    }
+
+    out["request_payloads"]["set_power_limit"] = {
+        str(pct): set_power_limit(pct).hex() for pct in (0, 90, 100)
+    }
+    out["request_payloads"]["get_config"] = {"hex": get_config.SerializeToString().hex()}
+
+    # Device replies: the command acknowledgement and a config reply with the
+    # neighbouring fields set, so the decoder has to pick field 5 out of them.
+    def command_reply(err_code: int) -> bytes:
+        m = CMDPB.CommandReqDTO()
+        m.dtu_sn = "TESTDTU00001"
+        m.time = REQ_TIME
+        m.action = C.CMD_ACTION_LIMIT_POWER
+        m.err_code = err_code
+        m.tid = REQ_TIME
+        return m.SerializeToString()
+
+    def config_reply(tenths: int) -> bytes:
+        m = CFGPB.GetConfigReqDTO()
+        m.request_offset = REQ_OFFSET
+        m.request_time = REQ_TIME
+        m.lock_time = 7
+        m.limit_power_mypower = tenths
+        m.zero_export_enable = 1
+        m.wifi_ssid = "synthetic-ssid"
+        m.wifi_password = "synthetic-password"
+        m.server_domain_name = "example.invalid"
+        m.dtu_sn = "TESTDTU00001"
+        m.dtu_ap_pass = "synthetic-ap-pass"
+        return m.SerializeToString()
+
+    out["power_limit_replies"] = {
+        "command_ok_hex": command_reply(0).hex(),
+        "command_err_hex": command_reply(3).hex(),
+        "config": [{"tenths": t, "hex": config_reply(t).hex()} for t in (1000, 900, 875, 0)],
+    }
+
     # Paged reply: ap=2, ports 1+2 on page 0 (with the AC block), ports 3+4 on
     # page 1. The session core has to merge both pages before publishing.
     def page(cp: int, ports, with_sgs: bool) -> bytes:
@@ -263,6 +343,7 @@ try:
         m.cp = cp
         if with_sgs:
             sgs = m.sgs_data.add()
+            sgs.serial_number = INVERTER_SN
             sgs.active_power = 8123
             sgs.voltage = 2305
             sgs.current = 353
@@ -284,6 +365,7 @@ try:
         m.ap = 1
         m.cp = 0
         sgs = m.sgs_data.add()
+        sgs.serial_number = INVERTER_SN
         sgs.active_power = 8123
         sgs.voltage = 2305
         sgs.current = 353

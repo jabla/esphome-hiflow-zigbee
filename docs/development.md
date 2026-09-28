@@ -52,7 +52,7 @@ free.
 
 A temporary free-heap readout on the panel (`esp_get_free_heap_size()`, removed again) showed
 **247 kB** after boot, before the first BLE connection, and **240 kB** with the HiFlow session up
-and reading data (25.09.2026), so the panel leaves ample runtime headroom.
+and reading data, so the panel leaves ample runtime headroom.
 
 The Waveshare board carries **8 MB** of flash, the XIAO 4 MB. The config keeps `flash_size: 4MB`
 for both, so the partition table is the same and the upper 4 MB stay unused. Switching between

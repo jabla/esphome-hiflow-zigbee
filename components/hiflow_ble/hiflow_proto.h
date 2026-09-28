@@ -5,8 +5,10 @@
  * session state machine (hiflow_session.h):
  *
  *   * encoders for every request the bridge sends (CommCmd login / PIN /
- *     time-sync, the status polls, the RealDataNew data request and the V0
- *     APPInfo pairing request), byte-compatible with the reference library;
+ *     time-sync, the status polls, the RealDataNew data request, the V0
+ *     APPInfo pairing request, the power limit and on/off commands and the
+ *     config read),
+ *     byte-compatible with the reference library;
  *   * decoders for the replies, including the hand-decoded device time in the
  *     login acknowledgement, whose field layout differs from the request;
  *   * an accumulator that merges the pages of a RealDataNew reply and maps the
@@ -35,6 +37,8 @@ extern "C" {
 #define HIFLOW_CMD_REAL_DATA    0xA311u /* RealDataNew request (paged)          */
 #define HIFLOW_CMD_HEARTBEAT    0xA302u /* keeps an idle link warm              */
 #define HIFLOW_CMD_APP_INFO_V0  0xA301u /* V0 pairing, answered on 0xA201       */
+#define HIFLOW_CMD_COMMAND      0xA305u /* CommandResDTO: control actions       */
+#define HIFLOW_CMD_GET_CONFIG   0xA309u /* GetConfig: carries the power limit   */
 
 /* The device answers on the request command minus 0x0100. */
 #define HIFLOW_REPLY_CMD(cmd) ((uint16_t) ((cmd) -0x0100u))
@@ -44,6 +48,14 @@ extern "C" {
 #define HIFLOW_ACTION_LOGIN      64
 #define HIFLOW_ACTION_PIN        82
 #define HIFLOW_ACTION_TIME_SYNC 104
+
+/* Control actions on the 0xA305 path. */
+#define HIFLOW_ACTION_MI_START     6
+#define HIFLOW_ACTION_MI_SHUTDOWN  7
+#define HIFLOW_ACTION_LIMIT_POWER  8
+/* dev_kind of the on/off command: the request goes to the DTU, which passes
+   it on to the inverter named in mi_to_sn. */
+#define HIFLOW_DEV_KIND_DTU        1
 
 /* The status is per action: action 64 reports 1 for "logged in", action 82
    reports 0 for "PIN accepted". That asymmetry is in the protocol. */
@@ -89,6 +101,26 @@ int hiflow_encode_real_data_request(uint8_t *buf, size_t cap, size_t *out_len,
 int hiflow_encode_app_info_v0(uint8_t *buf, size_t cap, size_t *out_len,
                               int64_t now, int32_t offset);
 
+/* CommandResDTO{time, action=8, package_nub=1, tid=time,
+   data="A:<tenths>,B:0,C:0\r"} — sets the power limit. `percent` must be
+   0..100; the device stores it in tenths of a percent. */
+int hiflow_encode_set_power_limit(uint8_t *buf, size_t cap, size_t *out_len,
+                                  int64_t now, int32_t percent);
+
+/* CommandResDTO{time, action=6 (on) / 7 (off), dev_kind=1, package_nub=1,
+   tid=time, mi_to_sn=[inverter_sn]} — switches the inverter's output on or
+   off. The reference sends no time; the inverter ignores such a request (no
+   reply, no effect), so this sends the current time. `inverter_sn` is the
+   serial number of the grid block in the data (never 0). */
+int hiflow_encode_inverter_power(uint8_t *buf, size_t cap, size_t *out_len,
+                                 int64_t now, int on, int64_t inverter_sn);
+
+/* GetConfigResDTO{offset, time} — asks for the device config. The reference
+   sends the time 60 s in the past; the inverter drops the link on such a
+   request (as on a login that lags its clock), so this sends the current time. */
+int hiflow_encode_get_config(uint8_t *buf, size_t cap, size_t *out_len,
+                             int64_t now, int32_t offset);
+
 /* ---------- reply decoders ---------- */
 
 /* CommCmdStatusReqDTO{3: action, 11: sts}. A payload that does not decode is
@@ -101,6 +133,19 @@ int hiflow_decode_status_reply(const uint8_t *pt, size_t len,
    request layout yields nonsense such as time = -1607349313, which is why the
    varints are walked by hand and only plausible values are returned. */
 int64_t hiflow_decode_login_ack_time(const uint8_t *pt, size_t len);
+
+/* CommandReqDTO{3: action, 5: err_code}, the reply to a 0xA305 command. */
+int hiflow_decode_command_reply(const uint8_t *pt, size_t len,
+                                int32_t *action, int32_t *err_code);
+
+/* limit_power_mypower (field 5, tenths of a percent) out of the config reply.
+   proto3 leaves a limit of 0 off the wire, so an empty field reads as 0; an
+   empty or undecodable payload is an error. */
+int hiflow_decode_power_limit(const uint8_t *pt, size_t len, int32_t *tenths);
+
+/* The inverter takes the limit in 10 % steps only: rounds `percent` to the
+   nearest step, clamped to 0..100. Returns -1 for NaN. */
+int32_t hiflow_power_limit_round(float percent);
 
 /* ---------- measurements ---------- */
 
@@ -119,6 +164,7 @@ typedef struct {
    part of it so that decoding never needs a ~4 kB stack frame. */
 typedef struct {
     int             have_ac;
+    int64_t         inverter_sn;    /* serial number of the grid block */
     int32_t         ac_power;       /* x0.1 W  */
     int32_t         ac_voltage;     /* x0.1 V  */
     int32_t         ac_current;     /* x0.01 A */

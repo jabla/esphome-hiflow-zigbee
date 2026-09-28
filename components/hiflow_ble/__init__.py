@@ -15,9 +15,11 @@ import os
 
 import esphome.codegen as cg
 from esphome.components import ble_client, esp32_ble_tracker
+from esphome.components.zigbee.const import ZigbeeComponent
 import esphome.config_validation as cv
 from esphome.const import CONF_ID, CONF_MAC_ADDRESS, CONF_UPDATE_INTERVAL
-from esphome.core import TimePeriod
+from esphome.core import CORE, TimePeriod
+from esphome.coroutine import CoroPriority, coroutine_with_priority
 import esphome.final_validate as fv
 
 DEPENDENCIES = ["ble_client"]
@@ -33,6 +35,15 @@ CONF_BLE_ID = "ble_id"
 CONF_PIN = "pin"
 CONF_OFFSET = "offset"
 CONF_EU_DST = "eu_dst"
+CONF_POWER_LIMIT = "power_limit"
+CONF_INVERTER_CONTROL = "inverter_control"
+CONF_ZIGBEE_ID = "zigbee_id"
+
+# The power limit slider's Zigbee endpoint. Fixed, and well above the sensors
+# (1-31), so that adding it never renumbers an existing endpoint.
+POWER_LIMIT_ENDPOINT = 32
+# The inverter's on/off switch. 33 is the board's uptime sensor in esp32c6.yaml.
+INVERTER_SWITCH_ENDPOINT = 34
 
 # GATT layout of the HiFlow Pro (see test/ref/hiflow_ble/const.py).
 SERVICE_UUID = "0000e0ff-3c17-d293-8e48-14fe2e4da212"
@@ -59,8 +70,41 @@ CONFIG_SCHEMA = cv.Schema(
             cv.positive_time_period_milliseconds,
             cv.Range(min=TimePeriod(seconds=10), max=TimePeriod(seconds=60)),
         ),
+        # A slider for the inverter's power limit, as a Zigbee Analog Output on
+        # endpoint 32. The bridge only writes when the slider moves. On by
+        # default wherever the zigbee component is loaded (see below).
+        cv.Optional(CONF_POWER_LIMIT): cv.boolean,
+        # A switch that turns the inverter's output on and off, as a Zigbee
+        # On/Off cluster on endpoint 34. Off unless asked for.
+        cv.Optional(CONF_INVERTER_CONTROL, default=False): cv.boolean,
+        cv.OnlyWith(CONF_ZIGBEE_ID, "zigbee"): cv.use_id(ZigbeeComponent),
     }
 ).extend(cv.COMPONENT_SCHEMA)
+
+
+def _reserve_control_endpoints(config):
+    # The power limit defaults to on, but only with Zigbee: the BLE-only build
+    # has no endpoint to put it on. Set explicitly, it still needs Zigbee.
+    config.setdefault(CONF_POWER_LIMIT, CONF_ZIGBEE_ID in config)
+    # Registered with ESPHome's Zigbee component like a sensor endpoint, so the
+    # number is taken and the endpoint (basic and identify cluster) is created
+    # by its codegen. The control's own cluster is added in to_code.
+    from esphome.components.zigbee.const_esp32 import CONF_CLUSTERS, DEVICE_TYPE
+    from esphome.components.zigbee.zigbee_ep_esp32 import add_ep
+
+    for option, endpoint in (
+        (CONF_POWER_LIMIT, POWER_LIMIT_ENDPOINT),
+        (CONF_INVERTER_CONTROL, INVERTER_SWITCH_ENDPOINT),
+    ):
+        if not config[option]:
+            continue
+        if CONF_ZIGBEE_ID not in config:
+            raise cv.Invalid(f"{option} needs the zigbee component")
+        add_ep({DEVICE_TYPE: "CUSTOM_ATTR", CONF_CLUSTERS: []}, endpoint, None)
+    return config
+
+
+CONFIG_SCHEMA = cv.All(CONFIG_SCHEMA, _reserve_control_endpoints)
 
 # The values of hiflow_secrets.example.yaml. A build that still carries one of
 # them runs, but never finds the inverter (the MAC) or never logs in (SN,
@@ -124,3 +168,26 @@ async def to_code(config):
     )
     cg.add(var.set_tx_uuid16(TX_CHAR_UUID16))
     cg.add(var.set_rx_uuid16(RX_CHAR_UUID16))
+
+    if config[CONF_POWER_LIMIT]:
+        zb = await cg.get_variable(config[CONF_ZIGBEE_ID])
+        cg.add(var.set_power_limit_slider(zb, POWER_LIMIT_ENDPOINT))
+        CORE.add_job(_add_power_limit_cluster, zb)
+
+    if config[CONF_INVERTER_CONTROL]:
+        zb = await cg.get_variable(config[CONF_ZIGBEE_ID])
+        cg.add(var.set_inverter_switch(zb, INVERTER_SWITCH_ENDPOINT))
+        CORE.add_job(_add_inverter_switch_cluster, zb)
+
+
+# The clusters go onto the endpoints that the Zigbee codegen creates, so they have
+# to come after that code in setup(), and before App.setup() starts the Zigbee
+# task that registers the device.
+@coroutine_with_priority(CoroPriority.LATE)
+async def _add_power_limit_cluster(zb):
+    cg.add(hiflow_ble_ns.add_power_limit_cluster(zb, POWER_LIMIT_ENDPOINT))
+
+
+@coroutine_with_priority(CoroPriority.LATE)
+async def _add_inverter_switch_cluster(zb):
+    cg.add(hiflow_ble_ns.add_inverter_switch_cluster(zb, INVERTER_SWITCH_ENDPOINT))

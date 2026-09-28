@@ -48,7 +48,8 @@ PB_BIN    := test_pb
 # ---- proto suite (payloads, paging, reassembly; nanopb, no crypto) --
 PROTO_SRC := test_proto.c $(CORE)/hiflow_proto.c $(CORE)/hiflow_clock.c \
              $(NANOPB)/pb_common.c $(NANOPB)/pb_decode.c $(NANOPB)/pb_encode.c \
-             $(GEN)/RealDataNew.pb.c $(GEN)/CommCmdPB.pb.c $(GEN)/APPInfomationData.pb.c
+             $(GEN)/RealDataNew.pb.c $(GEN)/CommCmdPB.pb.c $(GEN)/APPInfomationData.pb.c \
+             $(GEN)/CommandPB.pb.c $(GEN)/GetConfig.pb.c
 PROTO_BIN := test_proto
 
 # ---- session suite (state machine against a simulated inverter) -----
@@ -56,7 +57,8 @@ SESSION_SRC := test_session.c fake_inverter.c \
                $(CORE)/hiflow_session.c $(CORE)/hiflow_proto.c $(CORE)/hiflow_clock.c \
                $(CORE)/hiflow_frame.c $(CORE)/hiflow_crypto_openssl.c $(CORE)/hiflow_appinfo.c \
                $(NANOPB)/pb_common.c $(NANOPB)/pb_decode.c $(NANOPB)/pb_encode.c \
-               $(GEN)/RealDataNew.pb.c $(GEN)/CommCmdPB.pb.c $(GEN)/APPInfomationData.pb.c
+               $(GEN)/RealDataNew.pb.c $(GEN)/CommCmdPB.pb.c $(GEN)/APPInfomationData.pb.c \
+               $(GEN)/CommandPB.pb.c $(GEN)/GetConfig.pb.c
 SESSION_BIN := test_session
 
 # ---- clock suite (no crypto, no protobuf) ---------------------------

@@ -8,6 +8,8 @@
 
 #include "APPInfomationData.pb.h"
 #include "CommCmdPB.pb.h"
+#include "CommandPB.pb.h"
+#include "GetConfig.pb.h"
 
 #include "hiflow_clock.h"
 
@@ -125,6 +127,50 @@ int hiflow_encode_app_info_v0(uint8_t *buf, size_t cap, size_t *out_len,
     return encode_msg(buf, cap, out_len, APPInfoDataResDTO_fields, &req);
 }
 
+int hiflow_encode_set_power_limit(uint8_t *buf, size_t cap, size_t *out_len,
+                                  int64_t now, int32_t percent)
+{
+    CommandResDTO req = CommandResDTO_init_zero;
+
+    if (percent < 0 || percent > 100)
+        return HIFLOW_ERR_ARG;
+
+    req.time = (int32_t) now;
+    req.action = HIFLOW_ACTION_LIMIT_POWER;
+    req.package_nub = 1;
+    req.tid = now;
+    snprintf(req.data, sizeof(req.data), "A:%d,B:0,C:0\r", (int) (percent * 10));
+    return encode_msg(buf, cap, out_len, CommandResDTO_fields, &req);
+}
+
+int hiflow_encode_inverter_power(uint8_t *buf, size_t cap, size_t *out_len,
+                                 int64_t now, int on, int64_t inverter_sn)
+{
+    CommandResDTO req = CommandResDTO_init_zero;
+
+    if (inverter_sn == 0)
+        return HIFLOW_ERR_ARG;
+
+    req.time = (int32_t) now;
+    req.action = on ? HIFLOW_ACTION_MI_START : HIFLOW_ACTION_MI_SHUTDOWN;
+    req.dev_kind = HIFLOW_DEV_KIND_DTU;
+    req.package_nub = 1;
+    req.tid = now;
+    req.mi_to_sn[0] = inverter_sn;
+    req.mi_to_sn_count = 1;
+    return encode_msg(buf, cap, out_len, CommandResDTO_fields, &req);
+}
+
+int hiflow_encode_get_config(uint8_t *buf, size_t cap, size_t *out_len,
+                             int64_t now, int32_t offset)
+{
+    GetConfigResDTO req = GetConfigResDTO_init_zero;
+
+    req.offset = offset;
+    req.time = (uint32_t) now;
+    return encode_msg(buf, cap, out_len, GetConfigResDTO_fields, &req);
+}
+
 /* ---------- reply decoders ---------- */
 
 int hiflow_decode_status_reply(const uint8_t *pt, size_t len,
@@ -148,6 +194,59 @@ int hiflow_decode_status_reply(const uint8_t *pt, size_t len,
     if (sts != NULL)
         *sts = msg.sts;
     return HIFLOW_OK;
+}
+
+int hiflow_decode_command_reply(const uint8_t *pt, size_t len,
+                                int32_t *action, int32_t *err_code)
+{
+    CommandReqDTO msg = CommandReqDTO_init_zero;
+    pb_istream_t is;
+
+    if (action != NULL)
+        *action = 0;
+    if (err_code != NULL)
+        *err_code = 0;
+    if (pt == NULL)
+        return HIFLOW_ERR_ARG;
+
+    is = pb_istream_from_buffer(pt, len);
+    if (!pb_decode(&is, CommandReqDTO_fields, &msg))
+        return HIFLOW_ERR_FIELD;
+    if (action != NULL)
+        *action = msg.action;
+    if (err_code != NULL)
+        *err_code = msg.err_code;
+    return HIFLOW_OK;
+}
+
+int hiflow_decode_power_limit(const uint8_t *pt, size_t len, int32_t *tenths)
+{
+    GetConfigReqDTO msg = GetConfigReqDTO_init_zero;
+    pb_istream_t is;
+
+    if (pt == NULL || tenths == NULL)
+        return HIFLOW_ERR_ARG;
+    if (len == 0)
+        return HIFLOW_ERR_FIELD;
+
+    is = pb_istream_from_buffer(pt, len);
+    if (!pb_decode(&is, GetConfigReqDTO_fields, &msg))
+        return HIFLOW_ERR_FIELD;
+    if (msg.limit_power_mypower < 0 || msg.limit_power_mypower > 1000)
+        return HIFLOW_ERR_FIELD;
+    *tenths = msg.limit_power_mypower;
+    return HIFLOW_OK;
+}
+
+int32_t hiflow_power_limit_round(float percent)
+{
+    if (percent != percent) /* NaN */
+        return -1;
+    if (percent <= 0.0f)
+        return 0;
+    if (percent >= 100.0f)
+        return 100;
+    return (int32_t) (percent + 5.0f) / 10 * 10;
 }
 
 /* Reads one varint; returns 0 when the buffer ends inside it. */
@@ -270,6 +369,7 @@ int hiflow_merge_real_data(hiflow_measurements_t *acc, const uint8_t *pt, size_t
     if (!acc->have_ac && acc->page.sgs_data_count > 0) {
         const SGSMO *sgs = &acc->page.sgs_data[0];
         acc->have_ac = 1;
+        acc->inverter_sn = sgs->serial_number;
         acc->ac_power = sgs->active_power;
         acc->ac_voltage = sgs->voltage;
         acc->ac_current = sgs->current;
@@ -281,6 +381,7 @@ int hiflow_merge_real_data(hiflow_measurements_t *acc, const uint8_t *pt, size_t
     } else if (!acc->have_ac && acc->page.tgs_data_count > 0) {
         const TGSMO *tgs = &acc->page.tgs_data[0];
         acc->have_ac = 1;
+        acc->inverter_sn = tgs->serial_number;
         acc->ac_power = tgs->active_power;
         acc->ac_voltage = tgs->voltage_phase_A;
         acc->ac_current = tgs->current_phase_A;

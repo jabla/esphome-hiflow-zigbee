@@ -548,3 +548,12 @@ sensor:
           - throttle: 900s
           - delta: 50
           - debounce: 90s
+
+  # ---------- the bridge itself ----------
+  # Seconds since the board booted: a drop shows a reset (power, brownout,
+  # watchdog) that the status alone does not. On a fixed endpoint, 33, so it
+  # keeps its number with or without the power limit slider on 32. Every 5
+  # minutes, like the status keep-alive.
+  - platform: uptime
+    name: "Bridge Uptime"
+    update_interval: 300s

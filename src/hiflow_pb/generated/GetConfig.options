@@ -1,0 +1,17 @@
+# nanopb generator options for GetConfig.proto (config read, cmd 0xA309)
+# The bridge only needs limit_power_mypower. The string fields are skipped on
+# decode instead of stored: no RAM for them, and the WiFi password never lands
+# in a buffer.
+GetConfigReqDTO.apn_set               type:FT_IGNORE
+GetConfigReqDTO.meter_kind            type:FT_IGNORE
+GetConfigReqDTO.meter_interface       type:FT_IGNORE
+GetConfigReqDTO.wifi_ssid             type:FT_IGNORE
+GetConfigReqDTO.wifi_password         type:FT_IGNORE
+GetConfigReqDTO.server_domain_name    type:FT_IGNORE
+GetConfigReqDTO.dtu_sn                type:FT_IGNORE
+GetConfigReqDTO.ka_nub                type:FT_IGNORE
+GetConfigReqDTO.apn_name              type:FT_IGNORE
+GetConfigReqDTO.apn_password          type:FT_IGNORE
+GetConfigReqDTO.gprs_imei             type:FT_IGNORE
+GetConfigReqDTO.dtu_ap_ssid           type:FT_IGNORE
+GetConfigReqDTO.dtu_ap_pass           type:FT_IGNORE

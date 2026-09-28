@@ -37,9 +37,12 @@ extern "C" {
 #define HIFLOW_ENC_RAND_LEN 16
 #define HIFLOW_SN_LEN       12
 
-/* Largest plaintext accepted when building a V0 frame (PKCS#7 pad on top). */
+/* Largest plaintext accepted when building a V0 frame (PKCS#7 pad on top), and
+   the size of the receive buffers. The config reply (0xA209) carries WiFi and
+   server strings on top of ~60 numbers, so this leaves room above the 512-byte
+   BLE MTU. */
 #ifndef HIFLOW_MAX_PLAINTEXT
-#define HIFLOW_MAX_PLAINTEXT 512
+#define HIFLOW_MAX_PLAINTEXT 1024
 #endif
 
 /* Status / error codes. */

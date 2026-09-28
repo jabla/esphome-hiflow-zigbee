@@ -30,7 +30,7 @@ uv pip install --quiet --python "$VENV/bin/python" protobuf
 
 # 3. regenerate
 cd "$GEN_DIR"
-for p in RealDataNew.proto APPInfomationData.proto APPHeartbeatPB.proto CommandPB.proto CommCmdPB.proto; do
+for p in RealDataNew.proto APPInfomationData.proto APPHeartbeatPB.proto CommandPB.proto CommCmdPB.proto GetConfig.proto; do
     echo "generating $p"
     "$VENV/bin/python" "$SRC/generator/nanopb_generator.py" "$p"
 done

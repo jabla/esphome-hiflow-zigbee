@@ -6,6 +6,7 @@
 #   test_clock.c         wall clock, uptime handling and European summer time
 #   test_proto.c         request payloads, paged replies and reassembly
 #   test_session.c       the session state machine against a simulated inverter
+#   test_daylog.c        the day log: standby, new days, restore, recorded days
 #
 #   make              build both test binaries
 #   make test         build + run both suites (exit 0 only if all pass)
@@ -14,6 +15,8 @@
 #   make test-clock   run only the clock suite
 #   make test-proto   run only the payload/paging/reassembly suite
 #   make test-session run only the session suite (-v on the binary: trace log)
+#   make test-daylog  run only the day log suite; REPLAY=<file> adds a replay of
+#                     recorded days (real readings, not part of the repo)
 #   make clean        remove build products
 #
 # Expected values come from the ground-truth test/vectors.json, reshaped into
@@ -55,6 +58,7 @@ PROTO_BIN := test_proto
 # ---- session suite (state machine against a simulated inverter) -----
 SESSION_SRC := test_session.c fake_inverter.c \
                $(CORE)/hiflow_session.c $(CORE)/hiflow_proto.c $(CORE)/hiflow_clock.c \
+               $(CORE)/hiflow_daylog.c \
                $(CORE)/hiflow_frame.c $(CORE)/hiflow_crypto_openssl.c $(CORE)/hiflow_appinfo.c \
                $(NANOPB)/pb_common.c $(NANOPB)/pb_decode.c $(NANOPB)/pb_encode.c \
                $(GEN)/RealDataNew.pb.c $(GEN)/CommCmdPB.pb.c $(GEN)/APPInfomationData.pb.c \
@@ -65,8 +69,13 @@ SESSION_BIN := test_session
 CLOCK_SRC := test_clock.c $(CORE)/hiflow_clock.c
 CLOCK_BIN := test_clock
 
-.PHONY: all test test-frame test-pb test-clock test-proto test-session clean
-all: $(FRAME_BIN) $(PB_BIN) $(CLOCK_BIN) $(PROTO_BIN) $(SESSION_BIN)
+# ---- day log suite (the day log on its own, plus recorded days) -----
+REPLAY     ?=
+DAYLOG_SRC := test_daylog.c $(CORE)/hiflow_daylog.c
+DAYLOG_BIN := test_daylog
+
+.PHONY: all test test-frame test-pb test-clock test-proto test-session test-daylog clean
+all: $(FRAME_BIN) $(PB_BIN) $(CLOCK_BIN) $(PROTO_BIN) $(SESSION_BIN) $(DAYLOG_BIN)
 
 $(FRAME_BIN): $(FRAME_SRC) vectors.h
 	$(CC) $(CFLAGS) $(FRAME_CFLAGS) $(FRAME_INCS) -o $@ $(FRAME_SRC) $(FRAME_LIBS)
@@ -76,6 +85,9 @@ $(PB_BIN): $(PB_SRC) vectors_pb.h
 
 $(CLOCK_BIN): $(CLOCK_SRC)
 	$(CC) $(CFLAGS) $(STD) -I$(CORE) -o $@ $(CLOCK_SRC)
+
+$(DAYLOG_BIN): $(DAYLOG_SRC)
+	$(CC) $(CFLAGS) $(STD) -I$(CORE) -o $@ $(DAYLOG_SRC) -lm
 
 $(PROTO_BIN): $(PROTO_SRC) vectors_proto.h
 	$(CC) $(CFLAGS) $(STD) -I$(CORE) -I$(NANOPB) -I$(GEN) -I. -o $@ $(PROTO_SRC) -lm
@@ -113,8 +125,12 @@ test-session: $(SESSION_BIN)
 	@echo "=== session state machine suite ==="
 	@./$(SESSION_BIN)
 
-test: test-frame test-pb test-clock test-proto test-session
+test-daylog: $(DAYLOG_BIN)
+	@echo "=== day log suite ==="
+	@./$(DAYLOG_BIN) $(REPLAY)
+
+test: test-frame test-pb test-clock test-proto test-session test-daylog
 
 clean:
-	rm -f $(FRAME_BIN) $(PB_BIN) $(CLOCK_BIN) $(PROTO_BIN) $(SESSION_BIN) \
+	rm -f $(FRAME_BIN) $(PB_BIN) $(CLOCK_BIN) $(PROTO_BIN) $(SESSION_BIN) $(DAYLOG_BIN) \
 	      vectors.h vectors_pb.h vectors_proto.h

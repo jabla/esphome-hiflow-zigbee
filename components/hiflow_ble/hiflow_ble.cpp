@@ -1,6 +1,7 @@
 #include "hiflow_ble.h"
 #include "hiflow_inverter_switch.h"
 #include "hiflow_power_limit.h"
+#include "hiflow_zigbee_time.h"
 
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
@@ -28,9 +29,16 @@ static const int64_t STATUS_REFRESH_MS = 300000;      // republish the status
 static const int64_t LINK_UP_FALLBACK_MS = 3000;      // if no CCCD write is confirmed
 static const int64_t SLIDER_POLL_MS = 500;            // present_value is polled this often
 static const int64_t SLIDER_QUIET_MS = 5000;          // a new value must stand this long
+static const int64_t IDLE_TIME_SAVE_INTERVAL_MS = 1800000;  // the clock, while no link is up
+static const char *const DAYLOG_PREF_NAME = "hiflow_daylog_v2";
+static const int64_t TIME_REQUEST_INTERVAL_MS = 43200000;  // the network time, twice a day
+static const int64_t TIME_RETRY_MS = 600000;               // after a failed request
+static const int64_t TIME_JOIN_SETTLE_MS = 30000;           // after a (re)join, before the first request
 static const int64_t SWITCH_QUIET_MS = 1000;          // merges a quick off-on into one command
 static const uint16_t SWITCH_PREF_MAGIC = 0x4853;     // 'HS'
 static const char *const SWITCH_PREF_NAME = "hiflow_switch_v1";
+static const uint16_t LIMIT_PREF_MAGIC = 0x484C;      // 'HL'
+static const char *const LIMIT_PREF_NAME = "hiflow_limit_v1";
 
 // ---------------------------------------------------------------------------
 // trampolines: the session core is C and calls back through a context pointer
@@ -67,6 +75,12 @@ int64_t HiflowBle::now_ms_() const { return esp_timer_get_time() / 1000; }
 
 void HiflowBle::setup() {
   this->time_pref_ = global_preferences->make_preference<TimePref>(fnv1_hash(TIME_PREF_NAME));
+  this->daylog_pref_ = global_preferences->make_preference<hiflow_dayrec_t>(fnv1_hash(DAYLOG_PREF_NAME));
+  hiflow_daylog_init(&this->daylog_);
+  this->limit_pref_ = global_preferences->make_preference<LimitPref>(fnv1_hash(LIMIT_PREF_NAME));
+  LimitPref limit{};
+  if (this->limit_pref_.load(&limit) && limit.magic == LIMIT_PREF_MAGIC && limit.tenths >= 0 && limit.tenths <= 1000)
+    this->last_limit_tenths_ = limit.tenths;
 #ifdef USE_ZIGBEE
   if (this->switch_zb_ != nullptr) {
     // The switch shows the state the inverter was last switched to; nothing
@@ -79,6 +93,49 @@ void HiflowBle::setup() {
   }
 #endif
 }
+
+#ifdef HIFLOW_DEMO_DAY
+// A made-up sunny day with two clouds, sunrise 07:20 to dusk 19:10, up to the
+// current time. It never reaches flash (with demo_day the day log is not
+// saved); after dusk the last reading is 0 W and the inverter is in standby.
+static void fill_demo_day(hiflow_daylog_t *d, int64_t local_time) {
+  const int32_t day = hiflow_local_day(local_time);
+  const int now_min = hiflow_local_minute(local_time);
+  const int rise = 7 * 60 + 20, set = 19 * 60 + 10;
+  hiflow_daylog_init(d);
+  d->rec.day = day;
+  d->rec.energy_total_wh = 1234567.0f;
+  float last = 0.0f;
+  for (int slot = 0; slot < HIFLOW_DAYLOG_SLOTS; slot++) {
+    const int minute = slot * 5;
+    if (minute > now_min)
+      break;
+    float w = 0.0f;
+    if (minute > rise && minute < set) {
+      const float x = static_cast<float>(minute - rise) / (set - rise);
+      w = 1650.0f * powf(sinf(3.14159265f * x), 1.4f);
+      if (minute >= 11 * 60 && minute < 11 * 60 + 40)
+        w *= 0.45f;  // a cloud
+      if (minute >= 14 * 60 + 30 && minute < 14 * 60 + 50)
+        w *= 0.6f;
+      w *= 1.0f + 0.03f * sinf(slot * 1.7f);  // a little ripple
+    }
+    d->rec.curve[slot] = static_cast<uint16_t>(w + 0.5f);
+    d->rec.energy_daily_wh += w * 5.0f / 60.0f;
+    if (w > d->rec.peak_w) {
+      d->rec.peak_w = w;
+      d->rec.peak_min = static_cast<int16_t>(minute);
+    }
+    last = w;
+  }
+  // Four inputs with different panels: east, south, south, west.
+  static const float SHARE[HIFLOW_DAYLOG_PORTS] = {0.21f, 0.31f, 0.29f, 0.19f};
+  for (int i = 0; i < HIFLOW_DAYLOG_PORTS; i++)
+    d->rec.port_daily_wh[i] = d->rec.energy_daily_wh * SHARE[i];
+  d->rec.last_feed = last >= HIFLOW_FEED_MIN_W ? 1 : 0;
+  d->rec.standby = d->rec.last_feed == 0;
+}
+#endif
 
 void HiflowBle::start_session_() {
   hiflow_session_config_t cfg;
@@ -122,6 +179,18 @@ void HiflowBle::start_session_() {
                       static_cast<int64_t>(App.get_build_time()), persisted_time);
   this->session_started_ = true;
   this->next_time_save_ms_ = this->now_ms_() + TIME_SAVE_INTERVAL_MS;
+
+  // The day log as it was before the reboot, whatever its day: the first
+  // reading of a new day starts that day, as it would have without the reboot.
+  hiflow_dayrec_t saved{};
+  if (this->daylog_pref_.load(&saved) && hiflow_daylog_restore(&this->daylog_, &saved, this->now_ms_())) {
+    ESP_LOGI(TAG, "day log restored (peak %.0f W%s)", saved.peak_w, this->daylog_.rec.standby ? ", standby" : "");
+  }
+#ifdef HIFLOW_DEMO_DAY
+  fill_demo_day(&this->daylog_, this->local_time());
+  ESP_LOGW(TAG, "demo_day: today's day log is made up (peak %.0f W, %.2f kWh)", this->daylog_.rec.peak_w,
+           this->daylog_.rec.energy_daily_wh / 1000.0f);
+#endif
 }
 
 void HiflowBle::loop() {
@@ -145,6 +214,19 @@ void HiflowBle::loop() {
 
   this->poll_slider_(now);
   this->poll_switch_(now);
+  this->poll_network_time_(now);
+  if (now >= this->next_daylog_check_ms_) {
+    this->next_daylog_check_ms_ = now + 1000;
+    int facts = 0;
+    if (this->inverter_switch_state() == 0)
+      facts |= HIFLOW_FACT_SWITCH_OFF;
+    if (hiflow_session_power_limit_tenths(&this->session_) == 0)
+      facts |= HIFLOW_FACT_LIMIT_ZERO;
+    if (this->last_status_ == HIFLOW_STATUS_BACKOFF_BASE + HIFLOW_FAIL_PIN ||
+        this->last_status_ == HIFLOW_STATUS_BACKOFF_BASE + HIFLOW_FAIL_STALE_KEY)
+      facts |= HIFLOW_FACT_REFUSED;
+    hiflow_daylog_update(&this->daylog_, now, facts);
+  }
   hiflow_session_tick(&this->session_, now);
 
   if (now >= this->next_status_refresh_ms_)
@@ -154,19 +236,56 @@ void HiflowBle::loop() {
 
 void HiflowBle::flush_prefs_() {
   // Flash writes block the BLE stack for a moment, so they only happen while
-  // the session is idle between two polls.
-  if (hiflow_session_state(&this->session_) != HIFLOW_STATE_READY)
+  // the session is idle between two polls, or while no link is up at all and
+  // none is being made (the inverter is not advertising, at night): then every
+  // 30 minutes, so a reboot at night does not throw the clock back to dusk.
+  // Not while the client connects or discovers: that could stall it.
+  uint8_t state = hiflow_session_state(&this->session_);
+  bool no_link = state == HIFLOW_STATE_WAIT_LINK && !this->link_ready_ &&
+                 this->node_state == espbt::ClientState::IDLE;
+  bool idle = state == HIFLOW_STATE_BACKOFF || no_link;
+  if (state != HIFLOW_STATE_READY && !idle)
     return;
 
   int64_t now = this->now_ms_();
-  if (now >= this->next_time_save_ms_) {
+  bool time_due = now >= this->next_time_save_ms_;
+  if (time_due) {
     TimePref rec{};
     rec.magic = TIME_PREF_MAGIC;
     rec.version = TIME_PREF_VERSION;
     rec.unix_time = hiflow_session_unix_time(&this->session_, now);
-    this->next_time_save_ms_ = now + TIME_SAVE_INTERVAL_MS;
+    this->next_time_save_ms_ = now + (idle ? IDLE_TIME_SAVE_INTERVAL_MS : TIME_SAVE_INTERVAL_MS);
     this->time_pref_.save(&rec);
-    global_preferences->sync();
+  }
+  // The day log whenever it changed, at most every 5 minutes (every minute
+  // without a link), so a reboot loses no more than the last minutes of the
+  // curve; the inverter reports its energy counters again anyway.
+  bool daylog_due = false;
+  bool daylog_saved = false;
+#ifndef HIFLOW_DEMO_DAY
+  daylog_due = hiflow_daylog_save_due(&this->daylog_, now, !idle);
+  if (daylog_due)
+    daylog_saved = this->daylog_pref_.save(&this->daylog_.rec);
+#endif
+  // The last power limit read, for the display after a reboot.
+  const bool limit_due = this->limit_save_due_;
+  if (limit_due) {
+    LimitPref rec{};
+    rec.magic = LIMIT_PREF_MAGIC;
+    rec.tenths = static_cast<int16_t>(this->last_limit_tenths_);
+    this->limit_pref_.save(&rec);
+    this->limit_save_due_ = false;
+  }
+  if (!time_due && !daylog_due && !limit_due)
+    return;
+  bool ok = global_preferences->sync();
+  if (daylog_due) {
+    // Saved only when the record went into the preference and the sync wrote it.
+    ok = ok && daylog_saved;
+    hiflow_daylog_mark_saved(&this->daylog_, now, ok);
+    if (!ok) {
+      ESP_LOGW(TAG, "day log not saved, trying again later");
+    }
   }
 }
 
@@ -189,6 +308,9 @@ void HiflowBle::dump_config() {
   if (this->switch_zb_ != nullptr) {
     ESP_LOGCONFIG(TAG, "  Inverter switch: Zigbee endpoint %u, last state %s", this->switch_endpoint_,
                   this->switch_state_ ? "on" : "off");
+  }
+  if (this->time_zb_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "  Network time: Zigbee endpoint %u", this->time_endpoint_);
   }
 #endif
 }
@@ -376,6 +498,21 @@ void HiflowBle::session_on_data(const hiflow_data_t *data) {
   static const uint8_t PORT_ENERGY_BASE[HIFLOW_MAX_PORTS] = {HIFLOW_PORT1_ENERGY_TOTAL, HIFLOW_PORT2_ENERGY_TOTAL,
                                                              HIFLOW_PORT3_ENERGY_TOTAL, HIFLOW_PORT4_ENERGY_TOTAL};
 
+  this->last_data_ms_ = this->now_ms_();
+  if (data->have_ac) {
+    hiflow_reading_t reading{};
+    reading.now_ms = this->last_data_ms_;
+    reading.local_time = this->local_time();
+    reading.clock_ok = this->clock_synced();
+    reading.ac_w = data->ac_power_w;
+    reading.energy_total_wh = data->energy_total_wh;
+    reading.energy_daily_wh = data->energy_daily_wh;
+    for (int i = 0; i < HIFLOW_DAYLOG_PORTS && i < HIFLOW_MAX_PORTS; i++) {
+      reading.port_total_wh[i] = data->ports[i].present ? data->ports[i].energy_total_wh : 0.0f;
+      reading.port_daily_wh[i] = data->ports[i].present ? data->ports[i].energy_daily_wh : -1.0f;
+    }
+    hiflow_daylog_sample(&this->daylog_, &reading);
+  }
   if (data->have_ac) {
     this->publish_(HIFLOW_AC_POWER, data->ac_power_w);
     this->publish_(HIFLOW_AC_VOLTAGE, data->ac_voltage_v);
@@ -406,13 +543,25 @@ void HiflowBle::session_on_data(const hiflow_data_t *data) {
 void HiflowBle::session_on_status(uint8_t status) { this->publish_status_(status, false); }
 
 // The session reports the limit the inverter holds: after every read, and
-// unchanged when a request needed no write or was dropped. Only this value
-// ever reaches the slider.
+// unchanged when a request needed no write or was dropped (-1 when it was not
+// read since the boot). Only these values ever reach the slider.
 void HiflowBle::session_on_power_limit(int32_t tenths) {
+  // Kept for the display: the inverter keeps its limit over the night, so the
+  // last value read stands until the next read. The slider never gets it.
+  if (tenths >= 0 && tenths <= 1000 && tenths != this->last_limit_tenths_) {
+    this->last_limit_tenths_ = tenths;
+    this->limit_save_due_ = true;
+  }
 #ifdef USE_ZIGBEE
   if (this->slider_zb_ == nullptr)
     return;
-  this->slider_set_ = static_cast<float>(tenths) / 10.0f;
+  // -1: a request was dropped before the limit was read since the boot. The
+  // slider goes back to the last limit read, which the inverter keeps over the
+  // night, or to empty when none was ever read. A value the bridge sets itself
+  // is never taken as a request.
+  if (tenths < 0)
+    tenths = this->last_limit_tenths_;
+  this->slider_set_ = tenths < 0 ? NAN : static_cast<float>(tenths) / 10.0f;
   this->slider_publish_ = true;
 #endif
 }
@@ -463,6 +612,42 @@ void HiflowBle::poll_slider_(int64_t now) {
   // (or the unchanged value, if nothing is written) replaces it.
   this->slider_set_ = value;
 #endif
+}
+
+// ---------------------------------------------------------------------------
+// display accessors
+// ---------------------------------------------------------------------------
+
+int64_t HiflowBle::ms_since_data() const {
+  return this->last_data_ms_ < 0 ? -1 : this->now_ms_() - this->last_data_ms_;
+}
+
+int HiflowBle::retry_in_s() const {
+  return this->session_started_ ? hiflow_session_retry_in_s(&this->session_, this->now_ms_()) : -1;
+}
+
+int HiflowBle::inverter_switch_state() const {
+#ifdef USE_ZIGBEE
+  if (this->switch_zb_ != nullptr)
+    return this->switch_state_ ? 1 : 0;
+#endif
+  return -1;
+}
+
+float HiflowBle::power_limit_percent() const {
+  int32_t tenths = hiflow_session_power_limit_tenths(&this->session_);
+  return tenths < 0 ? NAN : static_cast<float>(tenths) / 10.0f;
+}
+
+float HiflowBle::last_power_limit_percent() const {
+  const float now = this->power_limit_percent();
+  if (!std::isnan(now))
+    return now;
+  return this->last_limit_tenths_ < 0 ? NAN : static_cast<float>(this->last_limit_tenths_) / 10.0f;
+}
+
+int64_t HiflowBle::local_time() const {
+  return this->session_started_ ? hiflow_session_local_time(&this->session_, this->now_ms_()) : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -530,6 +715,49 @@ void HiflowBle::poll_switch_(int64_t now) {
     this->switch_pending_ = true;
   } else {
     this->switch_publish_ = true;
+  }
+#endif
+}
+
+// ---------------------------------------------------------------------------
+// network time
+// ---------------------------------------------------------------------------
+
+// Asks the network's time server once joined, then twice a day (every 10
+// minutes while it fails), and hands a received time to the session clock.
+void HiflowBle::poll_network_time_(int64_t now) {
+#ifdef USE_ZIGBEE
+  if (this->time_zb_ == nullptr)
+    return;
+  int status = -1;
+  int64_t network_time = take_network_time(&status);
+  if (network_time > 0) {
+    int64_t before = hiflow_session_unix_time(&this->session_, now);
+    hiflow_session_observe_time(&this->session_, now, network_time);
+    ESP_LOGI(TAG, "network time received, our clock was %lld s behind", (long long) (network_time - before));
+  }
+  if (status != this->last_time_status_) {
+    this->last_time_status_ = status;
+    if (status != NETWORK_TIME_OK && status != NETWORK_TIME_NONE) {
+      ESP_LOGW(TAG, "no network time (%s), asking again in 10 minutes", network_time_status_str(status));
+      this->next_time_request_ms_ = now + TIME_RETRY_MS;
+    }
+  }
+  // Right after a boot or join the network is not ready yet (the device
+  // announce is still pending, a new device is still being interviewed), so
+  // a request then only times out.
+  if (!this->time_zb_->is_joined()) {
+    this->time_joined_ms_ = 0;
+    return;
+  }
+  if (this->time_joined_ms_ == 0)
+    this->time_joined_ms_ = now;
+  if (now - this->time_joined_ms_ < TIME_JOIN_SETTLE_MS || now < this->next_time_request_ms_)
+    return;
+  if (request_network_time(this->time_endpoint_)) {
+    ESP_LOGD(TAG, "asking the network for the time");
+    this->next_time_request_ms_ = now + TIME_REQUEST_INTERVAL_MS;
+    this->last_time_status_ = -1;
   }
 #endif
 }

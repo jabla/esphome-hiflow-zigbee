@@ -146,15 +146,43 @@ ESPHome's standard filters, as `esp32c6.yaml` does:
 The status is the exception: the component publishes it on change and every
 5 minutes, and reports the short state 7 (a data request in flight) as 6.
 
-`power_limit: true` (the default) adds the power limit slider: a Zigbee
-Analog Output on endpoint 32 (0-100 %, resolution 10). It needs the `zigbee`
-component (`zigbee_id:` picks one if there are several), so the BLE-only
-build leaves it out. See "Power limit" in the
-top-level README for how writes are limited.
+`power_limit`, `inverter_control` and `network_time` add Zigbee endpoints.
+All three default to `true` wherever the `zigbee` component is loaded
+(`zigbee_id:` picks one if there are several), so the BLE-only build leaves
+them out. Set one to `false` to leave its endpoint out, e.g. when your own
+config already uses the number.
 
-`inverter_control: true` (default `false`) adds the on/off switch: a Zigbee
-On/Off cluster on endpoint 34. The last confirmed state is kept in flash, since
-the inverter reports none. Like the slider, it needs the `zigbee` component.
+`power_limit` is the power limit slider: a Zigbee Analog Output on endpoint 32
+(0-100 %, resolution 10). ZHA shows it as a number entity, Zigbee2MQTT as
+`hiflow_power_limit_32`.
+
+* The bridge writes only when the slider moves: never on a boot or a
+  reconnect, never the value that is already set, and at most once a minute.
+  A slider drag becomes one write, 5 s after the last move.
+* The slider shows what the inverter reports. The bridge reads the limit after
+  every login and every hour (so it follows changes made in the S-Miles app)
+  and reads it back after each write. A value off the 10 % grid, e.g. 87 from
+  an automation, ends up as 90.
+* A change that cannot reach the inverter within two minutes is dropped and
+  the slider returns to the inverter's value, with or without a link (at
+  night too). Before the first read since the boot that is the last value
+  read, which the inverter keeps over the night, or empty if there is none
+  (Zigbee2MQTT then keeps showing the value it had).
+
+`inverter_control` is the on/off switch: a Zigbee On/Off cluster on
+endpoint 34.
+
+* The inverter reports no on/off state. The switch shows the state the
+  inverter last acknowledged, and the bridge keeps it in flash across reboots.
+* A command goes out only when the switch is flipped, never on a boot or a
+  reconnect, between two data polls. Without an acknowledgement, or when it
+  cannot reach the inverter within two minutes, the switch goes back.
+* Off stops the feed-in within seconds and counts in the inverter's daily
+  warning counter.
+
+`network_time` reads the time from the coordinator (ZHA and Zigbee2MQTT answer
+from the host's clock) through a Time client cluster on endpoint 35, so the
+clock is right even after a power cut at night.
 
 There is no `enc_rand:` option: the inverter rotates its session key, so the
 session fetches it with a V0 pairing after every boot and after every failed
@@ -166,7 +194,8 @@ handshake, and keeps it in RAM only.
   (`hiflow_clock`: the build time or the last time saved in flash, plus the
   uptime) and adopts the inverter's own time from the V0 pairing reply before
   every login; the inverter refuses a login whose timestamp lags its clock too
-  far.
+  far. With `network_time`, the coordinator's time replaces it once after the
+  join and then twice a day (every 10 minutes while the request fails).
 * `energy_total` and `energy_daily` are sums over the PV ports.
 * Single-phase installs report through `SGSMO`, three-phase through `TGSMO`;
   the component handles both and picks port 0 for the AC values.

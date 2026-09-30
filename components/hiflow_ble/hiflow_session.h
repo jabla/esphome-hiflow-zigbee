@@ -149,7 +149,8 @@ typedef struct {
     void (*on_status)(void *ctx, uint8_t status);
     /* The inverter's power limit in tenths of a percent (optional). Called
        after every config read, and with the unchanged value when a request
-       needed no write or was dropped, so a slider can snap back to it. */
+       needed no write or was dropped, so a slider can snap back to it; -1
+       when a request was dropped before the limit was ever read. */
     void (*on_power_limit)(void *ctx, int32_t tenths);
     /* The outcome of an on/off request (optional): `on` is the requested
        state, `confirmed` 1 when the inverter acknowledged it, 0 when it was
@@ -204,6 +205,7 @@ typedef struct {
     int64_t  power_request_ms;
     int      power_sent;           /* the on/off command in flight */
 
+    int      clock_synced;         /* a trusted time arrived since boot */
     uint32_t failures;             /* failed handshakes since boot */
     uint32_t sessions;             /* successful handshakes since boot */
 
@@ -252,6 +254,23 @@ uint8_t  hiflow_session_state(const hiflow_session_t *s);
 uint32_t hiflow_session_failures(const hiflow_session_t *s);
 uint32_t hiflow_session_sessions(const hiflow_session_t *s);
 int64_t  hiflow_session_unix_time(const hiflow_session_t *s, int64_t now_ms);
+/* Local time: the unix time plus the configured offset (and summer time). */
+int64_t  hiflow_session_local_time(const hiflow_session_t *s, int64_t now_ms);
+/* Seconds until the next connection attempt while waiting after a failure,
+   -1 in any other state. */
+int32_t  hiflow_session_retry_in_s(const hiflow_session_t *s, int64_t now_ms);
+/* A trusted time from elsewhere, e.g. the Zigbee network's time server. It
+   marks the clock as synced and moves it forward if it lags (never back:
+   the inverter's clock, set by our time-sync, must not run ahead of ours).
+   Returns 1 when the clock moved. */
+int      hiflow_session_observe_time(hiflow_session_t *s, int64_t now_ms, int64_t unix_time);
+/* 1 once a trusted time arrived since boot (the inverter's device time or
+   hiflow_session_observe_time). Before that the clock runs on the value saved
+   in flash, which can lag by hours after a power cut. */
+int      hiflow_session_clock_synced(const hiflow_session_t *s);
+/* The power limit read from the device in tenths of a percent, -1 while it
+   is unknown (or the power limit is disabled). */
+int32_t  hiflow_session_power_limit_tenths(const hiflow_session_t *s);
 const char *hiflow_session_state_name(uint8_t state);
 
 #ifdef __cplusplus

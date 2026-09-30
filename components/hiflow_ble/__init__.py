@@ -37,6 +37,8 @@ CONF_OFFSET = "offset"
 CONF_EU_DST = "eu_dst"
 CONF_POWER_LIMIT = "power_limit"
 CONF_INVERTER_CONTROL = "inverter_control"
+CONF_NETWORK_TIME = "network_time"
+CONF_DEMO_DAY = "demo_day"
 CONF_ZIGBEE_ID = "zigbee_id"
 
 # The power limit slider's Zigbee endpoint. Fixed, and well above the sensors
@@ -44,6 +46,8 @@ CONF_ZIGBEE_ID = "zigbee_id"
 POWER_LIMIT_ENDPOINT = 32
 # The inverter's on/off switch. 33 is the board's uptime sensor in esp32c6.yaml.
 INVERTER_SWITCH_ENDPOINT = 34
+# The Time cluster that reads the network time from the coordinator.
+TIME_ENDPOINT = 35
 
 # GATT layout of the HiFlow Pro (see test/ref/hiflow_ble/const.py).
 SERVICE_UUID = "0000e0ff-3c17-d293-8e48-14fe2e4da212"
@@ -75,17 +79,27 @@ CONFIG_SCHEMA = cv.Schema(
         # default wherever the zigbee component is loaded (see below).
         cv.Optional(CONF_POWER_LIMIT): cv.boolean,
         # A switch that turns the inverter's output on and off, as a Zigbee
-        # On/Off cluster on endpoint 34. Off unless asked for.
-        cv.Optional(CONF_INVERTER_CONTROL, default=False): cv.boolean,
+        # On/Off cluster on endpoint 34. On by default with Zigbee.
+        cv.Optional(CONF_INVERTER_CONTROL): cv.boolean,
+        # Read the time from the coordinator (ZHA and Zigbee2MQTT answer from
+        # the host's clock) through a Time client cluster on endpoint 35, so
+        # the clock is right even after a power cut at night. On by default
+        # with Zigbee.
+        cv.Optional(CONF_NETWORK_TIME): cv.boolean,
+        # For testing the display at night: fills today's day log with a made-up
+        # sunny day at boot, never saved to flash. Not for production.
+        cv.Optional(CONF_DEMO_DAY, default=False): cv.boolean,
         cv.OnlyWith(CONF_ZIGBEE_ID, "zigbee"): cv.use_id(ZigbeeComponent),
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
 
 def _reserve_control_endpoints(config):
-    # The power limit defaults to on, but only with Zigbee: the BLE-only build
-    # has no endpoint to put it on. Set explicitly, it still needs Zigbee.
+    # The controls default to on, but only with Zigbee: the BLE-only build
+    # has no endpoint to put them on. Set explicitly, they still need Zigbee.
     config.setdefault(CONF_POWER_LIMIT, CONF_ZIGBEE_ID in config)
+    config.setdefault(CONF_INVERTER_CONTROL, CONF_ZIGBEE_ID in config)
+    config.setdefault(CONF_NETWORK_TIME, CONF_ZIGBEE_ID in config)
     # Registered with ESPHome's Zigbee component like a sensor endpoint, so the
     # number is taken and the endpoint (basic and identify cluster) is created
     # by its codegen. The control's own cluster is added in to_code.
@@ -95,6 +109,7 @@ def _reserve_control_endpoints(config):
     for option, endpoint in (
         (CONF_POWER_LIMIT, POWER_LIMIT_ENDPOINT),
         (CONF_INVERTER_CONTROL, INVERTER_SWITCH_ENDPOINT),
+        (CONF_NETWORK_TIME, TIME_ENDPOINT),
     ):
         if not config[option]:
             continue
@@ -179,6 +194,14 @@ async def to_code(config):
         cg.add(var.set_inverter_switch(zb, INVERTER_SWITCH_ENDPOINT))
         CORE.add_job(_add_inverter_switch_cluster, zb)
 
+    if config[CONF_DEMO_DAY]:
+        cg.add_define("HIFLOW_DEMO_DAY")
+
+    if config[CONF_NETWORK_TIME]:
+        zb = await cg.get_variable(config[CONF_ZIGBEE_ID])
+        cg.add(var.set_network_time(zb, TIME_ENDPOINT))
+        CORE.add_job(_add_time_cluster, zb)
+
 
 # The clusters go onto the endpoints that the Zigbee codegen creates, so they have
 # to come after that code in setup(), and before App.setup() starts the Zigbee
@@ -191,3 +214,8 @@ async def _add_power_limit_cluster(zb):
 @coroutine_with_priority(CoroPriority.LATE)
 async def _add_inverter_switch_cluster(zb):
     cg.add(hiflow_ble_ns.add_inverter_switch_cluster(zb, INVERTER_SWITCH_ENDPOINT))
+
+
+@coroutine_with_priority(CoroPriority.LATE)
+async def _add_time_cluster(zb):
+    cg.add(hiflow_ble_ns.add_time_cluster(zb, TIME_ENDPOINT))

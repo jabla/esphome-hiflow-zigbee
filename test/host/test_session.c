@@ -16,6 +16,8 @@
  *     same value, at most once a minute, and a failure keeps the connection
  *   - an on/off command goes out once per request, with the inverter's serial
  *     number and the current time, and its outcome is always reported
+ *   - the readings reach the day log with the clock and the counters (the
+ *     day log itself has its own suite, test_daylog.c)
  *
  * Build/run:  make -C test/host test-session
  */
@@ -23,8 +25,11 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "RealDataNew.pb.h"
 #include "fake_inverter.h"
+#include "hiflow_daylog.h"
 #include "hiflow_session.h"
+#include "pb_encode.h"
 #include "vectors_proto.h"
 
 static int g_pass;
@@ -99,6 +104,9 @@ typedef struct {
     int     power_reports;
     int     last_power_on;
     int     last_power_confirmed;
+    int     dark;          /* the inverter's radio is off: no connection comes up */
+    int     use_daylog;
+    hiflow_daylog_t daylog;
 } world_t;
 
 static int world_send(void *ctx, const uint8_t *frame, size_t len)
@@ -153,6 +161,22 @@ static void world_on_data(void *ctx, const hiflow_data_t *data)
 
     w->data_count++;
     w->last_data = *data;
+    if (w->use_daylog && data->have_ac) {
+        hiflow_reading_t r;
+        int i;
+        memset(&r, 0, sizeof(r));
+        r.now_ms = w->now;
+        r.local_time = hiflow_session_local_time(&w->s, w->now);
+        r.clock_ok = hiflow_session_clock_synced(&w->s);
+        r.ac_w = data->ac_power_w;
+        r.energy_total_wh = data->energy_total_wh;
+        r.energy_daily_wh = data->energy_daily_wh;
+        for (i = 0; i < HIFLOW_DAYLOG_PORTS && i < HIFLOW_MAX_PORTS; i++) {
+            r.port_total_wh[i] = data->ports[i].present ? data->ports[i].energy_total_wh : 0.0f;
+            r.port_daily_wh[i] = data->ports[i].present ? data->ports[i].energy_daily_wh : -1.0f;
+        }
+        hiflow_daylog_sample(&w->daylog, &r);
+    }
 }
 
 static void world_on_enc_rand(void *ctx, const uint8_t key[HIFLOW_ENC_RAND_LEN])
@@ -220,7 +244,7 @@ static void world_run(world_t *w, int64_t duration_ms)
     while (w->now < end) {
         w->now += WORLD_STEP_MS;
 
-        if (w->connect_at >= 0 && w->now >= w->connect_at) {
+        if (w->connect_at >= 0 && w->now >= w->connect_at && !w->dark) {
             w->connect_at = -1;
             w->link_up = 1;
             if (w->connects < (int) (sizeof(w->connect_at_ms) / sizeof(w->connect_at_ms[0])))
@@ -987,17 +1011,26 @@ static void test_limit_failures(void)
 static void test_limit_offline(void)
 {
     world_t w;
+    int reports;
 
     printf("[27] power limit: a request while offline is dropped after two minutes\n");
     world_init_ex(&w, 1, TEST_PIN, 1);
     world_run(&w, 5000);
 
-    /* Dusk: the link goes and the inverter does not answer any more. */
+    /* Dusk: the link goes and the inverter does not answer any more. The
+       request is dropped after two minutes without any link, and the slider
+       goes back to the limit the device holds. */
     w.fi.kill_link_on_login = 1;
     world_drop_link(&w, HIFLOW_LINK_PEER_CLOSED);
     world_run(&w, 1000);
     hiflow_session_request_power_limit(&w.s, w.now, 60.0f);
-    world_run(&w, 600000);
+    reports = w.limit_reports;
+    world_run(&w, 119000);
+    expect_int(w.limit_reports, reports, "offline, 1:59 later: still waiting");
+    world_run(&w, 2000);
+    expect_int(w.limit_reports, reports + 1, "2 minutes: dropped, without a link");
+    expect_int(w.last_limit, 1000, "the slider goes back to 100 %");
+    world_run(&w, 600000 - 121000);
     w.fi.kill_link_on_login = 0;
     world_run(&w, 600000);
     expect(w.fi.logins_seen >= 3, "logged in again later");
@@ -1015,6 +1048,7 @@ static void test_limit_offline(void)
 static void test_limit_link_killed(void)
 {
     world_t w;
+    int reports;
 
     printf("[28] power limit: the inverter drops the link on the config read\n");
     world_init_ex(&w, 1, TEST_PIN, 1);
@@ -1025,9 +1059,12 @@ static void test_limit_link_killed(void)
     expect_int(w.fi.logins_seen, 2, "two logins in ten minutes");
     expect(w.data_count >= 18, "data keeps flowing");
     expect_int((long) hiflow_session_failures(&w.s), 0, "not a handshake failure");
+    reports = w.limit_reports;
     hiflow_session_request_power_limit(&w.s, w.now, 40.0f);
     world_run(&w, 600000);
     expect_int(w.fi.limit_writes, 0, "no write while the limit is unknown");
+    expect_int(w.limit_reports, reports + 1, "the request was dropped");
+    expect_int(w.last_limit, -1, "before any read: the slider goes back to unknown");
 
     w.fi.kill_link_on_config = 0;
     world_run(&w, 3000000);
@@ -1135,6 +1172,115 @@ static void test_power_failures(void)
     expect_int(w.fi.power_commands, 0, "offline: the stale request never goes out");
 }
 
+/* ---------- accessors for the display ---------- */
+
+static void test_display_accessors(void)
+{
+    world_t w;
+
+    printf("[31] accessors: retry countdown, power limit, local time\n");
+    world_init_ex(&w, 1, TEST_PIN, 1);
+    expect_int(hiflow_session_power_limit_tenths(&w.s), -1, "limit unknown before the read");
+    world_run(&w, 5000);
+    expect_int(hiflow_session_power_limit_tenths(&w.s), 1000, "limit after the read");
+    expect_int(hiflow_session_retry_in_s(&w.s, w.now), -1, "no countdown on a working link");
+    /* the clock starts at 1774000000 = 2026-03-20, still winter time */
+    expect((hiflow_session_local_time(&w.s, w.now) - hiflow_session_unix_time(&w.s, w.now)) == 3600,
+           "local time = unix time + offset");
+
+    world_init(&w, 1, TEST_PIN);
+    w.fi.kill_link_on_login = 1;
+    world_run(&w, 3000);
+    expect(hiflow_session_retry_in_s(&w.s, w.now) > 0, "countdown while waiting after a failure");
+    expect(hiflow_session_retry_in_s(&w.s, w.now) <= 300, "countdown within the backoff");
+    expect_int(hiflow_session_power_limit_tenths(&w.s), -1, "limit disabled: -1");
+}
+
+/* ---------- day log (for the display) ---------- */
+
+/* A one-page reply with the given AC power (x0.1 W) and lifetime energy. */
+static void set_power_page(world_t *w, int32_t ac_tenths_w, int32_t energy_wh, int32_t daily_wh)
+{
+    static RealDataNewReqDTO m;
+    static uint8_t buf[256];
+    static char hex[513];
+    pb_ostream_t os = pb_ostream_from_buffer(buf, sizeof(buf));
+    size_t i;
+
+    memset(&m, 0, sizeof(m));
+    snprintf(m.device_serial_number, sizeof(m.device_serial_number), "TESTDTU00001");
+    m.ap = 1;
+    m.sgs_data_count = 1;
+    m.sgs_data[0].serial_number = VEC_INVERTER_SN;
+    m.sgs_data[0].active_power = ac_tenths_w;
+    m.sgs_data[0].voltage = 2305;
+    m.pv_data_count = 1;
+    m.pv_data[0].port_number = 1;
+    m.pv_data[0].power = ac_tenths_w;
+    m.pv_data[0].energy_total = energy_wh;
+    m.pv_data[0].energy_daily = daily_wh;
+    pb_encode(&os, RealDataNewReqDTO_fields, &m);
+    for (i = 0; i < os.bytes_written; i++)
+        snprintf(hex + 2 * i, 3, "%02x", buf[i]);
+    fake_set_pages(&w->fi, hex, NULL);
+}
+
+static int64_t local_now(world_t *w) { return hiflow_session_local_time(&w->s, w->now); }
+
+static void test_daylog(void)
+{
+    static world_t w;
+    int i;
+
+    printf("[32] day log: the session's readings reach it, with the clock and the counters\n");
+
+    world_init(&w, 1, TEST_PIN);
+    w.use_daylog = 1;
+    hiflow_daylog_init(&w.daylog);
+    set_power_page(&w, 8123, 400000, 1234);
+    world_run(&w, 90000);
+    expect(w.data_count >= 3, "a day with readings");
+    expect_float(w.daylog.rec.peak_w, 812.3f, "the peak");
+    expect_int(w.daylog.rec.curve[hiflow_local_minute(local_now(&w)) / 5], 812,
+               "the curve slot of now: the V0 reply synced the clock");
+    expect_float(w.daylog.rec.energy_total_wh, 400000.0f, "the lifetime energy");
+    expect_float(w.daylog.rec.energy_daily_wh, 1234.0f, "the day's energy");
+    expect_float(w.daylog.rec.port_daily_wh[0], 1234.0f, "the day's energy of input 1");
+    expect_int(w.daylog.rec.last_feed, 1, "the last reading had power");
+
+    /* Dusk: 0 W with the link up, then the radio goes dark. Standby five
+       minutes after the first reading at 0 W, whatever the session does. */
+    set_power_page(&w, 0, 400000, 1234);
+    world_run(&w, 60000);
+    expect_float(w.last_data.ac_power_w, 0.0f, "dusk: 0 W");
+    w.dark = 1;
+    w.fi.kill_link_on_data = 1;
+    for (i = 0; i < 400; i++) {
+        world_run(&w, 1000);
+        hiflow_daylog_update(&w.daylog, w.now, 0);
+    }
+    expect_int(w.daylog.rec.standby, 1, "standby after dusk");
+    expect_int(w.daylog.days_begun, 0, "the same day");
+
+    /* Dawn: the day counter starts again; the second reading begins the day. */
+    w.dark = 0;
+    w.fi.kill_link_on_data = 0;
+    set_power_page(&w, 0, 400000, 0);
+    world_run(&w, 120000);
+    expect_int(w.daylog.days_begun, 1, "dawn: a new day");
+    expect_float(w.daylog.rec.peak_w, 0.0f, "no peak yet");
+    expect_float(w.daylog.rec.energy_total_wh, 400000.0f, "the lifetime energy stays");
+
+    /* The clock counts as synced once the device time or a network time came. */
+    expect_int(hiflow_session_clock_synced(&w.s), 1, "synced by the device time of the V0 reply");
+    world_init(&w, 1, TEST_PIN);
+    expect_int(hiflow_session_clock_synced(&w.s), 0, "not synced at boot");
+    expect_int(hiflow_session_observe_time(&w.s, w.now, 1000), 0, "an implausible network time is refused");
+    expect_int(hiflow_session_clock_synced(&w.s), 0, "still not synced");
+    expect_int(hiflow_session_observe_time(&w.s, w.now, 1774000000 + 7200), 1, "a network time ahead moves the clock");
+    expect_int(hiflow_session_clock_synced(&w.s), 1, "synced by the network time");
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "-v") == 0)
@@ -1170,6 +1316,8 @@ int main(int argc, char **argv)
     test_limit_link_killed();
     test_power_switch();
     test_power_failures();
+    test_display_accessors();
+    test_daylog();
 
     printf("\n=== summary ===\n");
     printf("%d checks passed, %d failed\n", g_pass, g_fail);

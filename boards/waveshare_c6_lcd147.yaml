@@ -2,18 +2,44 @@
 # IPS panel with an ST7789 controller, wired to SCLK GPIO7 / MOSI GPIO6 /
 # LCD_CS GPIO14 / LCD_DC GPIO15 / LCD_RST GPIO21 / LCD_BL GPIO22. ESPHome ships
 # that pin map as the `WAVESHARE-ESP32-C6-LCD-1.47` model of the mipi_spi
-# driver, so no pins are configured here.
+# driver, so no pins are configured here. It also has an RGB LED on GPIO8 and
+# two buttons: BOOT (GPIO9, the one the firmware can read) and RESET (resets
+# the chip).
 #
 # This board has no RF switch and no U.FL socket (patch antenna only), so the
 # `external_antenna` substitution is unused with it.
 #
 # RAM: the C6 has no PSRAM, so the driver keeps its buffer below 20 KB
 # (`buffer_size` stays at its default) and draws the frame in several passes
-# instead of holding a full 172*320*2 = 110 KB frame buffer.
+# instead of holding a full 172*320*2 = 110 KB frame buffer. The display lambda
+# therefore runs several times per frame and only draws; all state lives in
+# the globals and the 1 s interval below.
 #
-# The panel shows the values on site, without Home Assistant: the session
-# status (the only diagnosis the bridge has), AC power, grid voltage and
-# frequency, temperature, and the energy of the day and in total.
+# What the panel does:
+#   - By day it shows the overview page at lcd_day_brightness.
+#   - A press on BOOT sets full brightness and steps through the pages
+#     (lcd_page_seconds each, once); another press goes to the next page at
+#     once and starts the time again. Then back to the overview. A page with
+#     nothing to show (the grid at night) is skipped, and so is a value that
+#     has no reading.
+#   - At night the panel goes off: once the inverter has fed in nothing for
+#     five minutes (it is in standby, see hiflow_daylog.h; no clock and no
+#     place involved), until it feeds in again for a minute. With lcd_night
+#     "glow" the RGB LED glows dim red, so the button can be found in the dark;
+#     "off" leaves it dark; "screensaver" keeps the panel on at low brightness
+#     with "HiFlow" bouncing off its edges. A press shows the pages, with the
+#     values of the day.
+#
+# Holding BOOT while the board resets starts the ROM download mode (GPIO9 is a
+# strapping pin); a press during normal operation is harmless.
+
+substitutions:
+  # Brightness of the overview by day, in percent.
+  lcd_day_brightness: "25"
+  # Seconds per page after a button press.
+  lcd_page_seconds: "15"
+  # At night: glow (red LED, panel off) | off | screensaver (panel dim, "HiFlow" bounces).
+  lcd_night: "glow"
 
 # The panel is driven over the SPI bus of the board (SCLK GPIO7, MOSI GPIO6).
 # CS, DC, RST and the backlight come from the board definition of the driver.
@@ -22,93 +48,439 @@ spi:
   mosi_pin: GPIO6
 
 # The board definition does not drive the backlight (GPIO22), so the panel would
-# stay dark. It runs dimmed through LEDC PWM: the backlight is the board's
-# largest load, and the board sits in a closed box next to the inverter. White
-# and green on black stay readable at 25 %. 20 kHz is above what a camera or
-# the eye picks up as flicker. Tied to the display, no Home Assistant entity
-# (on the ESP32 only sensors and binary sensors become Zigbee endpoints).
+# stay dark. It runs through LEDC PWM: the backlight is the board's largest
+# load, and the board sits in a closed box next to the inverter. 20 kHz is above
+# what a camera or the eye picks up as flicker. Tied to the display, no Home
+# Assistant entity (on the ESP32 only sensors and binary sensors become Zigbee
+# endpoints, and the button below is internal).
 output:
   - platform: ledc
     id: lcd_backlight
     pin: GPIO22
     frequency: 20kHz
 
+light:
+  - platform: esp32_rmt_led_strip
+    id: board_led
+    pin:
+      number: GPIO8
+      ignore_strapping_warning: true
+    num_leds: 1
+    chipset: WS2812
+    rgb_order: RGB
+    internal: true
+    default_transition_length: 0s
+    restore_mode: ALWAYS_OFF
+
+binary_sensor:
+  - platform: gpio
+    id: boot_button
+    internal: true
+    pin:
+      number: GPIO9
+      ignore_strapping_warning: true
+      inverted: true
+      mode:
+        input: true
+        pullup: true
+    filters:
+      - delayed_on: 30ms
+    on_press:
+      - lambda: |-
+          const uint32_t now = millis();
+          if (id(lcd_awake)) {
+            int next = id(lcd_page) + 1;
+            while (next < 5 && !(id(lcd_pages) & (1 << next)))
+              next++;
+            id(lcd_page) = next < 5 ? next : 0;
+          } else {
+            id(lcd_awake) = true;
+            id(lcd_page) = 0;
+          }
+          id(lcd_page_since) = now;
+          id(lcd_dirty) = true;
+
+globals:
+  - id: lcd_awake        # after a button press, until the pages have run
+    type: bool
+    initial_value: "false"
+  - id: lcd_page
+    type: int
+    initial_value: "0"
+  - id: lcd_pages        # bit per page that has something to show
+    type: int
+    initial_value: "0x1f"
+  - id: lcd_page_since   # millis() of the last page change
+    type: uint32_t
+    initial_value: "0"
+  - id: lcd_dirty        # redraw on the next interval tick
+    type: bool
+    initial_value: "true"
+  - id: lcd_mode         # 0 day, 1 night dark, 2 night screensaver, 3 awake
+    type: int
+    initial_value: "-1"
+  - id: lcd_last_draw
+    type: uint32_t
+    initial_value: "0"
+  - id: lcd_saver_x
+    type: int
+    initial_value: "20"
+  - id: lcd_saver_y
+    type: int
+    initial_value: "140"
+  - id: lcd_saver_dx
+    type: int
+    initial_value: "13"
+  - id: lcd_saver_dy
+    type: int
+    initial_value: "17"
+
 esphome:
   on_boot:
     - priority: 600
       then:
-        - output.set_level:
-            id: lcd_backlight
-            level: 25%
+        - lambda: id(lcd_backlight).set_level(${lcd_day_brightness} / 100.0f);
+
+interval:
+  # The panel's state machine: mode, page, backlight, LED, and when to redraw.
+  - interval: 1s
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+          const uint32_t page_ms = ${lcd_page_seconds} * 1000u;
+          const std::string night_mode = "${lcd_night}";
+
+          // Which pages have something to show: the overview and the bridge
+          // always, the day's curve once it has a reading, the ports once
+          // there is a day or while there are readings, the grid while there
+          // are readings.
+          {
+            const hiflow_daylog_t &day = id(hiflow).daylog();
+            bool ports = false;
+            for (int i = 0; i < HIFLOW_DAYLOG_PORTS; i++)
+              ports = ports || day.rec.port_daily_wh[i] > 0.0f;
+            ports = ports || !std::isnan(id(port1_power).get_raw_state());
+            const bool grid = !std::isnan(id(ac_voltage).get_raw_state());
+            id(lcd_pages) = 1 | (hiflow_daylog_has_curve(&day) ? 2 : 0) | (ports ? 4 : 0) | (grid ? 8 : 0) | 16;
+          }
+
+          // Pages run once after a press, then the panel goes back.
+          if (id(lcd_awake) && now - id(lcd_page_since) >= page_ms) {
+            int next = id(lcd_page) + 1;
+            while (next < 5 && !(id(lcd_pages) & (1 << next)))
+              next++;
+            if (next >= 5) {
+              id(lcd_awake) = false;
+              id(lcd_page) = 0;
+            } else {
+              id(lcd_page) = next;
+            }
+            id(lcd_page_since) = now;
+            id(lcd_dirty) = true;
+          }
+
+          const bool standby = id(hiflow).is_standby();
+          int mode;
+          if (id(lcd_awake))
+            mode = 3;
+          else if (!standby)
+            mode = 0;
+          else if (night_mode == "screensaver")
+            mode = 2;
+          else
+            mode = 1;
+
+          if (mode != id(lcd_mode)) {
+            const float level = mode == 3 ? 1.0f : mode == 0 ? ${lcd_day_brightness} / 100.0f
+                                : mode == 2 ? 0.08f : 0.0f;
+            id(lcd_backlight).set_level(level);
+            if (mode == 1 && night_mode == "glow") {
+              auto call = id(board_led).turn_on();
+              call.set_rgb(1.0f, 0.0f, 0.0f);
+              // The light's gamma curve makes low values very dim: 30 %
+              // comes out at about 3 % of full power.
+              call.set_brightness(0.3f);
+              call.perform();
+            } else {
+              id(board_led).turn_off().perform();
+            }
+            id(lcd_mode) = mode;
+            id(lcd_dirty) = true;
+          }
+
+          // Redraw: awake every second (the age of the data counts up), by day
+          // every 5 s, the screensaver every 2 s, a dark panel only on a change.
+          const uint32_t every = mode == 3 ? 1000u : mode == 0 ? 5000u : mode == 2 ? 2000u : 0u;
+          if (mode == 2 && now - id(lcd_last_draw) >= every) {
+            // Bounce "HiFlow" off the edges, one jump per redraw.
+            int x = id(lcd_saver_x) + id(lcd_saver_dx);
+            int y = id(lcd_saver_y) + id(lcd_saver_dy);
+            if (x < 0 || x > 172 - 80) { id(lcd_saver_dx) = -id(lcd_saver_dx); x = std::max(0, std::min(x, 172 - 80)); }
+            if (y < 0 || y > 320 - 30) { id(lcd_saver_dy) = -id(lcd_saver_dy); y = std::max(0, std::min(y, 320 - 30)); }
+            id(lcd_saver_x) = x;
+            id(lcd_saver_y) = y;
+            id(lcd_dirty) = true;
+          }
+          if (id(lcd_dirty) || (every != 0 && now - id(lcd_last_draw) >= every)) {
+            id(lcd_dirty) = false;
+            id(lcd_last_draw) = now;
+            id(on_board_lcd).update();
+          }
 
 font:
-  # One font is enough for a 1.47" panel; the glyph list keeps the flash cost
-  # down. Google Fonts are fetched at build time.
+  # Google Fonts are fetched at build time; the glyph lists keep the flash cost
+  # down.
   - file: "gfonts://Roboto"
     id: lcd_font
     size: 26
-    glyphs: " 0123456789.,:%-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
-  # Row labels, small and grey next to the values.
+    glyphs: " 0123456789.,:%-+/()ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+  # Labels and small print.
   - file: "gfonts://Roboto"
     id: lcd_font_small
     size: 16
-    glyphs: " acdefgilmopqrtwy"
+    glyphs: " 0123456789.,:%-+/()ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+  # The AC power on the overview (the unit next to it in lcd_font).
+  - file: "gfonts://Roboto@700"
+    id: lcd_font_big
+    size: 56
+    glyphs: "0123456789-"
 
 display:
   - platform: mipi_spi
     id: on_board_lcd
     model: WAVESHARE-ESP32-C6-LCD-1.47
-    # The BLE session polls every 30 s (hiflow_ble: update_interval), so a
-    # faster refresh would only redraw the same numbers.
-    update_interval: 30s
+    # Redrawn by the interval above, never on a timer of its own.
+    update_interval: never
     lambda: |-
-      // Session state of the bridge; the numbers are the ones the status sensor
-      // reports, see docs/development.md. A code without a label shows as its
-      // number, so a new code is never mistaken for another one.
-      const int st = std::isnan(id(hiflow_status).state) ? -1 : (int) id(hiflow_status).state;
-      const char *state = nullptr;
-      switch (st) {
-        case -1:
-        case 0: state = "WAITING"; break;
-        case 2: state = "PAIRING"; break;
-        case 3: state = "LOGIN"; break;
-        case 4: state = "PIN"; break;
-        case 5: state = "TIME SYNC"; break;
-        case 6: state = "READY"; break;
-        case 9: state = "LOGIN REFUSED"; break;
-        case 10: state = "NO LINK"; break;
-        case 11: state = "NO ANSWER"; break;
-        case 13: state = "PIN MISSING"; break;
-        case 14: state = "KEY MISMATCH"; break;
-        case 15: state = "LINK TIMEOUT"; break;
-        default: break;
-      }
-      const Color state_color = st == 6 ? Color(0, 220, 0)
-                               : (st == 0 || st == -1) ? Color(255, 165, 0)
-                                                       : Color(255, 64, 64);
+      const Color GREY(128, 128, 128);
+      const Color GREEN(0, 220, 0);
+      const Color ORANGE(255, 165, 0);
+      const Color RED(255, 64, 64);
+      const Color CYAN(0, 180, 220);
+      const int mode = id(lcd_mode);
+      // The day's curve, peak and energy; kept by the component and in flash
+      // (a few minutes old at most), so the pages keep them over a reboot.
+      const hiflow_daylog_t &day = id(hiflow).daylog();
+      auto or_day = [](float v, float kept) { return std::isnan(v) && kept > 0.0f ? kept : v; };
+      const float today_wh = or_day(id(energy_daily).get_raw_state(), day.rec.energy_daily_wh);
+      const float total_wh = or_day(id(energy_total).get_raw_state(), day.rec.energy_total_wh);
+
       it.fill(Color::BLACK);
-      it.printf(6, 6, id(lcd_font), Color(128, 128, 128), "HiFlow Pro");
-      if (state != nullptr)
-        it.printf(6, 40, id(lcd_font), state_color, "%s", state);
-      else
-        it.printf(6, 40, id(lcd_font), state_color, "STATUS %d", st);
-      // One row per value: a small grey label on the left, the value right
-      // aligned. A sensor is NaN until its first reading (after boot, at night).
-      // The rows show the raw reading of the last poll: the filters in
-      // esp32c6.yaml only thin out the Zigbee reports.
-      int y = 80;
-      auto row = [&](const char *label, float v, int decimals, const char *unit) {
-        it.print(6, y + 8, id(lcd_font_small), Color(128, 128, 128), label);
-        if (std::isnan(v))
-          it.printf(166, y, id(lcd_font), Color::WHITE, TextAlign::TOP_RIGHT, "-- %s", unit);
+      if (mode == 1)
+        return;  // night, panel dark
+      if (mode == 2) {
+        it.print(id(lcd_saver_x), id(lcd_saver_y), id(lcd_font), Color(90, 90, 90), "HiFlow");
+        return;
+      }
+
+      // ---------- status ----------
+      // The numbers are the ones the status sensor reports (docs/development.md).
+      // A code without a label shows as its number.
+      const int st = id(hiflow).status();
+      const int retry = id(hiflow).retry_in_s();
+      const int64_t age_ms = id(hiflow).ms_since_data();
+      char status[24];
+      Color status_color = ORANGE;
+      if (st < 0) {
+        snprintf(status, sizeof(status), "STARTING");
+        status_color = GREY;
+      } else if (id(hiflow).is_standby()) {
+        // The inverter feeds in nothing (night); whatever the link does then
+        // is normal and not shown as an error.
+        snprintf(status, sizeof(status), "STANDBY");
+        status_color = GREY;
+      } else if (st == 6 && id(hiflow).inverter_off()) {
+        snprintf(status, sizeof(status), "TURNED OFF");
+      } else if (st == 6) {
+        if (age_ms >= 0)
+          snprintf(status, sizeof(status), "LIVE %ds", (int) (age_ms / 1000));
         else
-          it.printf(166, y, id(lcd_font), Color::WHITE, TextAlign::TOP_RIGHT, "%.*f %s", decimals, v,
-                    unit);
+          snprintf(status, sizeof(status), "LIVE");
+        status_color = GREEN;
+      } else if (st == 0) {
+        if (retry >= 0)
+          snprintf(status, sizeof(status), "RETRY IN %ds", retry);
+        else
+          snprintf(status, sizeof(status), "CONNECTING");
+      } else {
+        const char *name = nullptr;
+        status_color = RED;
+        switch (st) {
+          case 2: name = "PAIRING"; status_color = ORANGE; break;
+          case 3: name = "LOGIN"; status_color = ORANGE; break;
+          case 4: name = "PIN"; status_color = ORANGE; break;
+          case 5: name = "TIME SYNC"; status_color = ORANGE; break;
+          case 9: name = "REFUSED"; break;
+          case 10: name = "NO LINK"; break;
+          case 11: name = "NO ANSWER"; break;
+          case 13: name = "PIN MISSING"; break;
+          case 14: name = "STALE KEY"; break;
+          case 15: name = "TIMEOUT"; break;
+          default: break;
+        }
+        if (name != nullptr)
+          snprintf(status, sizeof(status), "%s", name);
+        else
+          snprintf(status, sizeof(status), "STATUS %d", st);
+      }
+
+      // ---------- header: title, clock, status ----------
+      static const char *const TITLES[5] = {"HiFlow Pro", "Today", "Ports", "Grid", "Bridge"};
+      const int page = mode == 3 ? id(lcd_page) : 0;
+      // Only a clock that was set since boot: after a power cut at night the
+      // one saved in flash can lag by hours.
+      const int64_t local = id(hiflow).clock_synced() ? id(hiflow).local_time() : 0;
+      // "Today" only when the clock says the kept day is today; otherwise it
+      // is the last day the inverter had.
+      it.print(6, 6, id(lcd_font_small), GREY,
+               page == 1 && !(local > 0 && day.rec.day == hiflow_local_day(local)) ? "Last day" : TITLES[page]);
+      if (local > 0) {
+        const int minute = (int) ((local % 86400) / 60);
+        it.printf(166, 6, id(lcd_font_small), GREY, TextAlign::TOP_RIGHT, "%02d:%02d", minute / 60, minute % 60);
+      }
+      it.printf(6, 28, id(lcd_font), status_color, "%s", status);
+      if (retry >= 0 && st != 0)
+        it.printf(6, 58, id(lcd_font_small), GREY, "retry in %d s", retry);
+
+      // One row: a small grey label on the left, the value right aligned. A
+      // sensor is NaN until its first reading (after boot, at night). The rows
+      // show the raw reading of the last poll: the filters in esp32c6.yaml only
+      // thin out the Zigbee reports.
+      int y = 80;
+      // A row without a reading is left out.
+      auto row_in = [&](const char *label, float v, int decimals, const char *unit, Color color) {
+        if (std::isnan(v))
+          return;
+        it.print(6, y + 8, id(lcd_font_small), GREY, label);
+        it.printf(166, y, id(lcd_font), color, TextAlign::TOP_RIGHT, "%.*f %s", decimals, v, unit);
         y += 38;
       };
-      row("power", id(ac_power).get_raw_state(), 0, "W");
-      row("grid", id(ac_voltage).get_raw_state(), 1, "V");
-      row("freq", id(ac_frequency).get_raw_state(), 2, "Hz");
-      row("temp", id(temperature).get_raw_state(), 1, "C");
-      row("today", id(energy_daily).get_raw_state() / 1000.0f, 2, "kWh");
-      row("total", id(energy_total).get_raw_state() / 1000.0f, 0, "kWh");
+      auto row = [&](const char *label, float v, int decimals, const char *unit) {
+        row_in(label, v, decimals, unit, Color::WHITE);
+      };
+      // The power limit as read since the boot, else the last one read before
+      // it in grey (the inverter keeps it over the night).
+      const float limit_now = id(hiflow).power_limit_percent();
+      const float limit = id(hiflow).last_power_limit_percent();
+      const Color limit_color = std::isnan(limit_now) ? GREY : Color::WHITE;
+
+      switch (page) {
+        case 0: {  // overview
+          const float ac = id(ac_power).get_raw_state();
+          if (!std::isnan(ac)) {
+            // The unit in the smaller font: four digits and " W" in the big
+            // one would not fit, and the first digit would be cut off.
+            it.printf(140, 132, id(lcd_font_big), Color::WHITE, TextAlign::BASELINE_RIGHT, "%.0f", ac);
+            it.print(166, 132, id(lcd_font), Color::WHITE, TextAlign::BASELINE_RIGHT, "W");
+            y = 160;
+          }
+          row("today", today_wh > 0.0f ? today_wh / 1000.0f : NAN, 2, "kWh");
+          row("total", total_wh > 0.0f ? total_wh / 1000.0f : NAN, 0, "kWh");
+          if (!std::isnan(limit) && limit < 100.0f)
+            row_in("limit", limit, 0, "%", limit_color);
+          else
+            row("peak", day.rec.peak_w > 0.0f ? day.rec.peak_w : NAN, 0, "W");
+          break;
+        }
+        case 1: {  // the curve of the day, 05:00-22:00
+          const int x0 = 6, x1 = 166, top = 90, bottom = 270;
+          const int first = 5 * 12, last = 22 * 12;  // 5-minute slots
+          const float peak = std::max(100.0f, day.rec.peak_w);
+          it.printf(166, 62, id(lcd_font_small), Color::WHITE, TextAlign::TOP_RIGHT, "peak %.0f W", day.rec.peak_w);
+          if (day.rec.peak_min >= 0)
+            it.printf(6, 62, id(lcd_font_small), GREY, "at %02d:%02d", day.rec.peak_min / 60, day.rec.peak_min % 60);
+          for (int x = x0; x <= x1; x++) {
+            const int slot = first + (x - x0) * (last - first) / (x1 - x0);
+            const float w = day.rec.curve[slot];
+            if (w <= 0)
+              continue;
+            const int h = (int) ((bottom - top) * std::min(1.0f, w / peak));
+            it.line(x, bottom, x, bottom - h, CYAN);
+          }
+          it.line(x0, bottom, x1, bottom, GREY);
+          const int hours[] = {6, 12, 18};
+          for (int hr : hours) {
+            const int x = x0 + (hr * 12 - first) * (x1 - x0) / (last - first);
+            it.line(x, bottom, x, bottom + 4, GREY);
+            it.printf(x, bottom + 6, id(lcd_font_small), GREY, TextAlign::TOP_CENTER, "%d", hr);
+          }
+          if (!std::isnan(today_wh))
+            it.printf(6, 300, id(lcd_font_small), GREY, "today %.2f kWh", today_wh / 1000.0f);
+          break;
+        }
+        case 2: {  // ports: the day's energy per input as a bar, the best one green
+          sensor::Sensor *power[4] = {id(port1_power), id(port2_power), id(port3_power), id(port4_power)};
+          sensor::Sensor *volt[4] = {id(port1_voltage), id(port2_voltage), id(port3_voltage), id(port4_voltage)};
+          float best_wh = 0.0f;
+          int best = -1;
+          for (int i = 0; i < 4; i++) {
+            if (day.rec.port_daily_wh[i] > best_wh) {
+              best_wh = day.rec.port_daily_wh[i];
+              best = i;
+            }
+          }
+          int py = 80;
+          for (int i = 0; i < 4; i++) {
+            const float wh = day.rec.port_daily_wh[i];
+            const float w = power[i]->get_raw_state();
+            const float v = volt[i]->get_raw_state();
+            if (!(wh > 0.0f) && std::isnan(w))
+              continue;  // an input without panels, or nothing yet today
+            it.printf(6, py, id(lcd_font_small), i == best ? GREEN : GREY, "PV%d", i + 1);
+            if (wh > 0.0f)
+              it.printf(166, py - 4, id(lcd_font), Color::WHITE, TextAlign::TOP_RIGHT, "%.2f kWh", wh / 1000.0f);
+            // The live reading underneath, while there is one.
+            char live[24] = "";
+            if (!std::isnan(w) && !std::isnan(v))
+              snprintf(live, sizeof(live), "%.0f W  %.1f V", w, v);
+            else if (!std::isnan(w))
+              snprintf(live, sizeof(live), "%.0f W", w);
+            if (live[0] != 0)
+              it.print(6, py + 20, id(lcd_font_small), GREY, live);
+            if (best_wh > 0.0f) {
+              const int bw = (int) (160 * std::min(1.0f, std::max(0.0f, wh) / best_wh));
+              it.rectangle(6, py + 40, 160, 8, Color(60, 60, 60));
+              if (bw > 0)
+                it.filled_rectangle(6, py + 40, bw, 8, i == best ? GREEN : CYAN);
+            }
+            py += 54;  // four inputs end above the footer at 300
+          }
+          if (best_wh > 0.0f)
+            it.printf(6, 300, id(lcd_font_small), GREY, "energy of the day");
+          break;
+        }
+        case 3:  // grid
+          row("grid", id(ac_voltage).get_raw_state(), 1, "V");
+          row("freq", id(ac_frequency).get_raw_state(), 2, "Hz");
+          row("current", id(ac_current).get_raw_state(), 2, "A");
+          row("reactive", id(reactive_power).get_raw_state(), 0, "var");
+          row("pf", id(power_factor).get_raw_state(), 1, "%");
+          row("temp", id(temperature).get_raw_state(), 1, "C");
+          break;
+        case 4: {  // bridge
+          // The uptime from the clock, not the sensor: that one reports every 5 min.
+          // 64-bit: millis() wraps after 49.7 days.
+          const uint32_t up = (uint32_t) (millis_64() / 1000u);
+          it.print(6, y + 8, id(lcd_font_small), GREY, "uptime");
+          if (up >= 86400)
+            it.printf(166, y, id(lcd_font), Color::WHITE, TextAlign::TOP_RIGHT, "%dd %dh", (int) (up / 86400), (int) (up % 86400) / 3600);
+          else
+            it.printf(166, y, id(lcd_font), Color::WHITE, TextAlign::TOP_RIGHT, "%dh %02dm", (int) (up / 3600), (int) (up % 3600) / 60);
+          y += 38;
+          row("sessions", (float) id(hiflow).sessions(), 0, "");
+          row("failures", (float) id(hiflow).failures(), 0, "");
+          row_in("limit", limit, 0, "%", limit_color);
+          // The output as the inverter has it: switched off it switches
+          // itself on again when it wakes in the morning.
+          if (id(hiflow).inverter_switch_state() >= 0) {
+            const bool off = id(hiflow).inverter_off();
+            it.print(6, y + 8, id(lcd_font_small), GREY, "output");
+            it.print(166, y, id(lcd_font), off ? ORANGE : Color::WHITE, TextAlign::TOP_RIGHT, off ? "off" : "on");
+            y += 38;
+          }
+          row("warnings", id(warnings).get_raw_state(), 0, "");
+          break;
+        }
+        default:
+          break;
+      }

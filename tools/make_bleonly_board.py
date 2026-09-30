@@ -13,7 +13,7 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parent.parent / "esp32c6.yaml"
 DST = SRC.with_name("esp32c6-bleonly.yaml")
 
-ZIGBEE_BLOCKS = ("zigbee:",)
+ZIGBEE_BLOCKS = ("zigbee:", "zigbee_ota:")
 # Sensor options that are only valid while the zigbee component is loaded.
 ZIGBEE_ONLY_OPTIONS = ("report:", "endpoint:")
 
@@ -29,8 +29,11 @@ def strip_zigbee(text: str) -> str:
     while i < len(lines):
         line = lines[i]
         stripped = line.strip()
-        # Drop the top-level zigbee block.
+        # Drop the top-level zigbee blocks, together with the comment lines
+        # right above them.
         if stripped in ZIGBEE_BLOCKS:
+            while out and out[-1].startswith("#"):
+                out.pop()
             i += 1
             while i < len(lines) and (lines[i].startswith((" ", "\t")) or not lines[i].strip()):
                 i += 1

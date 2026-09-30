@@ -1,7 +1,7 @@
 # HiFlow Pro to Zigbee bridge (ESP32-C6)
 
 An ESPHome firmware that reads a **Hoymiles HiFlow Pro** inverter locally over **Bluetooth LE**
-and reports its measurements as a **Zigbee end device** to Home Assistant (ZHA or Zigbee2MQTT).
+and reports its measurements as a **Zigbee end device** to Home Assistant.
 No WiFi, no cloud: only BLE (to the inverter) and 802.15.4 (to your Zigbee coordinator).
 
 ```
@@ -17,15 +17,14 @@ not on every 30 s poll.
 It also adds a slider for the inverter's power limit and a switch that turns the inverter on
 and off.
 
-The protocol implementation is a C port of [TheTiEr/hiflow-ble](https://github.com/TheTiEr/hiflow-ble),
-the library behind the [ha-hiflow-ble](https://github.com/TheTiEr/ha-hiflow-ble) integration. It
-is checked against reference vectors generated with that library.
+The protocol is a C port of [TheTiEr/hiflow-ble](https://github.com/TheTiEr/hiflow-ble), the
+library behind the [ha-hiflow-ble](https://github.com/TheTiEr/ha-hiflow-ble) integration.
 
 ## Status
 
-Works with **ZHA** and **Zigbee2MQTT**. Tested on one **HMS-2000-4WB** with a Seeed **XIAO
-ESP32-C6** and a **Waveshare ESP32-C6-LCD-1.47**. Other HiFlow Pro / HMS-WB models that work
-with ha-hiflow-ble should work too. Reports are welcome.
+Tested on one **HMS-2000-4WB** with a Seeed **XIAO ESP32-C6** and a **Waveshare
+ESP32-C6-LCD-1.47**. Other HiFlow Pro / HMS-WB models that work with ha-hiflow-ble should work
+too. Reports are welcome.
 
 ## What you need
 
@@ -37,9 +36,8 @@ with ha-hiflow-ble should work too. Reports are welcome.
   `docs/development.md`): the XIAO variant drives its RF switch and can use an external U.FL
   antenna, the Waveshare variant shows the values on its on-board 172x320 display (rendering on
   the right, example values; see *Display* below).
-- A Zigbee coordinator in ZHA or Zigbee2MQTT (2.8.0 or newer), on current firmware. Tested with
-  a ConBee III ([Amazon.de](https://www.amazon.de/dp/B0C8HV79N7)) on deCONZ firmware
-  **0x26550900**.
+- A Zigbee coordinator in ZHA or Zigbee2MQTT (2.8.0 or newer), on current firmware, for example
+  a ConBee III ([Amazon.de](https://www.amazon.de/dp/B0C8HV79N7)) on deCONZ **0x26550900**.
 - ESPHome with native Zigbee on the ESP32-C6 (tested with **2026.8.2**), plus Python 3 for the
   helper scripts.
 - The inverter within BLE range of the board. An external U.FL antenna is optional.
@@ -77,16 +75,13 @@ with ha-hiflow-ble should work too. Reports are welcome.
    a Zigbee stick on the same computer, make sure it is not the stick. The board looks for a
    network only during its first seconds after a boot, then only every 10 minutes.
 
-   The script erases the whole flash first if the board ran any other firmware before: a BLE
-   proxy, another ESPHome config, another Zigbee firmware. It compares the partition table on
-   the board with the new one. The old firmware's settings would otherwise end up inside the
-   bridge's, and neither BLE nor Zigbee comes up. Reflashing the bridge keeps its settings and
-   its Zigbee pairing. Flash with `esphome run` only if you erase first
-   (`esptool --chip esp32c6 --port /dev/ttyACM0 erase_flash`).
+   The script erases the whole flash first if the board ran other firmware before (a BLE proxy,
+   another ESPHome config), because that firmware's settings would keep the bridge from coming
+   up. Reflashing the bridge keeps its settings and its Zigbee pairing. Flash with `esphome run`
+   only after an erase (`esptool --chip esp32c6 --port /dev/ttyACM0 erase_flash`).
 
-   The board joins as `HMS-2000-4WB Bridge`. If it missed the pairing window, open
-   pairing again and reset the board (RESET button or re-plug). Zigbee2MQTT builds a generated
-   definition for it, with the sensor names from `esp32c6.yaml`.
+   The board joins as `HMS-2000-4WB Bridge`. If it missed the pairing window, open pairing again
+   and reset the board (RESET button or re-plug).
 5. **Optional, ZHA: name the entities.** ZHA names analog inputs generically. This command gives
    them the ids `sensor.inverter_zb_*` and English names by endpoint:
    ```bash
@@ -118,24 +113,26 @@ A change that cannot reach the inverter within two minutes (at night, for exampl
 and the control goes back. The details are in the configuration reference in
 [`components/hiflow_ble/README.md`](components/hiflow_ble/README.md).
 
+In ZHA the slider falls back to 0-1023 after every re-interview (an update over Zigbee,
+*Reconfigure*, a re-join), because ZHA only keeps its range in a cache. The quirk
+[`docs/zha_quirk_hiflow_bridge.py`](docs/zha_quirk_hiflow_bridge.py) keeps it at 0-100 %: copy it
+into the folder that `zha: custom_quirks_path:` points to and restart Home Assistant.
+
 ## Network time
 
 Without WiFi there is no NTP. The bridge asks the Zigbee coordinator for the time, through a
-Time client cluster on endpoint 35: once after joining, then twice a day. ZHA and Zigbee2MQTT
-answer from the host's clock. The bridge sets the inverter's
-clock at every login, and that clock drives the inverter's daily energy reset, so the time stays
-right even after a power cut at night.
+Time client cluster on endpoint 35: once after joining, then twice a day. The bridge sets the
+inverter's clock at every login, and that clock drives the inverter's daily energy reset, so the
+time stays right even after a power cut at night.
 
-When an update adds endpoints (the controls on 32 and 34, the network time on 35), an existing
-bridge has to re-join after the flash: follow *After changing the sensor list* in
-`docs/troubleshooting.md`. In ZHA, reload the integration once after the re-join (see there).
+An existing bridge has to re-join after the flash that adds endpoints (32, 34 and 35): follow
+*After changing the sensor list* in `docs/troubleshooting.md`.
 
 ## Display (Waveshare board)
 
 <p align="center"><img src="docs/img/waveshare-pages.png" alt="The five pages of the Waveshare panel: overview, the day's power curve, energy per PV input, grid values, bridge state"></p>
 
-Rendered from the display code, with example values: an HMS-2000 at a 40 % power limit on a
-sunny early afternoon.
+Rendered from the display code, with example values (a 40 % power limit).
 
 By day the panel shows the overview at 25 % brightness: the session status, the AC power, the
 energy of the day and in total, and the day's peak (or the power limit while it is below
@@ -151,26 +148,90 @@ then goes back to the overview; another press moves on to the next page at once:
 
 A page or a row without data is left out. The status line reads `LIVE` with the age of the last
 data, `STANDBY`, `TURNED OFF`, or the step the session is at (the status codes are in
-`docs/development.md`). The clock shows once the time was set since the boot. After a reboot the
-power limit shows in grey until it is read again: it is the last one read, which the inverter
-keeps over the night.
+`docs/development.md`). After a reboot the power limit shows in grey until it is read again.
 
 At night the panel goes dark and the RGB LED glows dim red, so the button can be found; a press
-shows the pages with the values of the day. Night means the inverter has fed in nothing for five
-minutes (`STANDBY`), and the panel lights up again once it has fed in for a minute. That comes
-from the inverter's readings alone, not from the clock, so it holds at any latitude and in any
-time zone, and after a reboot at night the panel stays dark. A link lost while the inverter feeds
-in is a fault and stays on the panel, and so does a refused PIN.
+shows the pages. Night means the inverter has fed in nothing for five minutes (`STANDBY`), and
+the panel lights up again once it has fed in for a minute. That comes from the inverter's
+readings alone, not from the clock, so it holds in any time zone. A link lost while the inverter
+feeds in, and a refused PIN, are faults and stay on the panel.
 
-The day's values are kept in flash, so a reboot or a power cut does not lose them. A new day
-begins when the inverter starts its day counter again in the morning, however long the bridge
-was off; until then the pages show the last day (titled "Last day" unless the clock says it is
-today). The curve needs the time: until the network time or the inverter's time has arrived
-after a boot, the day's energy and peak are kept, but no curve is drawn.
+The day's values are kept in flash and survive a reboot or a power cut. A new day begins when
+the inverter restarts its day counter in the morning; until then the pages show the last day.
+The curve needs the time: until the network time has arrived after a boot, energy and peak are
+kept, but no curve is drawn.
 
 The brightness, the page time and the night mode (`glow`, `off`, or `screensaver`: the panel
 stays dim with "HiFlow" bouncing off its edges) are substitutions at the top of
 `boards/waveshare_c6_lcd147.yaml`.
+
+## Firmware updates over Zigbee
+
+After the first flash over USB, the bridge takes new firmware from the Zigbee coordinator. It
+keeps running while the image downloads, then reboots into it. A new image stays only once it
+reached the coordinator again; one that crashes, or cannot reach the coordinator within 10
+minutes, falls back to the previous image by itself. Zigbee2MQTT has no update entity for the
+bridge, the update is started by hand (see below).
+
+The download is slow: ZHA sends 50 bytes per block, about 750 bytes per second. So an update
+is sent as a delta against the image the bridge runs, usually a few ten kilobytes and well
+under a minute. Without the running image at hand it goes as a compressed full image, about
+750 kB and a quarter of an hour.
+
+1. **Once, in ZHA:** give it a folder for update files, in `configuration.yaml`:
+   ```yaml
+   zha:
+     zigpy_config:
+       ota:
+         extra_providers:
+           - type: advanced
+             path: /config/zigpy_ota
+             warning: "I understand I can *destroy* my devices by enabling OTA updates from files. Some OTA updates can be mistakenly applied to the wrong device, breaking it. I am consciously using this at my own risk."
+   ```
+   Create the folder and restart Home Assistant. The bridge now has an update entity whose
+   *installed version* is the firmware's version.
+2. **Build and pack:**
+   ```bash
+   esphome compile esp32c6.yaml
+   python3 -m venv .venv && .venv/bin/pip install detools
+   .venv/bin/python tools/make_zigbee_ota.py .esphome/build/hiflow-zb --from 0x6ABBD143
+   ```
+   `--from` is the installed version from the update entity. The tool keeps every image it
+   packs, and every image `tools/flash_config.sh` flashes, under
+   `.esphome/zigbee_ota/`, and finds the running one there. Leave `--from` out for a
+   compressed full image.
+3. **Install:** copy the `.ota` file from `.esphome/zigbee_ota/` into `/config/zigpy_ota`,
+   restart Home Assistant (ZHA reads the folder once a day otherwise), and press *Install* on
+   the update entity.
+
+A board on a weak supply, such as a XIAO on a laptop's USB port, can brown out during a
+download. Set `tx_power: 0` under `zigbee_ota:` for it, see `components/zigbee_ota/README.md`.
+
+The first image with this feature has to go on over USB, because the fallback lives in the
+bootloader. On an existing bridge, click *Reconfigure* on the device in ZHA after that flash,
+then reload the ZHA integration: ZHA reads the bridge's clusters again and adds the update
+entity. The bridge keeps its pairing and its stored data.
+
+### In Zigbee2MQTT
+
+Zigbee2MQTT builds the bridge's definition itself and does not mark it as updatable, so the
+bridge has no update entity and no update check. An update can still be started over MQTT with a
+local file:
+
+1. Build and pack as in step 2 above. `--from` is the version `tools/flash_config.sh` printed
+   when it flashed the running image (`kept as ... version 0x...`), or the version of the last
+   update.
+2. Copy the `.ota` file from `.esphome/zigbee_ota/` into Zigbee2MQTT's `data/ota/` folder.
+3. Publish to `zigbee2mqtt/bridge/request/device/ota_update/update`, with the path as
+   Zigbee2MQTT sees it (`/app/data/` in the container):
+   ```json
+   {"id": "<device>", "url": "/app/data/ota/<file>.ota",
+    "image_block_response_delay": 20, "default_maximum_data_size": 64}
+   ```
+
+The two block settings speed the download up: with Zigbee2MQTT's defaults a 60 kB delta takes
+almost 5 minutes, with these about 2. Afterwards Zigbee2MQTT interviews the bridge again by
+itself, which takes about 30 seconds.
 
 ## More documentation
 
@@ -186,9 +247,8 @@ stays dim with "HiFlow" bouncing off its edges) are substitutions at the top of
   30 s later). The energy total is not affected, so the energy dashboard stays correct.
 - The power limit is percent only. The inverter's rated power is not read, so there is no watt
   slider.
-- All measurements that ha-hiflow-ble shows are exposed, except the per-port error code (in
-  practice the same `0x03000000` on every port while the inverter feeds in). The warning count
-  says how many warnings there were, not which ones.
+- All measurements of ha-hiflow-ble are exposed, except the per-port error code. The warning
+  count says how many warnings there were, not which ones.
 
 ## Credits and license
 

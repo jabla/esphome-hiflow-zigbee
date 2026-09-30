@@ -42,7 +42,7 @@ external_components:
   - source:
       type: local
       path: components
-    components: [hiflow_ble]
+    components: [hiflow_ble, zigbee_ota]
 
 # Keep the BLE scan window small: the C6 has ONE 2.4 GHz radio path, and Espressif
 # names "Zigbee end device + BLE scan" as the fragile combination. A continuously
@@ -80,6 +80,13 @@ zigbee:
   id: zb
   model: HMS-2000-4WB Bridge
   power_source: MAINS_SINGLE_PHASE
+
+# Firmware updates over Zigbee: the coordinator serves a file made by
+# tools/make_zigbee_ota.py (see "Firmware updates over Zigbee" in the README).
+# A new image only stays once it reached the coordinator; one that crashes or
+# cannot reach it rolls back to the previous image. The first image with this
+# block has to go on by USB, because the rollback lives in the bootloader.
+zigbee_ota:
 
 sensor:
   # ---------- HiFlow Pro (BLE, hiflow_ble) ----------

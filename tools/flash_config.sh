@@ -39,3 +39,14 @@ fi
 "$ESPTOOL" --chip esp32c6 --port "$DEV" --baud 460800 --before default_reset --after hard_reset \
   write_flash --flash_mode dio --flash_freq 80m --flash_size 4MB 0x0 "$FACTORY" \
   2>&1 | tail -3
+
+# With zigbee_ota, keep the app image under its version: the next update over
+# Zigbee can then be a delta against it (tools/make_zigbee_ota.py --from).
+INFO="$(dirname "$BUILD")/../zigbee_ota.json"
+if [ -f "$INFO" ]; then
+  VERSION="$(sed -n 's/.*"file_version": *\([0-9]*\).*/\1/p' "$INFO")"
+  KEEP="$(dirname "$CONF")/.esphome/zigbee_ota"
+  mkdir -p "$KEEP"
+  cp "$(dirname "$BUILD")/firmware.ota.bin" "$KEEP/$NAME-$(printf '%08X' "$VERSION").bin"
+  echo "kept as $KEEP/$NAME-$(printf '%08X' "$VERSION").bin (version 0x$(printf '%08X' "$VERSION"))"
+fi

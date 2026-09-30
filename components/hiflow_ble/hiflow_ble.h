@@ -15,6 +15,7 @@
 
 // Flat, ESPHome-loadable copies of the pre-verified C core. Regenerate with
 // ./sync_core.sh; the originals live under src/hiflow_core and src/hiflow_pb.
+#include "hiflow_daylog.h"
 #include "hiflow_session.h"
 
 #ifdef USE_ZIGBEE
@@ -101,12 +102,47 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
     this->slider_zb_ = zb;
     this->slider_endpoint_ = endpoint;
   }
+  /// The network time from the Time cluster on `endpoint` (see hiflow_zigbee_time.h).
+  void set_network_time(zigbee::ZigbeeComponent *zb, uint8_t endpoint) {
+    this->time_zb_ = zb;
+    this->time_endpoint_ = endpoint;
+  }
   /// The inverter's on/off switch on `endpoint` (see hiflow_inverter_switch.h).
   void set_inverter_switch(zigbee::ZigbeeComponent *zb, uint8_t endpoint) {
     this->switch_zb_ = zb;
     this->switch_endpoint_ = endpoint;
   }
 #endif
+
+  // --- for an on-board display (see boards/waveshare_c6_lcd147.yaml) ---
+  /// Milliseconds since the last complete set of measurements, -1 before the first.
+  int64_t ms_since_data() const;
+  /// The inverter has fed in nothing for a while: at night (see hiflow_daylog.h).
+  bool is_standby() const { return this->daylog_.rec.standby != 0; }
+  /// Switched off by the bridge and not fed in since; it switches itself on
+  /// again when it wakes in the morning.
+  bool inverter_off() const { return hiflow_daylog_inverter_off(&this->daylog_) != 0; }
+  /// The day's curve, peak and energy, kept in flash (see hiflow_daylog.h).
+  const hiflow_daylog_t &daylog() const { return this->daylog_; }
+  /// Seconds until the next connection attempt after a failure, -1 otherwise.
+  int retry_in_s() const;
+  /// The on/off switch: 1 on, 0 off, -1 when there is no switch.
+  int inverter_switch_state() const;
+  /// The inverter's power limit in percent as read since the boot, NaN when
+  /// unknown or disabled.
+  float power_limit_percent() const;
+  /// The same, or else the last one read before the boot (the inverter keeps
+  /// its limit over the night); NaN when none was ever read.
+  float last_power_limit_percent() const;
+  /// Local time (unix seconds plus the UTC offset), 0 before the session starts.
+  int64_t local_time() const;
+  /// 1 once a trusted time arrived since boot (the inverter or the network);
+  /// before that the clock runs on the value saved in flash.
+  bool clock_synced() const { return hiflow_session_clock_synced(&this->session_) != 0; }
+  /// The session status as published (7 folded into 6), -1 before the first.
+  int status() const { return this->last_status_; }
+  uint32_t sessions() const { return hiflow_session_sessions(&this->session_); }
+  uint32_t failures() const { return hiflow_session_failures(&this->session_); }
 
   // --- session callbacks, reached through the trampolines in the .cpp ---
   int session_send(const uint8_t *frame, size_t len);
@@ -126,6 +162,14 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
     uint16_t version;
     int64_t unix_time;
   };
+  /// The last power limit read from the inverter, for the display.
+  struct LimitPref {
+    uint16_t magic;
+    int16_t tenths;
+  };
+  ESPPreferenceObject limit_pref_{};
+  int32_t last_limit_tenths_{-1};  // -1: never read
+  bool limit_save_due_{false};
 
   int64_t now_ms_() const;
   void start_session_();
@@ -138,6 +182,7 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   void flush_prefs_();
   void poll_slider_(int64_t now);
   void poll_switch_(int64_t now);
+  void poll_network_time_(int64_t now);
 
   // --- transport ---
   espbt::ESPBTUUID service_uuid_{};
@@ -173,6 +218,12 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   float last_port_energy_total_[HIFLOW_MAX_PORTS]{};
   int64_t next_status_refresh_ms_{0};
   int last_status_{-1};
+  int64_t last_data_ms_{-1};
+
+  // --- day log (for a display) ---
+  hiflow_daylog_t daylog_{};
+  ESPPreferenceObject daylog_pref_{};
+  int64_t next_daylog_check_ms_{0};
 
 #ifdef USE_ZIGBEE
   // --- power limit slider ---
@@ -183,6 +234,13 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   int64_t slider_seen_ms_{0};
   bool slider_publish_{false};   // slider_set_ still has to reach the attribute
   int64_t next_slider_poll_ms_{0};
+
+  // --- network time ---
+  zigbee::ZigbeeComponent *time_zb_{nullptr};
+  uint8_t time_endpoint_{0};
+  int64_t next_time_request_ms_{0};
+  int64_t time_joined_ms_{0};  // when is_joined() last became true, 0 = not joined
+  int last_time_status_{-1};
 
   // --- inverter on/off switch ---
   /// The state the inverter was last switched to (the inverter reports none).

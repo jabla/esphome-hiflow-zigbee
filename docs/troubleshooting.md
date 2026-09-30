@@ -108,9 +108,12 @@ Each point below cost at least one debugging session. Don't undo them casually.
   That is what the config read with the reference library's timestamp (60 s in the past) did.
 - **Energy dashboard:** ZHA analog inputs are always `measurement`. Use the template sensor from
   `docs/ha-energy-template.yaml`, which is `total_increasing` and ignores missing values.
-- **Zigbee2MQTT.** Tested with z2m 2.14.1 on a ConBee III (0x26550900), using a build of the same
-  Zigbee side with test values instead of BLE. z2m logs the model as not supported, but builds
-  a generated definition with all 31 values, their names and units. Three quirks:
+- **Zigbee2MQTT.** Tested with z2m 2.14.1 on a ConBee III (0x26550900). z2m logs the model as
+  not supported, but builds a generated definition with all 31 values, their names and units,
+  plus the power limit (`hiflow_power_limit_32`, 0-100 %), the on/off switch (`state_34`) and the
+  uptime (`bridge_uptime_33`, in s). It answers the time read on endpoint 35, and a switch
+  command that cannot reach the inverter goes back to on after two minutes, as with ZHA. Three
+  quirks:
   - Reactive power has no unit. ESPHome's Zigbee unit table has kvar but not var, and ZHA
     shows the same.
   - Configuring the device fails with `TABLE_FULL` after 16 binds, because the ESP Zigbee

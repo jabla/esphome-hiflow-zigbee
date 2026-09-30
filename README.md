@@ -14,8 +14,8 @@ temperature, energy total/today, the inverter's daily warning count, power/volta
 energy total/today for each of the four PV ports, plus the session status and the board's
 uptime. A value is reported when it changes noticeably or after a few minutes at the latest,
 not on every 30 s poll.
-It also adds a slider for the inverter's power limit and, optionally, a switch that turns the
-inverter on and off.
+It also adds a slider for the inverter's power limit and a switch that turns the inverter on
+and off.
 
 The protocol implementation is a C port of [TheTiEr/hiflow-ble](https://github.com/TheTiEr/hiflow-ble),
 the library behind the [ha-hiflow-ble](https://github.com/TheTiEr/ha-hiflow-ble) integration. It
@@ -29,14 +29,14 @@ with ha-hiflow-ble should work too. Reports are welcome.
 
 ## What you need
 
-<img src="docs/img/waveshare-panel.png" align="right" width="188" alt="Waveshare ESP32-C6-LCD-1.47 panel: session status, AC power, grid voltage and frequency, temperature, energy today and total">
+<img src="docs/img/waveshare-panel.png" align="right" width="188" alt="Waveshare ESP32-C6-LCD-1.47 overview page: session status, clock, AC power, energy today and in total, power limit">
 
 - A **Seeed Studio XIAO ESP32-C6** ([Amazon.de](https://www.amazon.de/dp/B0D2NKVB34)) or a
   **Waveshare ESP32-C6-LCD-1.47** ([Amazon.de](https://www.amazon.de/dp/B0DHTMYTCY)). The board
   is picked with the `board` setting in `hiflow_secrets.yaml` (see *Boards* in
   `docs/development.md`): the XIAO variant drives its RF switch and can use an external U.FL
   antenna, the Waveshare variant shows the values on its on-board 172x320 display (rendering on
-  the right, example values).
+  the right, example values; see *Display* below).
 - A Zigbee coordinator in ZHA or Zigbee2MQTT (2.8.0 or newer), on current firmware. Tested with
   a ConBee III ([Amazon.de](https://www.amazon.de/dp/B0C8HV79N7)) on deCONZ firmware
   **0x26550900**.
@@ -103,49 +103,74 @@ with ha-hiflow-ble should work too. Reports are welcome.
 Put the board at the inverter and power it from a USB charger. The deployed image logs at
 `WARN`, which matters on a charger (see `docs/troubleshooting.md`).
 
-## Power limit
+## Controls
 
-The bridge adds a slider for the inverter's power limit: percent of the rated power, in 10 %
-steps, as a Zigbee Analog Output on endpoint 32. ZHA shows it as a number entity, Zigbee2MQTT as
-`hiflow_power_limit_32`. It is on by default (`power_limit: true` under `hiflow_ble:` in
-`esp32c6.yaml`); `false` leaves the endpoint out. It is meant for a limit you set now and then,
-not for zero-export regulation:
+Next to the measurements, the bridge adds two controls.
 
-- The inverter keeps the limit in its own flash. The bridge writes only when you move the
-  slider, never on a boot or a reconnect, never the value that is already set, and at most once
-  a minute. A slider drag becomes one write, 5 s after the last move.
-- The slider shows what the inverter reports. The bridge reads the limit after every login and
-  every hour (so it follows changes made in the S-Miles app) and reads it back after each write.
-  A value off the 10 % grid, e.g. 87 from an automation, ends up as 90.
-- 0 % switches the inverter's output off.
-- A change that cannot reach the inverter within two minutes (at night, for example) is dropped
-  and the slider returns to the inverter's value.
+- **Power limit** (endpoint 32): a slider in percent of the rated power, in 10 % steps. The
+  inverter keeps the limit in its own flash. It is meant for a limit you set now and then, not
+  for zero-export regulation. 0 % switches the output off.
+- **On/off** (endpoint 34): a switch for the inverter's output. The inverter does not report
+  whether it is on, so the switch shows what the bridge last switched it to. A change made in
+  the S-Miles app does not show.
 
-Endpoint 32 is new, so an existing bridge has to re-join after the flash: follow *After changing
-the sensor list* in `docs/troubleshooting.md`. In ZHA, reload the integration once after the
-re-join (see there).
+A change that cannot reach the inverter within two minutes (at night, for example) is dropped
+and the control goes back. The details are in the configuration reference in
+[`components/hiflow_ble/README.md`](components/hiflow_ble/README.md).
 
-## Inverter on/off (optional)
+## Network time
 
-With `inverter_control: true` under `hiflow_ble:`, the bridge adds a switch that turns the
-inverter's output on and off, as a Zigbee On/Off cluster on endpoint 34. ZHA shows it as a
-switch entity.
+Without WiFi there is no NTP. The bridge asks the Zigbee coordinator for the time, through a
+Time client cluster on endpoint 35: once after joining, then twice a day. ZHA and Zigbee2MQTT
+answer from the host's clock. The bridge sets the inverter's
+clock at every login, and that clock drives the inverter's daily energy reset, so the time stays
+right even after a power cut at night.
 
-- The inverter does not report whether it is on or off. The switch shows the state the bridge
-  last switched it to, and the bridge keeps that state in its flash across reboots. A change made
-  in the S-Miles app does not show.
-- A command goes out only when you flip the switch, never on a boot or a reconnect. The bridge
-  sends it between two data polls and keeps the new state only when the inverter acknowledges
-  it. Otherwise, or when the command cannot reach the inverter within two minutes (at night,
-  for example), the switch goes back.
-- Off stops the feed-in within seconds and counts as a warning in the inverter's daily warning
-  counter.
-- ha-hiflow-ble's buttons send these commands without a timestamp, and the inverter ignores
-  them ([ha-hiflow-ble#23](https://github.com/TheTiEr/ha-hiflow-ble/issues/23)). The bridge
-  sends the current time.
+When an update adds endpoints (the controls on 32 and 34, the network time on 35), an existing
+bridge has to re-join after the flash: follow *After changing the sensor list* in
+`docs/troubleshooting.md`. In ZHA, reload the integration once after the re-join (see there).
 
-Endpoint 34 is new, so an existing bridge has to re-join after the flash, as for the power
-limit.
+## Display (Waveshare board)
+
+<p align="center"><img src="docs/img/waveshare-pages.png" alt="The five pages of the Waveshare panel: overview, the day's power curve, energy per PV input, grid values, bridge state"></p>
+
+Rendered from the display code, with example values: an HMS-2000 at a 40 % power limit on a
+sunny early afternoon.
+
+By day the panel shows the overview at 25 % brightness: the session status, the AC power, the
+energy of the day and in total, and the day's peak (or the power limit while it is below
+100 %). The BOOT button turns the brightness up and steps through the other pages, 15 s each,
+then goes back to the overview; another press moves on to the next page at once:
+
+- **Today**: the AC power curve from 05:00 to 22:00, with the peak and when it was.
+- **Ports**: the energy of the day per PV input, the best one in green, with the live power and
+  voltage.
+- **Grid**: voltage, frequency, current, reactive power, power factor and temperature.
+- **Bridge**: uptime, BLE sessions and failures, power limit, output on or off, and the
+  inverter's warning count.
+
+A page or a row without data is left out. The status line reads `LIVE` with the age of the last
+data, `STANDBY`, `TURNED OFF`, or the step the session is at (the status codes are in
+`docs/development.md`). The clock shows once the time was set since the boot. After a reboot the
+power limit shows in grey until it is read again: it is the last one read, which the inverter
+keeps over the night.
+
+At night the panel goes dark and the RGB LED glows dim red, so the button can be found; a press
+shows the pages with the values of the day. Night means the inverter has fed in nothing for five
+minutes (`STANDBY`), and the panel lights up again once it has fed in for a minute. That comes
+from the inverter's readings alone, not from the clock, so it holds at any latitude and in any
+time zone, and after a reboot at night the panel stays dark. A link lost while the inverter feeds
+in is a fault and stays on the panel, and so does a refused PIN.
+
+The day's values are kept in flash, so a reboot or a power cut does not lose them. A new day
+begins when the inverter starts its day counter again in the morning, however long the bridge
+was off; until then the pages show the last day (titled "Last day" unless the clock says it is
+today). The curve needs the time: until the network time or the inverter's time has arrived
+after a boot, the day's energy and peak are kept, but no curve is drawn.
+
+The brightness, the page time and the night mode (`glow`, `off`, or `screensaver`: the panel
+stays dim with "HiFlow" bouncing off its edges) are substitutions at the top of
+`boards/waveshare_c6_lcd147.yaml`.
 
 ## More documentation
 

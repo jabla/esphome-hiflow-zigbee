@@ -47,6 +47,8 @@ copy "$CORE/hiflow_proto.h"
 copy "$CORE/hiflow_proto.c"
 copy "$CORE/hiflow_session.h"
 copy "$CORE/hiflow_session.c"
+copy "$CORE/hiflow_daylog.h"
+copy "$CORE/hiflow_daylog.c"
 
 # --- vendored nanopb 0.4.9.2 ---
 for f in pb.h pb_common.h pb_common.c pb_decode.h pb_decode.c pb_encode.h pb_encode.c; do

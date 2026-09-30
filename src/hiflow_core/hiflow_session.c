@@ -387,6 +387,8 @@ static void handle_login_ack(hiflow_session_t *s, int64_t now_ms, const uint8_t 
 {
     int64_t device_time = hiflow_decode_login_ack_time(pt, len);
 
+    if (device_time > HIFLOW_TIME_MIN && device_time < HIFLOW_TIME_MAX)
+        s->clock_synced = 1;
     if (device_time > 0 && hiflow_clock_observe_device_time(&s->clock, now_ms, device_time))
         slog(s, 2, "clock pulled forward to the device time");
 
@@ -463,6 +465,8 @@ static void handle_pairing_reply(hiflow_session_t *s, int64_t now_ms, const uint
     /* The login carries our clock, and after a reboot that clock restarts from
        the last value saved to flash, i.e. behind the inverter's. The reply's
        timestamp lets the login go out with the inverter's own time. */
+    if (device_time > HIFLOW_TIME_MIN && device_time < HIFLOW_TIME_MAX)
+        s->clock_synced = 1;
     if (device_time > 0) {
         slog(s, 2, "V0 reply: device time is %ld s ahead of our clock",
              (long) (device_time - unix_now(s, now_ms)));
@@ -617,6 +621,21 @@ static void send_power_command(hiflow_session_t *s, int64_t now_ms)
     send_payload(s, now_ms, HIFLOW_CMD_COMMAND, s->tx_pt, len);
 }
 
+/* Checked on every tick, in any state, like the on/off request below: at
+   night no connection comes up for hours, and the slider should not show a
+   limit that never reached the inverter until the morning. It goes back to
+   the limit the device holds, or to "unknown" (-1) before the first read. */
+static void expire_limit_request(hiflow_session_t *s, int64_t now_ms)
+{
+    if (s->limit_request < 0 ||
+        now_ms - s->limit_request_ms <= (int64_t) s->cfg.limit_request_ttl_ms)
+        return;
+    slog(s, 1, "power limit %d %% could not be written in time - dropped", (int) s->limit_request);
+    s->limit_request = -1;
+    if (s->ops.on_power_limit != NULL)
+        s->ops.on_power_limit(s->ops.ctx, s->limit_known ? s->limit_tenths : -1);
+}
+
 /* Checked on every tick, in any state: at night no connection comes up for
    hours, and the switch should not show a state that never reached the
    inverter until the morning. */
@@ -646,14 +665,6 @@ static void start_side_request(hiflow_session_t *s, int64_t now_ms)
 
     if (!s->cfg.power_limit)
         return;
-
-    if (s->limit_request >= 0 &&
-        now_ms - s->limit_request_ms > (int64_t) s->cfg.limit_request_ttl_ms) {
-        slog(s, 1, "power limit %d %% could not be written in time - dropped",
-             (int) s->limit_request);
-        s->limit_request = -1;
-        report_limit(s);
-    }
     if (now_ms < s->side_blocked_until_ms)
         return;
 
@@ -1036,6 +1047,7 @@ void hiflow_session_tick(hiflow_session_t *s, int64_t now_ms)
         return;
 
     expire_power_request(s, now_ms);
+    expire_limit_request(s, now_ms);
     if (s->state == HIFLOW_STATE_READY)
         start_side_request(s, now_ms);
 
@@ -1092,6 +1104,43 @@ uint32_t hiflow_session_sessions(const hiflow_session_t *s) { return s != NULL ?
 int64_t hiflow_session_unix_time(const hiflow_session_t *s, int64_t now_ms)
 {
     return s != NULL ? unix_now(s, now_ms) : 0;
+}
+
+int64_t hiflow_session_local_time(const hiflow_session_t *s, int64_t now_ms)
+{
+    int64_t unix_time;
+
+    if (s == NULL)
+        return 0;
+    unix_time = unix_now(s, now_ms);
+    return unix_time + utc_offset(s, unix_time);
+}
+
+int32_t hiflow_session_retry_in_s(const hiflow_session_t *s, int64_t now_ms)
+{
+    if (s == NULL || s->state != HIFLOW_STATE_BACKOFF || s->timer != HT_BACKOFF_END)
+        return -1;
+    if (s->deadline_ms <= now_ms)
+        return 0;
+    return (int32_t) ((s->deadline_ms - now_ms + 999) / 1000);
+}
+
+int hiflow_session_observe_time(hiflow_session_t *s, int64_t now_ms, int64_t unix_time)
+{
+    if (s == NULL || unix_time <= HIFLOW_TIME_MIN || unix_time >= HIFLOW_TIME_MAX)
+        return 0;
+    s->clock_synced = 1;
+    if (!hiflow_clock_observe_device_time(&s->clock, now_ms, unix_time))
+        return 0;
+    slog(s, 2, "clock pulled forward to the network time");
+    return 1;
+}
+
+int hiflow_session_clock_synced(const hiflow_session_t *s) { return s != NULL && s->clock_synced; }
+
+int32_t hiflow_session_power_limit_tenths(const hiflow_session_t *s)
+{
+    return s != NULL && s->cfg.power_limit && s->limit_known ? s->limit_tenths : -1;
 }
 
 const char *hiflow_session_state_name(uint8_t state)

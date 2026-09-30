@@ -23,12 +23,12 @@ The config is board independent; `boards/<board>.yaml` carries the hardware, and
 | `board` | Hardware |
 |---|---|
 | `xiao_esp32c6` | Seeed Studio XIAO ESP32-C6. Drives the FM8625H RF switch (GPIO3/GPIO14); `external_antenna` picks the U.FL socket instead of the ceramic antenna. No display. |
-| `waveshare_c6_lcd147` | Waveshare ESP32-C6-LCD-1.47 (non-touch). Shows status, AC power, grid voltage and frequency, temperature, and the energy of the day and in total on the on-board 172x320 panel. No RF switch, no U.FL socket; `external_antenna` is unused. |
+| `waveshare_c6_lcd147` | Waveshare ESP32-C6-LCD-1.47 (non-touch). Shows the values on the on-board 172x320 panel, with pages on the BOOT button (see *Display* in the README). No RF switch, no U.FL socket; `external_antenna` is unused. |
 
 A second board only needs a new file under `boards/` plus the substitution in the secrets file. The
-display lambda reads the sensors by `id` (`ac_power`, `ac_voltage`, `ac_frequency`, `temperature`,
-`energy_daily`, `energy_total`, `hiflow_status`); those ids are declared in `esp32c6.yaml` and do
-not affect the Zigbee endpoint numbering, so they are harmless on a board without a panel.
+display lambda reads the sensors by `id` (the `id:` lines in `esp32c6.yaml`) and the component's
+state through `id(hiflow)`. The ids do not affect the Zigbee endpoint numbering, so they are
+harmless on a board without a panel.
 
 Build another board variant without touching the secrets file:
 

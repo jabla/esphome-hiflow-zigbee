@@ -135,6 +135,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: ac_current
+    id: ac_current
     name: "HiFlow AC Current"
     unit_of_measurement: A
     device_class: current
@@ -209,6 +210,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: port1_power
+    id: port1_power
     name: "HiFlow Port1 Power"
     unit_of_measurement: W
     device_class: power
@@ -223,6 +225,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: port1_voltage
+    id: port1_voltage
     name: "HiFlow Port1 Voltage"
     unit_of_measurement: V
     device_class: voltage
@@ -237,6 +240,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: port1_current
+    id: port1_current
     name: "HiFlow Port1 Current"
     unit_of_measurement: A
     device_class: current
@@ -251,6 +255,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: port2_power
+    id: port2_power
     name: "HiFlow Port2 Power"
     unit_of_measurement: W
     device_class: power
@@ -265,6 +270,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: port2_voltage
+    id: port2_voltage
     name: "HiFlow Port2 Voltage"
     unit_of_measurement: V
     device_class: voltage
@@ -279,6 +285,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: port2_current
+    id: port2_current
     name: "HiFlow Port2 Current"
     unit_of_measurement: A
     device_class: current
@@ -293,6 +300,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: port3_power
+    id: port3_power
     name: "HiFlow Port3 Power"
     unit_of_measurement: W
     device_class: power
@@ -307,6 +315,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: port3_voltage
+    id: port3_voltage
     name: "HiFlow Port3 Voltage"
     unit_of_measurement: V
     device_class: voltage
@@ -321,6 +330,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: port3_current
+    id: port3_current
     name: "HiFlow Port3 Current"
     unit_of_measurement: A
     device_class: current
@@ -335,6 +345,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: port4_power
+    id: port4_power
     name: "HiFlow Port4 Power"
     unit_of_measurement: W
     device_class: power
@@ -349,6 +360,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: port4_voltage
+    id: port4_voltage
     name: "HiFlow Port4 Voltage"
     unit_of_measurement: V
     device_class: voltage
@@ -363,6 +375,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: port4_current
+    id: port4_current
     name: "HiFlow Port4 Current"
     unit_of_measurement: A
     device_class: current
@@ -398,6 +411,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: reactive_power
+    id: reactive_power
     name: "HiFlow Reactive Power"
     unit_of_measurement: var
     device_class: reactive_power
@@ -412,6 +426,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: power_factor
+    id: power_factor
     name: "HiFlow Power Factor"
     unit_of_measurement: "%"
     device_class: power_factor
@@ -428,6 +443,7 @@ sensor:
   - platform: hiflow_ble
     hiflow_ble_id: hiflow
     type: warnings
+    id: warnings
     name: "HiFlow Warnings"
     state_class: measurement
     accuracy_decimals: 0
@@ -555,5 +571,6 @@ sensor:
   # keeps its number with or without the power limit slider on 32. Every 5
   # minutes, like the status keep-alive.
   - platform: uptime
+    id: bridge_uptime
     name: "Bridge Uptime"
     update_interval: 300s

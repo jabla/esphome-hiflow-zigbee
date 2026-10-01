@@ -44,7 +44,7 @@ external_components:
   - source:
       type: local
       path: components
-    components: [hiflow_ble]
+    components: [hiflow_ble, zigbee_ota]
 
 # Keep the BLE scan window small: the C6 has ONE 2.4 GHz radio path, and Espressif
 # names "Zigbee end device + BLE scan" as the fragile combination. A continuously
@@ -77,7 +77,6 @@ hiflow_ble:
   # timeout of roughly 90 s; the schema allows 10-60 s.
   update_interval: 30s
 
-# No wifi:, no api:, no ota: a pure 802.15.4 node
 sensor:
   # ---------- HiFlow Pro (BLE, hiflow_ble) ----------
   # Every sensor is one Zigbee endpoint, numbered in the order of this list

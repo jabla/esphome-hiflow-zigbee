@@ -1279,6 +1279,25 @@ static void test_daylog(void)
     expect_int(hiflow_session_clock_synced(&w.s), 0, "still not synced");
     expect_int(hiflow_session_observe_time(&w.s, w.now, 1774000000 + 7200), 1, "a network time ahead moves the clock");
     expect_int(hiflow_session_clock_synced(&w.s), 1, "synced by the network time");
+
+    /* The inverter's time counts only when it moved our clock or agrees with
+       it: one hours behind says the inverter's clock is off, and ours may be. */
+    world_init(&w, 1, TEST_PIN);
+    w.fi.device_time = 1774000000 - 7200;
+    world_single_page(&w);
+    world_run(&w, 5000);
+    expect_int(hiflow_session_state(&w.s), HIFLOW_STATE_READY, "a device time far behind: still a session");
+    expect_int(hiflow_session_clock_synced(&w.s), 0, "a device time far behind ours: not synced");
+    world_init(&w, 1, TEST_PIN);
+    w.fi.device_time = 1774000000 - 60;
+    world_single_page(&w);
+    world_run(&w, 5000);
+    expect_int(hiflow_session_clock_synced(&w.s), 1, "a device time within a few minutes of ours: synced");
+    world_init(&w, 1, TEST_PIN);
+    w.fi.device_time = 1774000000 + 7200;
+    world_single_page(&w);
+    world_run(&w, 5000);
+    expect_int(hiflow_session_clock_synced(&w.s), 1, "a device time ahead moves the clock: synced");
 }
 
 int main(int argc, char **argv)

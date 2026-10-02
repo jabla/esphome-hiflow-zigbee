@@ -25,6 +25,8 @@ static void clear_day(hiflow_daylog_t *d)
     memset(d->rec.curve, 0, sizeof(d->rec.curve));
     memset(d->rec.port_daily_wh, 0, sizeof(d->rec.port_daily_wh));
     d->rec.energy_daily_wh = 0.0f;
+    d->daily_pending = 0.0f;
+    memset(d->port_pending, 0, sizeof(d->port_pending));
     d->rec.peak_w = 0.0f;
     d->rec.peak_min = -1;
     d->rec.day = -1;
@@ -84,7 +86,25 @@ static int new_day(const hiflow_daylog_t *d, const hiflow_reading_t *r)
            COUNTERS_RESTARTED;
 }
 
-static float at_least(float kept, float v) { return v > kept ? v : kept; }
+/* Within a day a day counter never goes back, and it grows exactly as much as
+   the lifetime counter: a lower value is a bad one, and so is a rise the
+   lifetime counter does not share, unless the next reading has it too. Without
+   a lifetime counter to compare with (the first reading after a boot) a rise
+   waits for the next reading as well. */
+static float take_daily(float kept, float v, float total_before, float total, float *pending)
+{
+    if (!(v > kept)) {
+        *pending = 0.0f;
+        return kept;
+    }
+    if ((total_before > 0.0f && total > 0.0f && v - kept <= total - total_before + HIFLOW_DAY_SLACK_WH) ||
+        (*pending > 0.0f && v >= *pending - HIFLOW_DAY_SLACK_WH)) {
+        *pending = 0.0f;
+        return v;
+    }
+    *pending = v;
+    return kept;
+}
 
 /* A lifetime counter never goes back: a lower value is a bad one, unless the
    next reading has it too (another inverter, or its counters were reset). */
@@ -125,15 +145,21 @@ static void record(hiflow_daylog_t *d, const hiflow_reading_t *r)
     /* The counters as the inverter reports them; within a day a day counter
        never goes back, so a lower value is a bad one. */
     if (r->energy_total_wh > 0.0f) {
+        const float total_before = d->rec.energy_total_wh;
+
         d->rec.energy_total_wh = take_total(d->rec.energy_total_wh, r->energy_total_wh, &d->total_back);
         if (r->energy_daily_wh >= 0.0f)
-            d->rec.energy_daily_wh = at_least(d->rec.energy_daily_wh, r->energy_daily_wh);
+            d->rec.energy_daily_wh = take_daily(d->rec.energy_daily_wh, r->energy_daily_wh, total_before,
+                                                r->energy_total_wh, &d->daily_pending);
     }
     for (i = 0; i < HIFLOW_DAYLOG_PORTS; i++) {
+        const float total_before = d->port_total_wh[i];
+
         if (!(r->port_total_wh[i] > 0.0f) || !(r->port_daily_wh[i] >= 0.0f))
             continue;
         d->port_total_wh[i] = take_total(d->port_total_wh[i], r->port_total_wh[i], &d->port_back[i]);
-        d->rec.port_daily_wh[i] = at_least(d->rec.port_daily_wh[i], r->port_daily_wh[i]);
+        d->rec.port_daily_wh[i] = take_daily(d->rec.port_daily_wh[i], r->port_daily_wh[i], total_before,
+                                             r->port_total_wh[i], &d->port_pending[i]);
     }
 
     /* The curve and the time of the peak only with a clock to trust: better

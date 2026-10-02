@@ -106,6 +106,8 @@ typedef struct {
     float   port_total_wh[HIFLOW_DAYLOG_PORTS]; /* per input at the latest reading, 0 unknown */
     uint8_t port_back[HIFLOW_DAYLOG_PORTS];     /* readings in a row with a lifetime counter gone back */
     uint8_t total_back;        /* the same for the sum */
+    float   port_pending[HIFLOW_DAYLOG_PORTS]; /* a day counter risen without its lifetime counter, 0 none */
+    float   daily_pending;     /* the same for the sum */
     uint8_t restart_pending;   /* the last reading showed the day counters restarted */
     int     facts;             /* HIFLOW_FACT_* of the last hiflow_daylog_update */
     int     fed_since_off;     /* two readings with power in a row came after the switch went off */

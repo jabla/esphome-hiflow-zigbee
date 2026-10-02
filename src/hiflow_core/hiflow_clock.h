@@ -33,6 +33,10 @@ extern "C" {
 #define HIFLOW_TIME_MIN ((int64_t) 1704067200)
 #define HIFLOW_TIME_MAX ((int64_t) 2208988800)
 
+/* How far behind our clock the inverter's time may be and still count as
+   agreeing with it (seconds). */
+#define HIFLOW_TIME_AGREE_S ((int64_t) 300)
+
 /* Length of the "YYYY-MM-DD HH:MM:SS" string including the NUL. */
 #define HIFLOW_TIME_STR_LEN 20
 

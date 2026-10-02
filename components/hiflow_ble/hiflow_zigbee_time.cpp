@@ -122,9 +122,9 @@ void add_time_cluster(zigbee::ZigbeeComponent *zb, uint8_t endpoint) {
                             TimeCluster{});
 }
 
-bool request_network_time(uint8_t endpoint) {
-  if (!esp_zigbee_lock_acquire(10 / portTICK_PERIOD_MS))
-    return false;
+TimeRequest request_network_time(uint8_t endpoint) {
+  if (!esp_zigbee_lock_acquire(0))
+    return TIME_REQUEST_BUSY;
   if (!g_handler_registered) {
     ezb_zcl_raw_command_handler_register(on_raw_frame);
     g_handler_registered = true;
@@ -149,8 +149,9 @@ bool request_network_time(uint8_t endpoint) {
     ESP_LOGW(TAG, "sending the time request failed: %d", static_cast<int>(err));
     g_pending.store(false);
     g_status.store(NETWORK_TIME_SEND_FAILED);
+    return TIME_REQUEST_FAILED;
   }
-  return true;
+  return TIME_REQUEST_SENT;
 }
 
 int64_t take_network_time(int *status) {

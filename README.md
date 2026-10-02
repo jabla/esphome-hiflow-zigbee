@@ -120,10 +120,10 @@ into the folder that `zha: custom_quirks_path:` points to and restart Home Assis
 
 ## Network time
 
-Without WiFi there is no NTP. The bridge asks the Zigbee coordinator for the time, through a
-Time client cluster on endpoint 35: once after joining, then twice a day. The bridge sets the
-inverter's clock at every login, and that clock drives the inverter's daily energy reset, so the
-time stays right even after a power cut at night.
+The bridge asks the Zigbee coordinator for the time, through a Time client cluster on endpoint 35:
+once after joining, then twice a day. The bridge sets the inverter's clock at every login, and
+that clock drives the inverter's daily energy reset, so the time stays right even after a power
+cut at night.
 
 An existing bridge has to re-join after the flash that adds endpoints (32, 34 and 35): follow
 *After changing the sensor list* in `docs/troubleshooting.md`.

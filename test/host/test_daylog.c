@@ -411,6 +411,30 @@ static void test_new_day(void)
         hiflow_daylog_sample(&g.d, &r);
     }
     expect_int(g.d.days_begun, days, "an input stuck at 0: outvoted, no new day");
+    /* A day counter that jumps up in one reading without its lifetime
+       counter is a bad value, and it must not stay for the day. */
+    rig_to(&g, 600 + 30, 800.0f, 30);
+    daily = g.d.rec.energy_daily_wh;
+    kept = g.d.rec.port_daily_wh[0];
+    rig_reading(&g, 800.0f, &r);
+    r.energy_daily_wh += 60000.0f;
+    r.port_daily_wh[0] += 60000.0f;
+    hiflow_daylog_sample(&g.d, &r);
+    expect_float(g.d.rec.energy_daily_wh, daily, "a day counter up by 60 kWh in one reading: not kept");
+    expect_float(g.d.rec.port_daily_wh[0], kept, "nor an input's");
+    rig_to(&g, 600 + 60, 800.0f, 30);
+    expect(g.d.rec.energy_daily_wh > daily && g.d.rec.energy_daily_wh < daily + 100.0f,
+           "the next good reading goes on from the kept value");
+    /* The same rise in two readings in a row is taken (no lifetime counter to
+       compare with after a boot, or a counter that really jumped). */
+    rig_reading(&g, 800.0f, &r);
+    r.energy_daily_wh += 5000.0f;
+    hiflow_daylog_sample(&g.d, &r);
+    daily = g.d.rec.energy_daily_wh;
+    r.now_ms += 30000;
+    r.energy_daily_wh += 6.0f;
+    hiflow_daylog_sample(&g.d, &r);
+    expect(g.d.rec.energy_daily_wh > daily + 4000.0f, "the same rise in the next reading too: taken");
     /* Lifetime counters that went back in one reading: a bad reading, and the
        next good one goes on with the day. */
     rig_reading(&g, 800.0f, &r);

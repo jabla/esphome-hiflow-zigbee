@@ -37,9 +37,15 @@ enum NetworkTimeStatus {
 /// add_power_limit_cluster).
 void add_time_cluster(zigbee::ZigbeeComponent *zb, uint8_t endpoint);
 
+enum TimeRequest {
+  TIME_REQUEST_SENT = 0,
+  TIME_REQUEST_BUSY = 1,    ///< the Zigbee stack is busy: try again soon
+  TIME_REQUEST_FAILED = 2,  ///< the stack refused the request
+};
+
 /// Asks the coordinator for the time. The answer arrives later; take it with
-/// take_network_time(). False when the stack is busy.
-bool request_network_time(uint8_t endpoint);
+/// take_network_time(). Never waits for the stack.
+TimeRequest request_network_time(uint8_t endpoint);
 
 /// The time the coordinator handed out (unix seconds), once; 0 when none came
 /// since the last call. `status` receives the result of the last request (a

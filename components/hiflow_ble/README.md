@@ -180,9 +180,8 @@ endpoint 34.
 * Off stops the feed-in within seconds and counts in the inverter's daily
   warning counter.
 
-`network_time` reads the time from the coordinator (ZHA and Zigbee2MQTT answer
-from the host's clock) through a Time client cluster on endpoint 35, so the
-clock is right even after a power cut at night.
+`network_time` reads the time from the coordinator through a Time client
+cluster on endpoint 35, so the clock is right even after a power cut at night.
 
 There is no `enc_rand:` option: the inverter rotates its session key, so the
 session fetches it with a V0 pairing after every boot and after every failed
@@ -190,12 +189,15 @@ handshake, and keeps it in RAM only.
 
 ## Notes
 
-* **Time**: without WiFi there is no NTP. The session runs a synthetic clock
-  (`hiflow_clock`: the build time or the last time saved in flash, plus the
-  uptime) and adopts the inverter's own time from the V0 pairing reply before
-  every login; the inverter refuses a login whose timestamp lags its clock too
-  far. With `network_time`, the coordinator's time replaces it once after the
-  join and then twice a day (every 10 minutes while the request fails).
+* **Time**: the session runs a synthetic clock (`hiflow_clock`: the build time
+  or the last time saved in flash, plus the uptime) and adopts the inverter's
+  own time from the V0 pairing reply before every login; the inverter refuses a
+  login whose timestamp lags its clock too far. So the clock only ever moves
+  forward: a time that is ahead of it is taken, one that is behind is ignored.
+  With `network_time`, the coordinator's time is offered once after the join
+  and then twice a day (every 10 minutes while the request fails). The clock
+  counts as set (the display shows it, the day curve uses it) once a time
+  arrived that moved it or agrees with it within five minutes.
 * `energy_total` and `energy_daily` are sums over the PV ports.
 * Single-phase installs report through `SGSMO`, three-phase through `TGSMO`;
   the component handles both and picks port 0 for the AC values.

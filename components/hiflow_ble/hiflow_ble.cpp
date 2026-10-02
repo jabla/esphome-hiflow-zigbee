@@ -33,6 +33,7 @@ static const int64_t IDLE_TIME_SAVE_INTERVAL_MS = 1800000;  // the clock, while 
 static const char *const DAYLOG_PREF_NAME = "hiflow_daylog_v2";
 static const int64_t TIME_REQUEST_INTERVAL_MS = 43200000;  // the network time, twice a day
 static const int64_t TIME_RETRY_MS = 600000;               // after a failed request
+static const int64_t TIME_BUSY_RETRY_MS = 5000;            // the Zigbee stack was busy
 static const int64_t TIME_JOIN_SETTLE_MS = 30000;           // after a (re)join, before the first request
 static const int64_t SWITCH_QUIET_MS = 1000;          // merges a quick off-on into one command
 static const uint16_t SWITCH_PREF_MAGIC = 0x4853;     // 'HS'
@@ -754,10 +755,18 @@ void HiflowBle::poll_network_time_(int64_t now) {
     this->time_joined_ms_ = now;
   if (now - this->time_joined_ms_ < TIME_JOIN_SETTLE_MS || now < this->next_time_request_ms_)
     return;
-  if (request_network_time(this->time_endpoint_)) {
-    ESP_LOGD(TAG, "asking the network for the time");
-    this->next_time_request_ms_ = now + TIME_REQUEST_INTERVAL_MS;
-    this->last_time_status_ = -1;
+  switch (request_network_time(this->time_endpoint_)) {
+    case TIME_REQUEST_SENT:
+      ESP_LOGD(TAG, "asking the network for the time");
+      this->next_time_request_ms_ = now + TIME_REQUEST_INTERVAL_MS;
+      this->last_time_status_ = -1;
+      break;
+    case TIME_REQUEST_BUSY:
+      this->next_time_request_ms_ = now + TIME_BUSY_RETRY_MS;
+      break;
+    case TIME_REQUEST_FAILED:
+      this->next_time_request_ms_ = now + TIME_RETRY_MS;
+      break;
   }
 #endif
 }

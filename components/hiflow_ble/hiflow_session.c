@@ -383,14 +383,29 @@ static void handshake_complete(hiflow_session_t *s, int64_t now_ms)
     request_data(s, now_ms);
 }
 
+/* The inverter's time: taken when it is ahead of our clock. It counts as a
+   trusted time only when it moved the clock or agrees with it; one far behind
+   says the inverter's clock is off, and ours may be too. */
+static void observe_device_time(hiflow_session_t *s, int64_t now_ms, int64_t device_time)
+{
+    int64_t ahead;
+
+    if (device_time <= HIFLOW_TIME_MIN || device_time >= HIFLOW_TIME_MAX)
+        return;
+    ahead = device_time - unix_now(s, now_ms);
+    if (hiflow_clock_observe_device_time(&s->clock, now_ms, device_time)) {
+        slog(s, 2, "clock pulled forward to the device time");
+        s->clock_synced = 1;
+    } else if (ahead >= -HIFLOW_TIME_AGREE_S) {
+        s->clock_synced = 1;
+    }
+}
+
 static void handle_login_ack(hiflow_session_t *s, int64_t now_ms, const uint8_t *pt, size_t len)
 {
     int64_t device_time = hiflow_decode_login_ack_time(pt, len);
 
-    if (device_time > HIFLOW_TIME_MIN && device_time < HIFLOW_TIME_MAX)
-        s->clock_synced = 1;
-    if (device_time > 0 && hiflow_clock_observe_device_time(&s->clock, now_ms, device_time))
-        slog(s, 2, "clock pulled forward to the device time");
+    observe_device_time(s, now_ms, device_time);
 
     set_state(s, HIFLOW_STATE_LOGIN_POLL);
     s->login_polls = 0;
@@ -465,13 +480,10 @@ static void handle_pairing_reply(hiflow_session_t *s, int64_t now_ms, const uint
     /* The login carries our clock, and after a reboot that clock restarts from
        the last value saved to flash, i.e. behind the inverter's. The reply's
        timestamp lets the login go out with the inverter's own time. */
-    if (device_time > HIFLOW_TIME_MIN && device_time < HIFLOW_TIME_MAX)
-        s->clock_synced = 1;
     if (device_time > 0) {
         slog(s, 2, "V0 reply: device time is %ld s ahead of our clock",
              (long) (device_time - unix_now(s, now_ms)));
-        if (hiflow_clock_observe_device_time(&s->clock, now_ms, device_time))
-            slog(s, 2, "clock pulled forward to the device time");
+        observe_device_time(s, now_ms, device_time);
     } else {
         slog(s, 1, "V0 reply carries no device time");
     }

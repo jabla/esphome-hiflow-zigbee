@@ -123,6 +123,37 @@ Each point below cost at least one debugging session. Don't undo them casually.
     arrives twice within a second: the forced report plus the one from z2m's reporting
     configuration.
 
+## Firmware updates over Zigbee
+
+- **ZHA does not start after adding the `zigpy_local` provider.** The log says
+  `/config/zigpy_ota/index.json is not a JSON file at 'ota.extra_providers[1].index_file'`, and
+  the ZHA integration is in a setup error, with every Zigbee device unavailable. zigpy checks at
+  start that the index file exists (and that the folder of the `advanced` provider exists).
+  Copy `index.json` back, or put `{"firmwares": []}` there, and restart Home Assistant. A damaged
+  `index.json` does not stop ZHA: zigpy skips the provider (`Failed to load provider
+  LocalZigpyProvider` at debug level), and updates still come from the folder, without notes.
+- **No update offered.** zigpy only offers an image with the bridge's manufacturer code and
+  image type and a higher version than the installed one; ZHA has no way to force a lower one
+  (`Update was not successful: NO_IMAGE_AVAILABLE`). Check, in this order: Home Assistant was
+  restarted after the file was copied (ZHA reads the folder once a day otherwise); the file was
+  packed with `--from` and the installed version (an older bridge needs that, see *Bridges with
+  an older version* in the README); the image was built for the same board (each board has its
+  own image type).
+- **Firmware "Unknown" after the switch to date versions.** The bridge now asks with its
+  board's image type, and the folder only holds files of the old type `0x4846`, so the update
+  entity has no latest version. Copy the file without `-from-` from the same pack run as well
+  (`<name>-<version>.ota`); it shows up after the next restart of Home Assistant, or within a
+  day.
+- **Download stops part-way (`Update was not successful: TIMEOUT`).** Right after a Home
+  Assistant restart, the coordinator's answers to the block requests did not reach the bridge:
+  the bridge asked for the same block every 5 seconds until it gave up. A minute later the same
+  file went through in under a minute. Wait a minute after a restart before *Install*. The
+  bridge keeps running the old image when a download fails.
+- **The bridge resets during a download (log: `Reset reason 9 (brownout)`).** A XIAO on a
+  laptop's USB port could not supply full-power sending plus the flash writes. `tx_power: 0`
+  under `zigbee_ota:` fixed it; the update itself needs the setting in the image that is
+  running, so on a board that browns out, flash such an image over USB first.
+
 ## USB and logging
 
 - **Run the deployed board at `WARN`.** A USB charger is not a USB host, so every log write on

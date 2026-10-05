@@ -194,15 +194,20 @@ under a minute. Without the running image at hand it goes as a compressed full i
    ```bash
    esphome compile esp32c6.yaml
    python3 -m venv .venv && .venv/bin/pip install detools
-   .venv/bin/python tools/make_zigbee_ota.py .esphome/build/hiflow-zb --from 0x6ABBD143
+   .venv/bin/python tools/make_zigbee_ota.py .esphome/build/hiflow-zb --from 0x27031401
    ```
    `--from` is the installed version from the update entity. The tool keeps every image it
    packs, and every image `tools/flash_config.sh` flashes, under
-   `.esphome/zigbee_ota/`, and finds the running one there. Leave `--from` out for a
-   compressed full image.
+   `.esphome/zigbee_ota/`, and finds the running one there; without it, or without detools,
+   the file holds the compressed full image. With `--from` the tool also stops when the new
+   build is not newer than the installed one, because the coordinator would not offer it.
 3. **Install:** copy the `.ota` file from `.esphome/zigbee_ota/` into `/config/zigpy_ota`,
    restart Home Assistant (ZHA reads the folder once a day otherwise), and press *Install* on
    the update entity.
+
+The version is the build date and the build of that day, read in hex: `0x27031402` is the
+second build on 14 March 2027. Each board has its own image type (XIAO `0x4858`, Waveshare
+`0x4857`), so the coordinator only offers a bridge the images built for its board.
 
 A board on a weak supply, such as a XIAO on a laptop's USB port, can brown out during a
 download. Set `tx_power: 0` under `zigbee_ota:` for it, see `components/zigbee_ota/README.md`.
@@ -211,6 +216,34 @@ The first image with this feature has to go on over USB, because the fallback li
 bootloader. On an existing bridge, click *Reconfigure* on the device in ZHA after that flash,
 then reload the ZHA integration: ZHA reads the bridge's clusters again and adds the update
 entity. The bridge keeps its pairing and its stored data.
+
+### Bridges with an older version
+
+Images from before the date versions carry the Unix time of their build (`0x6A...`) and the
+image type `0x4846` on every board. That number is higher than any date version, and the
+coordinator never offers a lower one. Pack the first update as usual with `--from` and the
+installed version: the tool sees the old version and writes a second file,
+`<name>-<version>-from-<old version>.ota`, which the old firmware takes (header with the old
+image type and the installed version + 1). Copy both files. After the update the bridge reports
+the date version and its board's image type, and the update entity finds the first file as the
+installed version. The old files no longer match the bridge and can go.
+
+### Update notes (optional)
+
+Next to the images the tool keeps `index.json`, an index for zigpy's `zigpy_local` provider. With
+it, the update dialog shows a line about the image (build date and number, board, git version)
+and the text of `--notes "..."`. Updates work the same without it.
+
+To use it, copy `.esphome/zigbee_ota/index.json` into `/config/zigpy_ota` **first**, then add the
+provider below the folder:
+```yaml
+        - type: zigpy_local
+          index_file: /config/zigpy_ota/index.json
+```
+From then on copy `index.json` along with every `.ota` file. **Never delete it while the
+provider is in `configuration.yaml`**: without the file ZHA does not start at all, and every
+Zigbee device is gone until it is back (the same holds for the folder itself). A damaged file is
+harmless, the update then comes without the notes.
 
 ### In Zigbee2MQTT
 

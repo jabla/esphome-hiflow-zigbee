@@ -86,7 +86,11 @@ zigbee:
 # A new image only stays once it reached the coordinator; one that crashes or
 # cannot reach it rolls back to the previous image. The first image with this
 # block has to go on by USB, because the rollback lives in the bootloader.
+# The image type comes from the board file: the coordinator offers an image to
+# every device with the same type, so each board has its own.
 zigbee_ota:
+  image_type: ${ota_image_type}
+  label: hiflow-zb ${board}
 
 sensor:
   # ---------- HiFlow Pro (BLE, hiflow_ble) ----------

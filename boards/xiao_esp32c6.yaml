@@ -10,6 +10,10 @@
 # path is right before the first radio command goes out. An external antenna
 # gained about 19 dB at the reference site.
 
+substitutions:
+  # Zigbee OTA image type of this board ("HX"), see zigbee_ota: in esp32c6.yaml.
+  ota_image_type: "0x4858"
+
 output:
   - platform: gpio
     pin:

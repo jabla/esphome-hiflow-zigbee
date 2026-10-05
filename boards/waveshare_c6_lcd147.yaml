@@ -34,6 +34,8 @@
 # strapping pin); a press during normal operation is harmless.
 
 substitutions:
+  # Zigbee OTA image type of this board ("HW"), see zigbee_ota: in esp32c6.yaml.
+  ota_image_type: "0x4857"
   # Brightness of the overview by day, in percent.
   lcd_day_brightness: "25"
   # Seconds per page after a button press.

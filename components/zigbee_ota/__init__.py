@@ -6,12 +6,13 @@ ESPHome's zigbee component has no OTA. This adds the OTA Upgrade client cluster
 free app slot and boots it. The coordinator acts as the OTA server and serves
 a file made by tools/make_zigbee_ota.py (tested with ZHA; Zigbee2MQTT not yet).
 
-The file version is the Unix time of the code generation, written together
-with manufacturer code and image type to zigbee_ota.json in the build
-directory, where the packer takes them from. Every compile gets a newer
-version, so the image in the file and the version it claims cannot disagree.
-(ESPHome's own build time in build_info.json is not used: it stays the same
-across some config changes.)
+The file version is the date of the code generation and the build of that
+day, 0xYYMMDDNN (version.py), written together with manufacturer code, image
+type and a few build facts to zigbee_ota.json in the build directory, where
+the packer takes them from. Every compile gets a newer version, so the image
+in the file and the version it claims cannot disagree. (ESPHome's own build
+time in build_info.json is not used: it stays the same across some config
+changes.)
 
 App rollback: the bootloader boots a new image in "pending verify" state. The
 image only counts as good once the OTA server answered it (a Query Next Image
@@ -21,16 +22,20 @@ rollback option lives in the bootloader, which only a USB flash writes: the
 first image with this component has to go on by cable.
 """
 
+import datetime
 import json
-import time
+from pathlib import Path
+import subprocess
 
 import esphome.codegen as cg
 from esphome.components.esp32 import add_idf_component, add_idf_sdkconfig_option
 from esphome.components.zigbee.const import ZigbeeComponent
 import esphome.config_validation as cv
-from esphome.const import CONF_ID
-from esphome.core import CORE
+from esphome.const import CONF_ID, __version__ as ESPHOME_VERSION
+from esphome.core import CORE, EsphomeError
 from esphome.coroutine import CoroPriority, coroutine_with_priority
+
+from .version import next_version
 
 DEPENDENCIES = ["zigbee"]
 CODEOWNERS = []
@@ -42,6 +47,7 @@ CONF_IMAGE_TYPE = "image_type"
 CONF_BLOCK_SIZE = "block_size"
 CONF_VERIFY_TIMEOUT = "verify_timeout"
 CONF_TX_POWER = "tx_power"
+CONF_LABEL = "label"
 
 zigbee_ota_ns = cg.esphome_ns.namespace("zigbee_ota")
 ZigbeeOta = zigbee_ota_ns.class_("ZigbeeOta", cg.Component)
@@ -57,8 +63,12 @@ CONFIG_SCHEMA = cv.Schema(
         # the block size by this code (50 bytes for everyone but a few vendors).
         cv.Optional(CONF_MANUFACTURER_CODE, default=0x131B): cv.hex_uint16_t,
         # Tells this firmware apart from other Espressif-code images in the same
-        # OTA folder. "HF".
+        # OTA folder. Give every board its own: the coordinator offers an image
+        # to every device with the same manufacturer code and image type.
         cv.Optional(CONF_IMAGE_TYPE, default=0x4846): cv.hex_uint16_t,
+        # Names the build in the OTA file and in the update notes the packer
+        # writes, e.g. the board. Defaults to the node name.
+        cv.Optional(CONF_LABEL): cv.string_strict,
         # Largest block the client asks for. The server may send less.
         cv.Optional(CONF_BLOCK_SIZE, default=223): cv.int_range(min=16, max=254),
         cv.Optional(
@@ -83,9 +93,12 @@ async def to_code(config):
     cg.add(var.set_block_size(config[CONF_BLOCK_SIZE]))
     cg.add(var.set_verify_timeout(config[CONF_VERIFY_TIMEOUT]))
 
-    version = int(time.time())
-    cg.add(var.set_file_version(version))
     info = CORE.relative_build_path("zigbee_ota.json")
+    try:
+        version = next_version(datetime.date.today(), _known_versions(info))
+    except ValueError as err:
+        raise EsphomeError(f"zigbee_ota: {err}") from err
+    cg.add(var.set_file_version(version))
     info.parent.mkdir(parents=True, exist_ok=True)
     info.write_text(
         json.dumps(
@@ -93,6 +106,9 @@ async def to_code(config):
                 "file_version": version,
                 "manufacturer_code": config[CONF_MANUFACTURER_CODE],
                 "image_type": config[CONF_IMAGE_TYPE],
+                "label": config.get(CONF_LABEL, CORE.name),
+                "esphome": ESPHOME_VERSION,
+                "git": _git_describe(),
             },
             indent=2,
         )
@@ -112,6 +128,42 @@ async def to_code(config):
     add_idf_component(name="espressif/esp_delta_ota", ref="1.1.4")
 
     CORE.add_job(_add_cluster, var)
+
+
+def _known_versions(info: Path) -> list[int]:
+    """Versions already handed out for this node: the last compile's and those
+    of the images kept by tools/make_zigbee_ota.py and tools/flash_config.sh
+    (.esphome/zigbee_ota/<name>-<VERSION>.bin). The new build counts on from
+    the highest of them that falls on the same day."""
+    known = []
+    try:
+        known.append(int(json.loads(info.read_text())["file_version"]))
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    keep = Path(CORE.build_path).parent.parent / "zigbee_ota"
+    for kept in keep.glob(f"{CORE.name}-*.bin"):
+        try:
+            known.append(int(kept.stem.removeprefix(f"{CORE.name}-"), 16))
+        except ValueError:
+            pass
+    return known
+
+
+def _git_describe() -> str | None:
+    """Tag, commit and local changes of the config's repository, None without
+    git or outside a repository (a downloaded archive)."""
+    try:
+        out = subprocess.run(
+            ["git", "describe", "--tags", "--always", "--dirty"],
+            cwd=CORE.config_dir,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.strip() or None
 
 
 # The cluster goes onto an endpoint that the zigbee codegen creates, so it has

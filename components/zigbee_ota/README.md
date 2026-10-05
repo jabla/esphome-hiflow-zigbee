@@ -9,7 +9,8 @@ zigbee_ota:
   # all optional
   endpoint: 1                # endpoint for the OTA Upgrade client cluster
   manufacturer_code: 0x131B  # Espressif
-  image_type: 0x4846
+  image_type: 0x4846         # one per board
+  label: my-board            # names the build in the OTA file and the update notes
   verify_timeout: 10min
   tx_power: 20               # dBm; unset keeps the stack default
 ```
@@ -18,7 +19,9 @@ zigbee_ota:
   Zigbee sensor. Adding the cluster to a bridge that is already paired needs a re-interview
   (ZHA: *Reconfigure*, then reload the integration).
 - `manufacturer_code`, `image_type`: must match the OTA file; `tools/make_zigbee_ota.py` takes
-  them, and the file version, from `zigbee_ota.json` in the build directory.
+  them, and the file version, from `zigbee_ota.json` in the build directory. The coordinator
+  offers an image to every device with the same pair, so give each board its own image type.
+- `label`: defaults to the node name.
 - `verify_timeout`: a new image counts as good once the OTA server answered it. If it cannot
   reach the server within this time, it rolls back to the previous image.
 - `tx_power`: only for a board whose supply browns out while it downloads (flash writes on
@@ -26,7 +29,10 @@ zigbee_ota:
 
 What it does:
 
-- The file version is the Unix time of the code generation, newer with every compile.
+- The file version is the date of the code generation and the build of that day,
+  `0xYYMMDDNN` (`version.py`), newer with every compile. The count goes on from the last
+  compile and the images kept under `.esphome/zigbee_ota/`; more than 99 builds a day stop the
+  compile.
 - Images come zlib-compressed (tag `0xF100`), or as an
   [esp_delta_ota](https://github.com/espressif/idf-extra-components/tree/master/esp_delta_ota)
   patch against the running image (tag `0xF101`). A patch for any other image is refused

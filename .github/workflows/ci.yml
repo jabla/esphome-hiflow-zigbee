@@ -16,6 +16,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends build-essential libssl-dev
       - name: Host test suites
         run: make -C test/host test
+      - name: OTA tool tests
+        run: python3 -m unittest discover -s test/tools
       - name: Component copies match src/
         run: |
           components/hiflow_ble/sync_core.sh

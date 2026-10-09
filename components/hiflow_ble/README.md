@@ -92,7 +92,7 @@ compared to the vendor `.proto`: the *request* is built from `…ResDTO`, the
 ## Configuration
 
 The component can be pulled straight from GitHub into your own ESPHome config (the commented
-`source:` below); `esp32c6.yaml` in the repository root is a complete example.
+`source:` below); `hiflow-zb.yaml` in the repository root is a complete example.
 
 ```yaml
 substitutions: !include hiflow_secrets.yaml   # gitignored
@@ -134,7 +134,7 @@ sensor:
 default to the physically correct values and can be overridden.
 
 Every sensor publishes on every poll. To send fewer Zigbee reports, give it
-ESPHome's standard filters, as `esp32c6.yaml` does:
+ESPHome's standard filters, as `hiflow-zb.yaml` does:
 
 ```yaml
     filters:
@@ -182,6 +182,41 @@ endpoint 34.
 
 `network_time` reads the time from the coordinator through a Time client
 cluster on endpoint 35, so the clock is right even after a power cut at night.
+
+### Power saving
+
+Four options cut the time the radio and the chip are awake. The component
+leaves them off, the bridge's `hiflow-zb.yaml` turns them on. Together with
+the [`zigbee_power`](../zigbee_power/README.md) component they let the bridge
+sleep most of the time.
+
+```yaml
+hiflow_ble:
+  # ...
+  connection_interval: 1s     # once the session is ready
+  night_ble_off: 2min         # or night_scan_interval: 10240ms
+```
+
+* `connection_interval` (50 ms to 2 s): the BLE connection interval once the
+  session is ready. Every connection event wakes the chip; ESP-IDF's default
+  is 30-50 ms. The handshake runs at the default, and the bridge reads back
+  what the inverter accepted (asking again up to three times).
+* Night mode comes in two kinds; set one of them:
+  * `night_scan_interval` (100 ms to 10.24 s): the scanner looks only this
+    often. The scan window stays the one of `esp32_ble_tracker`.
+  * `night_ble_off` (30 s to 30 min): BLE is off altogether and comes on for
+    a 15 s scan every `night_ble_off`. Without BLE the 40 MHz crystal and the
+    peripherals can sleep too. BLE must not be shared with another
+    `ble_client` or a `bluetooth_proxy`. The first link after dusk can take
+    up to this long. Needs ESPHome 2026.9.0 or newer, which settles the
+    scanner and the client when BLE goes off.
+
+  Night mode starts when the link drops after the inverter fed in nothing
+  (standby), or when the bridge has not seen the inverter (no advert, no
+  connection attempt) for 10 minutes after standby or since boot, or for an
+  hour without either. The first link ends it. No clock is involved.
+* `night_test`: bench only. Every lost link starts night mode at once, so a
+  fake inverter switched off counts as a night.
 
 There is no `enc_rand:` option: the inverter rotates its session key, so the
 session fetches it with a V0 pairing after every boot and after every failed

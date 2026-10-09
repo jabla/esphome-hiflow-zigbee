@@ -13,6 +13,9 @@ The image goes in as one sub-element:
          Needs `detools` (pip install detools).
   zlib   otherwise (also without detools): the compressed image (tag
          0xF100), about 60 %.
+  heatshrink  instead of zlib for an ESP32-H2: its heap has no room for
+         zlib's 32 KB window. The image as a detools patch from nothing (tag
+         0xF102), about 85 %. Needs `detools`.
 
 Every image this tool packs, and every image tools/flash_config.sh flashes, is
 kept as .esphome/zigbee_ota/<name>-<VERSION>.bin next to the config, and the
@@ -57,9 +60,14 @@ HEADER_LENGTH = 56          # no optional fields
 STACK_VERSION_PRO = 0x0002
 TAG_IMAGE_ZLIB = 0xF100
 TAG_IMAGE_DELTA = 0xF101
+TAG_IMAGE_HEATSHRINK = 0xF102
 ESP_IMAGE_MAGIC = 0xE9
 DELTA_MAGIC = 0xFCCDDE10
 DELTA_HEADER_LEN = 64
+# Chip ids (offset 12 of the image header) that take a full image as
+# heatshrink instead of zlib: too little heap for the inflater.
+CHIP_ID_ESP32H2 = 16
+HEATSHRINK_CHIPS = {CHIP_ID_ESP32H2}
 # Image type of every image from before the date versions, on every board.
 LEGACY_IMAGE_TYPE = 0x4846
 INDEX_NAME = "index.json"
@@ -78,19 +86,29 @@ def app_digest(image: bytes) -> bytes:
     return image[-32:]
 
 
-def delta_patch(base: bytes, new: bytes) -> bytes:
+def detools_patch(base: bytes, new: bytes) -> bytes:
+    """A detools patch in the one compression esp_delta_ota decodes, checked
+    before it goes anywhere near a device."""
     try:
         import detools
     except ImportError:
-        raise SystemExit("--from needs detools: pip install detools")
+        raise SystemExit("this image needs detools: pip install detools")
     patch = io.BytesIO()
     detools.create_patch(io.BytesIO(base), io.BytesIO(new), patch, compression="heatshrink")
     body = patch.getvalue()
-    # Check the patch before it goes anywhere near a device.
     out = io.BytesIO()
     detools.apply_patch(io.BytesIO(base), io.BytesIO(body), out)
     if out.getvalue() != new:
-        raise SystemExit("delta patch does not reproduce the new image")
+        raise SystemExit("patch does not reproduce the new image")
+    return body
+
+
+def chip_id(image: bytes) -> int:
+    return struct.unpack_from("<H", image, 12)[0]
+
+
+def delta_patch(base: bytes, new: bytes) -> bytes:
+    body = detools_patch(base, new)
     header = struct.pack("<I", DELTA_MAGIC) + app_digest(base)
     return header.ljust(DELTA_HEADER_LEN, b"\0") + body
 
@@ -219,13 +237,25 @@ def main() -> int:
     head_version, head_type, transition = header_for(version, image_type, installed)
     (keep / f"{name}-{version:08X}.bin").write_bytes(image)
 
+    heatshrink = chip_id(image) in HEATSHRINK_CHIPS
     if base_file is not None and importlib.util.find_spec("detools") is None:
+        if heatshrink:
+            print("this chip needs detools for every image: pip install detools", file=sys.stderr)
+            return 1
         print("detools is not installed (pip install detools), so a full image instead of a delta")
         base_file = None
     elif base_file is None and args.base is not None:
         print(f"no kept image of 0x{installed:08X} here, so a full image instead of a delta")
     if base_file is not None:
-        fmt, tag, payload = "delta", TAG_IMAGE_DELTA, delta_patch(base_file.read_bytes(), image)
+        base = base_file.read_bytes()
+        # The chip id in the image header (offset 12): a C6 image is no base
+        # for an H2 build. The device would refuse the patch anyway.
+        if base[12:14] != image[12:14]:
+            print(f"{base_file.name} was built for another chip", file=sys.stderr)
+            return 1
+        fmt, tag, payload = "delta", TAG_IMAGE_DELTA, delta_patch(base, image)
+    elif heatshrink:
+        fmt, tag, payload = "heatshrink", TAG_IMAGE_HEATSHRINK, detools_patch(b"", image)
     else:
         fmt, tag, payload = "zlib", TAG_IMAGE_ZLIB, zlib.compress(image, 9)
 

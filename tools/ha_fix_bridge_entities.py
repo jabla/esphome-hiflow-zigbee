@@ -5,12 +5,12 @@ ZHA names the analog-input entities of the bridge generically and binds them by
 unique id `<ieee>-<endpoint>-12-analog_input`. When a firmware adds a sensor, the
 endpoints shift and ZHA keeps the *old* entity ids, so ids and values no longer
 match. This script maps every endpoint to `sensor.<prefix>_<type>` and an English
-name, in the order of the sensor list in esp32c6.yaml. The renaming can be
+name, in the order of the sensor list in hiflow-zb.yaml. The renaming can be
 cyclic (every id moves one on), so it runs in two passes over temporary ids.
 
 Credentials come from the environment (HASS_URL, HASS_TOKEN = a long-lived
 access token) or from --env-file. The bridge is found by its Zigbee model string
-(`zigbee: model:` in esp32c6.yaml) unless --ieee is given.
+(`zigbee: model:` in hiflow-zb.yaml) unless --ieee is given.
 
 Usage:
     python3 tools/ha_fix_bridge_entities.py [--dry-run] [--prefix inverter_zb]
@@ -34,7 +34,7 @@ from pathlib import Path
 import websockets
 
 # Endpoint -> (entity suffix, name). The order is the order of the sensors in
-# esp32c6.yaml; new sensors go after the status so the older endpoints stay put.
+# hiflow-zb.yaml; new sensors go after the status so the older endpoints stay put.
 LAYOUT: dict[int, tuple[str, str]] = {
     1: ("ac_power", "AC power"),
     2: ("ac_voltage", "AC voltage"),
@@ -69,7 +69,9 @@ LAYOUT: dict[int, tuple[str, str]] = {
     30: ("port4_energy_total", "Port 4 energy total"),
     31: ("port4_energy_daily", "Port 4 energy today"),
     # 32 is the power limit slider, a number entity
-    33: ("bridge_uptime", "Bridge uptime"),
+    33: ("uptime", "Bridge uptime"),
+    # 34 is the on/off switch, 35 the time client
+    36: ("chip_temperature", "Chip temperature"),
 }
 VISIBLE = "ac_power"  # the one entity --hide-extras leaves visible
 

@@ -92,6 +92,16 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   void set_offset(int32_t v) { this->std_offset_ = v; }
   void set_eu_dst(bool v) { this->eu_dst_ = v; }
   void set_poll_interval(uint32_t ms) { this->poll_interval_ms_ = ms; }
+  void set_connection_interval(uint32_t ms) { this->conn_interval_ms_ = ms; }
+  void set_night_scan(uint32_t night_interval, uint32_t day_interval, uint32_t window) {
+    this->night_scan_interval_ = night_interval;
+    this->day_scan_interval_ = day_interval;
+    this->scan_window_ = window;
+  }
+  void set_night_ble_off(uint32_t ms) { this->night_ble_off_ms_ = ms; }
+  /// Night mode is on (for a template sensor or the display).
+  bool is_night() const { return this->night_; }
+  void set_night_test(bool v) { this->night_test_ = v; }
   void set_service_uuid128(const uint8_t *uuid) { this->service_uuid_ = espbt::ESPBTUUID::from_raw(uuid); }
   void set_tx_uuid16(uint16_t uuid) { this->tx_uuid_ = espbt::ESPBTUUID::from_uint16(uuid); }
   void set_rx_uuid16(uint16_t uuid) { this->rx_uuid_ = espbt::ESPBTUUID::from_uint16(uuid); }
@@ -175,6 +185,12 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   void start_session_();
   void report_link_up_();
   void report_link_down_(int reason);
+  void update_slow_link_(int64_t now);
+  bool night_mode_() const { return this->night_scan_interval_ != 0 || this->night_ble_off_ms_ != 0; }
+  void set_night_(bool night, const char *why);
+  void check_night_(int64_t now);
+  void apply_rescan_();
+  void night_ble_tick_(int64_t now);
   void publish_(uint8_t type, float value);
   // Publishes a lifetime counter unless it is 0 (missing) or below the last one.
   void publish_total_(uint8_t type, float value, float &last);
@@ -192,6 +208,16 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   uint16_t rx_handle_{0};
   uint16_t mtu_{23};
   bool link_ready_{false};     // notifications subscribed and reported
+  uint8_t slow_link_tries_{0};  // long connection interval requests on this link
+  int64_t slow_link_next_ms_{0};
+  bool night_{false};          // scanning at the night interval
+  bool ever_linked_{false};    // a link came up since boot
+  bool rescan_pending_{false}; // new scan parameters wait for a scanner restart
+  int64_t quiet_since_ms_{0};  // no sign of the inverter since then (0 = it is around)
+  bool night_burst_{false};    // BLE on for a scan at night
+  bool night_test_{false};     // bench: any lost link starts night mode
+  uint32_t night_ble_off_ms_{0};  // 0 = BLE stays on at night
+  int64_t night_next_ms_{0};   // next scan burst (BLE off) or its end (burst)
   bool link_reported_{false};  // link-down already reported for this connection
   int64_t notify_registered_ms_{0};
   int disconnect_reason_{0};
@@ -203,6 +229,10 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   int32_t std_offset_{3600};
   bool eu_dst_{true};
   uint32_t poll_interval_ms_{30000};
+  uint32_t conn_interval_ms_{0};  // 0 = keep ESP-IDF's default
+  uint32_t night_scan_interval_{0};  // 0.625 ms units, 0 = no night mode
+  uint32_t day_scan_interval_{0};
+  uint32_t scan_window_{0};
 
   // --- session core ---
   hiflow_session_t session_{};

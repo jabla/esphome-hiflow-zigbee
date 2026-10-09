@@ -9,7 +9,7 @@
 #   - daylight, otherwise the inverter's radio is off and the test says nothing
 #
 # Usage:  bash tools/quicktest.sh [seconds]        (default 180)
-#         CONF=esp32c6-bleonly.yaml bash tools/quicktest.sh   (isolation run)
+#         CONF=hiflow-zb-bleonly.yaml bash tools/quicktest.sh   (isolation run)
 #         NOFLASH=1 bash tools/quicktest.sh 300   (capture only: no build, no flash)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -18,7 +18,7 @@ PY="${PY:-python3}"   # needs pyserial (ESPHome ships it)
 DEV="${DEV:-/dev/ttyACM0}"
 LOG="${LOG:-/tmp/hiflow-quicktest.log}"
 SECS="${1:-${SECS:-180}}"
-CONF="${CONF:-esp32c6.yaml}"
+CONF="${CONF:-hiflow-zb.yaml}"
 DEBUG_CONF="${CONF%.yaml}-debug.yaml"
 
 if [ -n "${NOFLASH:-}" ]; then
@@ -29,6 +29,19 @@ else
   # CDC writes end in a watchdog reset). For an attended run on laptop USB the
   # handshake steps are worth seeing.
   sed 's/^  level: WARN/  level: DEBUG/' "$CONF" > "$DEBUG_CONF"
+  # The heap once a minute: the H2 has less RAM than the C6, so the run shows
+  # how much the session leaves.
+  cat >> "$DEBUG_CONF" <<'YAML'
+
+interval:
+  - interval: 60s
+    then:
+      - lambda: |-
+          ESP_LOGI("heap", "free %u, minimum %u, largest block %u",
+                   (unsigned) heap_caps_get_free_size(MALLOC_CAP_8BIT),
+                   (unsigned) heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT),
+                   (unsigned) heap_caps_get_largest_free_block(MALLOC_CAP_8BIT));
+YAML
   tools/flash_config.sh "$DEBUG_CONF"
 fi
 
@@ -74,6 +87,8 @@ echo "--- handshake ---"
 grep -E "subscribed to ffe2|handshake|V0 pairing|PIN|time-sync|status" "$LOG" | tail -20 || true
 echo "--- link drops (reason 0x08 radio, 0x13 inverter, 0x16 us) ---"
 grep -E "link down \(reason|waiting [0-9]+ s" "$LOG" | tail -10 || true
+echo "--- heap (bytes) ---"
+grep -E "\[heap[]:]" "$LOG" | sed -n '1p;$p' || true
 echo "--- warnings and errors ---"
 grep -E "\[W\]|\[E\]" "$LOG" | tail -15 || true
 echo

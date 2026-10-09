@@ -12,6 +12,9 @@
 #include "ezbee/zcl/cluster/ota_upgrade.h"
 #include "esphome/core/application.h"
 #include "esphome/core/hal.h"
+#ifdef USE_ZIGBEE_POWER
+#include "esphome/components/zigbee_power/zigbee_power.h"
+#endif
 #include "esphome/core/log.h"
 
 namespace esphome {
@@ -21,17 +24,36 @@ static const char *const TAG = "zigbee_ota";
 
 // OTA file layout (ZCL spec 11.4): a header whose length sits at offset 6,
 // then sub-elements of tag (2 bytes) + length (4 bytes) + data. The ESP-IDF
-// app image comes in one of two sub-elements from the manufacturer tag range,
+// app image comes in one of three sub-elements from the manufacturer tag range,
 // written by tools/make_zigbee_ota.py; other sub-elements are skipped.
 static const uint32_t OTA_FILE_IDENTIFIER = 0x0BEEF11E;
 static const uint16_t TAG_IMAGE_ZLIB = 0xF100;   // zlib stream (RFC 1950) of the app image
 static const uint16_t TAG_IMAGE_DELTA = 0xF101;  // esp_delta_ota patch against the running image
+// The whole app image as a detools patch from nothing (heatshrink): no base,
+// and a few hundred bytes of decoder state where zlib needs a 32 KB window.
+// For a chip without that much free heap, the ESP32-H2.
+static const uint16_t TAG_IMAGE_HEATSHRINK = 0xF102;
 static const uint32_t DELTA_MAGIC = 0xFCCDDE10;
 static const uint8_t DELTA_HEADER_LEN = 64;      // magic, SHA-256 of the base, reserved
 static const uint8_t SUB_ELEMENT_HEADER_LEN = 6;
 static const uint32_t QUERY_PERIOD_MS = 30000;
 static const uint32_t PROGRESS_LOG_MS = 15000;
 static const uint32_t RESTART_DELAY_MS = 2000;
+// The stack asks again for a block whose answer has not come within this
+// time (its default is 5 s). The parent holds an answer for a sleepy device
+// for at most macTransactionPersistenceTime (7.68 s by default), so after 10 s
+// either the late answer came or the parent dropped it, and the answer to the
+// repeated request cannot come on top of it. Next to a BLE data exchange an
+// answer came up to ~6 s late on the bench.
+static const uint32_t BLOCK_RETRY_MS = 10000;
+static const uint8_t BLOCK_RETRIES = 3;
+// Without a progress callback for this long the server has walked away: the
+// stack resends a block request BLOCK_RETRIES times BLOCK_RETRY_MS apart and
+// then reports ABORT, but an error status in a block response (a server that
+// restarted mid-download answers ABORT) stops it silently and leaves the
+// download open. A complete image that waits this long for APPLY (a server
+// that set a later upgrade time) stays ready; only the fast poll ends.
+static const uint32_t STALL_MS = 60000;
 
 static ZigbeeOta *global_ota = nullptr;  // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
@@ -110,6 +132,7 @@ void ZigbeeOta::setup() {
   this->zb_->add_on_start_callback([this]() {
     esp_zigbee_lock_acquire(portMAX_DELAY);
     ezb_zcl_ota_upgrade_set_download_block_size(this->endpoint_, this->block_size_);
+    ezb_zcl_ota_upgrade_set_download_retry(this->endpoint_, BLOCK_RETRIES, BLOCK_RETRY_MS);
     int8_t before = 0;
     ezb_get_tx_power(&before);
     if (this->tx_power_ != 127)
@@ -159,6 +182,28 @@ void ZigbeeOta::loop() {
     }
   }
 
+  // Checked again under the stack's lock, where no block can come in between.
+  if (this->stalled_(now) && esp_zigbee_lock_acquire(10 / portTICK_PERIOD_MS)) {
+    if (this->stalled_(millis())) {
+      if (this->downloading_.load()) {
+        ESP_LOGE(TAG, "No block for %" PRIu32 " s, download abandoned at %" PRIu32 " bytes", STALL_MS / 1000,
+                 this->offset_.load());
+        this->end_download_();
+        // The stack refuses every later offer while it thinks a download runs.
+        uint8_t status = EZB_ZCL_OTA_UPGRADE_IMAGE_UPGRADE_STATUS_NORMAL;
+        ezb_zcl_set_attr_value(this->endpoint_, EZB_ZCL_CLUSTER_ID_OTA_UPGRADE, EZB_ZCL_CLUSTER_CLIENT,
+                               EZB_ZCL_ATTR_OTA_UPGRADE_IMAGE_UPGRADE_STATUS_ID, EZB_ZCL_STD_MANUF_CODE, &status,
+                               false);
+      } else {
+        // Complete and checked, waiting for APPLY: the stack keeps the image
+        // and its state, a later APPLY still selects it.
+        ESP_LOGW(TAG, "No APPLY for %" PRIu32 " s after the download, back to the normal poll", STALL_MS / 1000);
+        this->set_updating_(false);
+      }
+    }
+    esp_zigbee_lock_release();
+  }
+
   if (this->downloading_.load() && now - this->last_log_ms_ > PROGRESS_LOG_MS) {
     this->last_log_ms_ = now;
     const uint32_t offset = this->offset_.load();
@@ -167,6 +212,12 @@ void ZigbeeOta::loop() {
              this->file_size_, this->file_size_ ? offset * 100 / this->file_size_ : 0, secs,
              secs ? offset / secs : 0);
   }
+}
+
+// Signed: the Zigbee task may store a block's time after `now` was taken.
+bool ZigbeeOta::stalled_(uint32_t now) const {
+  return this->updating_.load() && !this->restart_.load() &&
+         static_cast<int32_t>(now - this->last_progress_ms_.load()) > static_cast<int32_t>(STALL_MS);
 }
 
 void ZigbeeOta::send_query_() {
@@ -215,6 +266,7 @@ void ZigbeeOta::on_query_response_(void *message) {
 void ZigbeeOta::on_progress_(void *message) {
   auto *msg = static_cast<ezb_zcl_ota_upgrade_client_progress_message_t *>(message);
   ezb_zcl_status_t result = EZB_ZCL_STATUS_SUCCESS;
+  this->last_progress_ms_ = millis();
 
   switch (msg->in.progress) {
     case EZB_ZCL_OTA_UPGRADE_PROGRESS_START: {
@@ -237,6 +289,16 @@ void ZigbeeOta::on_progress_(void *message) {
       esp_err_t err = this->partition_ == nullptr
                           ? ESP_ERR_NOT_FOUND
                           : esp_ota_begin(this->partition_, OTA_WITH_SEQUENTIAL_WRITES, &this->handle_);
+      if (err == ESP_ERR_OTA_ROLLBACK_INVALID_STATE) {
+        // The running image still waits for its first server answer, which
+        // the main loop takes as proof; this offer is one, and it arrived on
+        // the Zigbee task before the loop could see it. The loop learns it
+        // too, or its verify timeout would roll the valid image back.
+        esp_ota_mark_app_valid_cancel_rollback();
+        this->server_answered_ = true;
+        ESP_LOGW(TAG, "Offer received, image marked valid");
+        err = esp_ota_begin(this->partition_, OTA_WITH_SEQUENTIAL_WRITES, &this->handle_);
+      }
       if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_ota_begin failed: %s", esp_err_to_name(err));
         this->failed_ = true;
@@ -246,6 +308,7 @@ void ZigbeeOta::on_progress_(void *message) {
       this->download_start_ms_ = millis();
       this->last_log_ms_ = this->download_start_ms_;
       this->downloading_ = true;
+      this->set_updating_(true);
       break;
     }
 
@@ -257,8 +320,16 @@ void ZigbeeOta::on_progress_(void *message) {
       const uint32_t block_offset = msg->in.receiving.file_offset;
       const uint8_t *data = msg->in.receiving.block;
       uint32_t len = msg->in.receiving.block_size;
-      if (block_offset != this->offset_.load()) {
-        ESP_LOGE(TAG, "Block at %" PRIu32 ", expected %" PRIu32, block_offset, this->offset_.load());
+      const uint32_t expected = this->offset_.load();
+      if (block_offset != expected && block_offset + len <= expected) {
+        // A repeat of data already written: an answer came later than the
+        // stack's retry, and both answers arrived (see BLOCK_RETRY_MS).
+        ESP_LOGW(TAG, "Block at %" PRIu32 " again (expected %" PRIu32 "), skipped", block_offset, expected);
+        this->resync_file_offset_(msg->in.receiving.block_size);
+        break;
+      }
+      if (block_offset != expected) {
+        ESP_LOGE(TAG, "Block at %" PRIu32 ", expected %" PRIu32, block_offset, expected);
         this->failed_ = true;
         result = EZB_ZCL_STATUS_ABORT;
         break;
@@ -334,10 +405,14 @@ void ZigbeeOta::on_progress_(void *message) {
         data += take;
         len -= take;
       }
+      if (!this->failed_)
+        this->resync_file_offset_(msg->in.receiving.block_size);
       break;
     }
 
     case EZB_ZCL_OTA_UPGRADE_PROGRESS_CHECK: {
+      // A good image keeps the fast poll until the restart (or STALL_MS
+      // without APPLY); only a failure goes back to the normal poll.
       this->downloading_ = false;
       const uint32_t secs = (millis() - this->download_start_ms_) / 1000;
       ESP_LOGW(TAG, "Download complete: %" PRIu32 " bytes in %" PRIu32 " s, image %" PRIu32 " bytes",
@@ -345,7 +420,11 @@ void ZigbeeOta::on_progress_(void *message) {
       if (this->failed_ || this->offset_.load() != this->file_size_ || this->element_left_ != 0 ||
           this->finish_image_() != ESP_OK || this->image_written_ == 0) {
         ESP_LOGE(TAG, "Incomplete download");
+        // The stack goes on to APPLY whatever CHECK answers; without this
+        // APPLY would select a slot that may still hold the previous image.
+        this->failed_ = true;
         this->release_decoders_();
+        this->set_updating_(false);
         result = EZB_ZCL_STATUS_INVALID_IMAGE;
         break;
       }
@@ -356,6 +435,7 @@ void ZigbeeOta::on_progress_(void *message) {
       if (err != ESP_OK) {
         ESP_LOGE(TAG, "Image check failed: %s", esp_err_to_name(err));
         this->failed_ = true;
+        this->set_updating_(false);
         result = EZB_ZCL_STATUS_INVALID_IMAGE;
       }
       break;
@@ -380,6 +460,7 @@ void ZigbeeOta::on_progress_(void *message) {
         // selected, so the reboot is ours: from the main loop, with a moment
         // for the acknowledgements to go out.
         this->restart_ = true;
+        App.wake_loop_threadsafe();
         result = EZB_ZCL_STATUS_ABORT;
       }
       break;
@@ -393,18 +474,57 @@ void ZigbeeOta::on_progress_(void *message) {
       break;
 
     case EZB_ZCL_OTA_UPGRADE_PROGRESS_ABORT:
+      // The stack turns APPLY's deliberate ABORT (see above) into this one
+      // too; the new image is selected by then and the reboot is near.
+      if (this->restart_.load())
+        break;
       ESP_LOGW(TAG, "Download aborted at %" PRIu32 " bytes", this->offset_.load());
-      this->downloading_ = false;
-      this->release_decoders_();
-      if (this->handle_ != 0)
-        esp_ota_abort(this->handle_);
-      this->handle_ = 0;
+      this->end_download_();
       break;
 
     default:
       break;
   }
   msg->out.result = result;
+}
+
+void ZigbeeOta::end_download_() {
+  this->downloading_ = false;
+  this->set_updating_(false);
+  this->release_decoders_();
+  if (this->handle_ != 0)
+    esp_ota_abort(this->handle_);
+  this->handle_ = 0;
+}
+
+// The stack does not check the offset of a block answer: it adds every
+// answer's length to FileOffset, a repeat's too, asks for the next block from
+// there before this callback runs, and ends the download once FileOffset plus
+// an answer's length reaches the image size. After a repeat it runs a block
+// ahead (two requests in flight, the data stays in order); on the answer
+// before the last one that would end the download with the last block still
+// on its way. So when the next answer could end it, FileOffset goes back to
+// the data written. Only one repeat this close to the end still fails; the
+// longer retry time makes even one rare.
+void ZigbeeOta::resync_file_offset_(uint32_t block_len) {
+  ezb_zcl_attr_desc_t attr = ezb_zcl_get_attr_desc(this->endpoint_, EZB_ZCL_CLUSTER_ID_OTA_UPGRADE, EZB_ZCL_CLUSTER_CLIENT,
+                                                   EZB_ZCL_ATTR_OTA_UPGRADE_FILE_OFFSET_ID, EZB_ZCL_STD_MANUF_CODE);
+  uint32_t stack_offset = 0;
+  if (attr == EZB_INVALID_ZCL_ATTR_DESC || ezb_zcl_attr_desc_get_value(attr, &stack_offset) != EZB_ERR_NONE)
+    return;
+  uint32_t offset = this->offset_.load();
+  if (stack_offset <= offset || stack_offset + block_len < this->file_size_)
+    return;
+  ESP_LOGW(TAG, "FileOffset %" PRIu32 " back to %" PRIu32, stack_offset, offset);
+  ezb_zcl_set_attr_value(this->endpoint_, EZB_ZCL_CLUSTER_ID_OTA_UPGRADE, EZB_ZCL_CLUSTER_CLIENT,
+                         EZB_ZCL_ATTR_OTA_UPGRADE_FILE_OFFSET_ID, EZB_ZCL_STD_MANUF_CODE, &offset, false);
+}
+
+void ZigbeeOta::set_updating_(bool on) {
+  this->updating_ = on;
+#ifdef USE_ZIGBEE_POWER
+  zigbee_power::set_updating(on);
+#endif
 }
 
 bool ZigbeeOta::begin_image_(uint16_t tag, uint32_t length) {
@@ -424,6 +544,17 @@ bool ZigbeeOta::begin_image_(uint16_t tag, uint32_t length) {
     case TAG_IMAGE_DELTA:
       this->running_ = esp_ota_get_running_partition();
       this->format_ = ImageFormat::DELTA;
+      break;
+    case TAG_IMAGE_HEATSHRINK:
+      // No base and no header: the patch engine starts at once.
+      this->running_ = nullptr;
+      this->format_ = ImageFormat::DELTA;
+      this->delta_header_len_ = DELTA_HEADER_LEN;
+      if (!this->start_patch_()) {
+        ESP_LOGE(TAG, "No memory for the patch engine");
+        this->release_decoders_();
+        return false;
+      }
       break;
     default:
       // Some other sub-element (signature, ...): skipped.
@@ -464,16 +595,7 @@ esp_err_t ZigbeeOta::write_image_(const uint8_t *data, uint32_t len, bool last) 
           ESP_LOGE(TAG, "Delta patch is not for the running image (%s)", magic != DELTA_MAGIC ? "magic" : "SHA-256");
           return ESP_ERR_INVALID_VERSION;
         }
-        esp_delta_ota_cfg_t cfg = {};
-        cfg.user_data = this;
-        cfg.read_cb_with_user_data = [](uint8_t *buf, size_t size, int src_offset, void *user) -> esp_err_t {
-          return esp_partition_read(static_cast<ZigbeeOta *>(user)->running_, src_offset, buf, size);
-        };
-        cfg.write_cb_with_user_data = [](const uint8_t *buf, size_t size, void *user) -> esp_err_t {
-          return static_cast<ZigbeeOta *>(user)->write_output_(buf, size);
-        };
-        this->delta_ = esp_delta_ota_init(&cfg);
-        if (this->delta_ == nullptr)
+        if (!this->start_patch_())
           return ESP_ERR_NO_MEM;
         ESP_LOGW(TAG, "Delta patch matches the running image");
       }
@@ -483,6 +605,23 @@ esp_err_t ZigbeeOta::write_image_(const uint8_t *data, uint32_t len, bool last) 
       break;
   }
   return ESP_OK;
+}
+
+bool ZigbeeOta::start_patch_() {
+  esp_delta_ota_cfg_t cfg = {};
+  cfg.user_data = this;
+  cfg.read_cb_with_user_data = [](uint8_t *buf, size_t size, int src_offset, void *user) -> esp_err_t {
+    const esp_partition_t *base = static_cast<ZigbeeOta *>(user)->running_;
+    // A patch from nothing never reads its base; one that tries is broken.
+    if (base == nullptr)
+      return size == 0 ? ESP_OK : ESP_ERR_INVALID_STATE;
+    return esp_partition_read(base, src_offset, buf, size);
+  };
+  cfg.write_cb_with_user_data = [](const uint8_t *buf, size_t size, void *user) -> esp_err_t {
+    return static_cast<ZigbeeOta *>(user)->write_output_(buf, size);
+  };
+  this->delta_ = esp_delta_ota_init(&cfg);
+  return this->delta_ != nullptr;
 }
 
 esp_err_t ZigbeeOta::inflate_(const uint8_t *data, uint32_t len, bool last) {

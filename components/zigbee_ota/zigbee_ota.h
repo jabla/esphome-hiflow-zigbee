@@ -1,6 +1,6 @@
 #pragma once
 
-// ZCL OTA Upgrade client for ESPHome's zigbee component on the ESP32-C6; see
+// ZCL OTA Upgrade client for ESPHome's zigbee component on the ESP32-C6/H2; see
 // __init__.py for the whole picture.
 //
 // Threads: the stack calls the progress handler on the Zigbee task. Flash
@@ -56,7 +56,18 @@ class ZigbeeOta : public Component {
   esp_err_t write_image_(const uint8_t *data, uint32_t len, bool last);
   esp_err_t finish_image_();
   void release_decoders_();
+  /// Ends the download and frees its state (on the Zigbee task or under its lock).
+  void end_download_();
+  void resync_file_offset_(uint32_t block_len);
+  /// From the download to the restart (see zigbee_power::set_updating):
+  /// fast poll on the sleepy build, and a pending join waits. Tracked so the
+  /// main loop can end an update the server walked away from.
+  void set_updating_(bool on);
+  /// An update without progress for STALL_MS (main loop).
+  bool stalled_(uint32_t now) const;
   esp_err_t inflate_(const uint8_t *data, uint32_t len, bool last);
+  /// Starts esp_delta_ota; running_ is the base, or nullptr for a patch from nothing.
+  bool start_patch_();
   esp_err_t write_output_(const uint8_t *data, size_t len);
 
   zigbee::ZigbeeComponent *zb_{nullptr};
@@ -84,7 +95,7 @@ class ZigbeeOta : public Component {
   size_t window_pos_{0};
   bool inflate_done_{false};
   // delta: esp_delta_ota patch header (magic + SHA-256 of the base image),
-  // then the detools patch.
+  // then the detools patch. heatshrink: the detools patch alone, no base.
   const esp_partition_t *running_{nullptr};
   void *delta_{nullptr};
   uint8_t delta_header_[64];
@@ -96,6 +107,8 @@ class ZigbeeOta : public Component {
   std::atomic<bool> downloading_{false};
   std::atomic<bool> server_answered_{false};
   std::atomic<bool> restart_{false};
+  std::atomic<bool> updating_{false};
+  std::atomic<uint32_t> last_progress_ms_{0};  // last progress callback of the stack
 
   // Main loop only.
   bool pending_verify_{false};

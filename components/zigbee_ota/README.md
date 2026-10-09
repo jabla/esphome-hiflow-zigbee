@@ -1,6 +1,6 @@
 # zigbee_ota
 
-Firmware updates over Zigbee for ESPHome's `zigbee` component on the ESP32-C6: the ZCL OTA
+Firmware updates over Zigbee for ESPHome's `zigbee` component on the ESP32-C6 and ESP32-H2: the ZCL OTA
 Upgrade client of esp-zigbee-lib, which ESPHome does not expose. How to use it with ZHA is in
 the main README, *Firmware updates over Zigbee*.
 
@@ -31,12 +31,16 @@ What it does:
 
 - The file version is the date of the code generation and the build of that day,
   `0xYYMMDDNN` (`version.py`), newer with every compile. The count goes on from the last
-  compile and the images kept under `.esphome/zigbee_ota/`; more than 99 builds a day stop the
-  compile.
+  compile of every config in the directory and the images kept under `.esphome/zigbee_ota/`,
+  so a second config for the same board (a debug copy) never ends up below the first; more
+  than 99 builds a day stop the compile.
 - Images come zlib-compressed (tag `0xF100`), or as an
   [esp_delta_ota](https://github.com/espressif/idf-extra-components/tree/master/esp_delta_ota)
   patch against the running image (tag `0xF101`). A patch for any other image is refused
   before anything is written (SHA-256 in its header). `esp_ota_end()` checks the result.
+- On the ESP32-H2 a full image comes as a patch from nothing instead (tag `0xF102`,
+  heatshrink, about 85 % of the image): zlib's inflater needs a 32 KB window plus 11 KB of
+  state, more than the largest free block there. The patch engine needs a few hundred bytes.
 - The bootloader's app rollback is turned on (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`), and
   ESPHome no longer marks the image valid at boot; this component does, after the OTA server
   answered a Query Next Image. An image that crashes before that is replaced by the previous
@@ -46,3 +50,11 @@ What it does:
   Upgrade End Response. ZHA then reports the update as failed although it worked. The
   component answers the apply step with an abort instead, which takes the library's sound
   path, and reboots into the new image 2 seconds later.
+- An offer that arrives before the new image was marked valid counts as the server's answer:
+  the image is marked valid and the download starts (the first update after an update used to
+  fail once).
+- A download without progress for 60 s is ended: the server answered a block with an error
+  (a ZHA reload mid-download does that), and the library stops without telling. The
+  component frees the download and resets the upgrade status, so the next offer is taken.
+- With [`zigbee_power`](../zigbee_power/README.md) `sleepy: true` the node polls its parent
+  every 50 ms from the start of a download to the reboot (it still sleeps between polls).

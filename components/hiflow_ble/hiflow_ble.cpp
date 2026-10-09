@@ -5,13 +5,20 @@
 
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
+#include "esphome/components/esp32_ble/ble.h"
+#include "esphome/components/esp32_ble_tracker/esp32_ble_tracker.h"
+#ifdef USE_ZIGBEE_POWER_SLEEPY
+#include "esphome/components/zigbee_power/zigbee_power.h"
+#endif
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 
 #ifdef USE_ESP32
 
+#include <esp_gap_ble_api.h>
 #include <esp_gattc_api.h>
 #include <esp_timer.h>
 
@@ -36,6 +43,13 @@ static const int64_t TIME_RETRY_MS = 600000;               // after a failed req
 static const int64_t TIME_BUSY_RETRY_MS = 5000;            // the Zigbee stack was busy
 static const int64_t TIME_JOIN_SETTLE_MS = 30000;           // after a (re)join, before the first request
 static const int64_t SWITCH_QUIET_MS = 1000;          // merges a quick off-on into one command
+static const int64_t SLOW_LINK_CHECK_MS = 10000;      // read the connection interval back after
+static const uint8_t SLOW_LINK_TRIES = 3;
+// Night mode: no sign of the inverter (no advert, no attempt) for this long,
+// when its last reading was standby or there was none since boot; or for the
+// long span alone (its radio died before standby showed).
+static const int64_t NIGHT_QUIET_MS = 600000;
+static const int64_t NIGHT_QUIET_LONG_MS = 3600000;
 static const uint16_t SWITCH_PREF_MAGIC = 0x4853;     // 'HS'
 static const char *const SWITCH_PREF_NAME = "hiflow_switch_v1";
 static const uint16_t LIMIT_PREF_MAGIC = 0x484C;      // 'HL'
@@ -229,6 +243,15 @@ void HiflowBle::loop() {
     hiflow_daylog_update(&this->daylog_, now, facts);
   }
   hiflow_session_tick(&this->session_, now);
+  if (this->conn_interval_ms_ != 0 && this->link_ready_ && this->slow_link_tries_ <= SLOW_LINK_TRIES &&
+      now >= this->slow_link_next_ms_ && hiflow_session_state(&this->session_) == HIFLOW_STATE_READY)
+    this->update_slow_link_(now);
+  if (this->night_mode_() && !this->night_)
+    this->check_night_(now);
+  if (this->rescan_pending_)
+    this->apply_rescan_();
+  if (this->night_ && this->night_ble_off_ms_ != 0)
+    this->night_ble_tick_(now);
 
   if (now >= this->next_status_refresh_ms_)
     this->publish_status_(hiflow_session_status(&this->session_), true);
@@ -302,6 +325,19 @@ void HiflowBle::dump_config() {
   ESP_LOGCONFIG(TAG, "  Time offset: %d s%s", static_cast<int>(this->std_offset_),
                 this->eu_dst_ ? " + European summer time" : "");
   ESP_LOGCONFIG(TAG, "  Poll interval: %u ms", static_cast<unsigned>(this->poll_interval_ms_));
+  if (this->conn_interval_ms_ != 0) {
+    ESP_LOGCONFIG(TAG, "  Connection interval when ready: %u ms", static_cast<unsigned>(this->conn_interval_ms_));
+  }
+  if (this->night_ble_off_ms_ != 0) {
+    ESP_LOGCONFIG(TAG, "  Night: BLE off, a scan burst every %u s",
+                  static_cast<unsigned>(this->night_ble_off_ms_ / 1000));
+  } else if (this->night_scan_interval_ != 0) {
+    ESP_LOGCONFIG(TAG, "  Night: scan interval %u ms",
+                  static_cast<unsigned>(this->night_scan_interval_ * 5 / 8));
+  }
+  if (this->night_test_) {
+    ESP_LOGW(TAG, "  night_test: every lost link starts night mode (bench only)");
+  }
 #ifdef USE_ZIGBEE
   if (this->slider_zb_ != nullptr) {
     ESP_LOGCONFIG(TAG, "  Power limit slider: Zigbee endpoint %u", this->slider_endpoint_);
@@ -332,8 +368,167 @@ void HiflowBle::report_link_up_() {
   if (this->link_ready_)
     return;
   this->link_ready_ = true;
+  this->ever_linked_ = true;
+  if (this->night_)
+    this->set_night_(false, "link up");
   ESP_LOGI(TAG, "subscribed to ffe2 (MTU %u), starting the HiFlow handshake", this->mtu_);
   hiflow_session_link_up(&this->session_, this->now_ms_());
+}
+
+// Once the session is ready, the link only carries a poll every
+// update_interval: a long connection interval lets the chip sleep between the
+// connection events. Units of 1.25 ms; the supervision timeout (10 ms units)
+// covers ten intervals, 6 s to 32 s. The inverter may refuse or change the
+// request, and the stack drops the answer: read back what holds, ask again.
+void HiflowBle::update_slow_link_(int64_t now) {
+  const uint16_t interval = this->conn_interval_ms_ * 4 / 5;
+  esp_gap_conn_params_t current = {};
+  if (this->slow_link_tries_ > 0 &&
+      esp_ble_get_current_conn_params(this->parent()->get_remote_bda(), &current) == ESP_OK) {
+    if (current.interval == interval) {
+      ESP_LOGI(TAG, "connection interval %u ms, supervision timeout %u ms",
+               static_cast<unsigned>(current.interval * 5 / 4), static_cast<unsigned>(current.timeout * 10));
+      this->slow_link_tries_ = SLOW_LINK_TRIES + 1;  // done for this connection
+      return;
+    }
+    if (this->slow_link_tries_ == SLOW_LINK_TRIES) {
+      ESP_LOGW(TAG, "connection interval stays at %u ms", (unsigned) (current.interval * 5 / 4));
+      this->slow_link_tries_++;
+      return;
+    }
+  }
+  this->slow_link_tries_++;
+  this->slow_link_next_ms_ = now + SLOW_LINK_CHECK_MS;
+  esp_ble_conn_update_params_t params = {};
+  memcpy(params.bda, this->parent()->get_remote_bda(), sizeof(esp_bd_addr_t));
+  params.min_int = interval;
+  params.max_int = interval;
+  params.latency = 0;
+  params.timeout = std::min<uint32_t>(3200, std::max<uint32_t>(600, this->conn_interval_ms_));
+  esp_err_t err = esp_ble_gap_update_conn_params(&params);
+  if (err != ESP_OK) {
+    ESP_LOGW(TAG, "connection interval update failed: %s", esp_err_to_name(err));
+  } else {
+    ESP_LOGD(TAG, "connection interval %u ms requested", (unsigned) this->conn_interval_ms_);
+  }
+}
+
+// Night mode: the inverter fed in nothing and then dropped the link (or there
+// never was one since boot). Two observations, no clock: the scanner only
+// looks every night_scan_interval until the inverter shows up again.
+void HiflowBle::set_night_(bool night, const char *why) {
+  this->night_ = night;
+  if (this->night_ble_off_ms_ != 0) {
+    // BLE off at night, on for the scan bursts with the day's parameters.
+    // Night starts like the end of a burst: BLE goes off once it is quiet.
+    this->night_burst_ = night;
+    this->night_next_ms_ = this->now_ms_();
+    if (!night && esp32_ble::global_ble != nullptr)
+      esp32_ble::global_ble->enable();
+  } else if (auto *tracker = esp32_ble_tracker::global_esp32_ble_tracker) {
+    tracker->set_scan_interval(night ? this->night_scan_interval_ : this->day_scan_interval_);
+    tracker->set_scan_window(this->scan_window_);
+    // A running scan keeps its parameters until it starts again.
+    this->rescan_pending_ = !this->link_ready_;
+  }
+  ESP_LOGI(TAG, "%s mode (%s)%s", night ? "night" : "day", why,
+           this->night_ble_off_ms_ == 0 ? "" : (night ? ", BLE off" : ", BLE on"));
+#ifdef USE_ZIGBEE_POWER_SLEEPY
+  zigbee_power::set_night(night);
+#endif
+}
+
+// Night from the state, not only from the moment the link drops: after a
+// reboot at night there is no drop, and the radio may die before standby.
+// Any advert (the client leaves IDLE) or attempt (the session leaves
+// WAIT_LINK) starts the quiet span again.
+void HiflowBle::check_night_(int64_t now) {
+  bool quiet = !this->link_ready_ && this->node_state == espbt::ClientState::IDLE &&
+               hiflow_session_state(&this->session_) == HIFLOW_STATE_WAIT_LINK;
+  if (!quiet) {
+    this->quiet_since_ms_ = 0;
+    return;
+  }
+  if (this->quiet_since_ms_ == 0) {
+    this->quiet_since_ms_ = now;
+    return;
+  }
+  int64_t quiet_ms = now - this->quiet_since_ms_;
+  if (quiet_ms >= NIGHT_QUIET_MS && !this->ever_linked_) {
+    this->set_night_(true, "no inverter since boot");
+  } else if (quiet_ms >= NIGHT_QUIET_MS && this->is_standby()) {
+    this->set_night_(true, "no inverter after standby");
+  } else if (quiet_ms >= NIGHT_QUIET_LONG_MS) {
+    this->set_night_(true, "no inverter for an hour");
+  }
+}
+
+// Night with BLE off: every night_ble_off a 15 s scan burst; a burst that finds
+// the inverter connects and the link-up ends night mode. BLE goes off once the
+// client is idle (no attempt, no link going down); an attempt still running
+// after the cap is dropped. A running scan needs nothing: on the way down
+// ESPHome (2026.9.0 on) stops it, settles the tracker and the client and drops
+// their late events. Stopping it here first raced the end of the tracker's own
+// scan period, which comes at the same time when night starts 10 minutes after
+// the scan did, and logged two "Unexpected state" errors.
+void HiflowBle::night_ble_tick_(int64_t now) {
+  static const int64_t BURST_MS = 15000;
+  static const int64_t QUIET_CAP_MS = 30000;  // a connection attempt times out after 20 s
+  auto *ble = esp32_ble::global_ble;
+  if (ble == nullptr || this->link_ready_ || now < this->night_next_ms_)
+    return;
+  if (!this->night_burst_) {
+    this->night_burst_ = true;
+    this->night_next_ms_ = now + BURST_MS;
+    // The tracker starts the scan again once BLE is up.
+    if (auto *tracker = esp32_ble_tracker::global_esp32_ble_tracker)
+      tracker->set_scan_continuous(true);
+    ble->enable();
+    // A wait after a failed attempt must not swallow the burst.
+    hiflow_session_retry_now(&this->session_, now);
+    return;
+  }
+  if (ble->is_failed()) {
+    // Setting BLE up again failed (out of memory): only a restart brings it back.
+    ESP_LOGE(TAG, "BLE could not be set up again, restarting");
+    App.safe_reboot();
+    return;
+  }
+  const bool client_idle = this->node_state == espbt::ClientState::IDLE;
+  if (!client_idle && now < this->night_next_ms_ + QUIET_CAP_MS)
+    return;
+  if (!client_idle && this->parent() != nullptr) {
+    ESP_LOGW(TAG, "connection attempt still running, dropped for the night");
+    this->parent()->release_services();
+    this->report_link_down_(HIFLOW_LINK_NOT_ESTABLISHED);
+  }
+  this->night_burst_ = false;
+  this->night_next_ms_ = now + this->night_ble_off_ms_;
+  ble->disable();
+}
+
+// A running scan keeps its parameters: stop it, the tracker starts it again
+// with the new ones. Waits while the client is busy (a link going down, an
+// attempt), so a change is never dropped.
+void HiflowBle::apply_rescan_() {
+  auto *tracker = esp32_ble_tracker::global_esp32_ble_tracker;
+  if (tracker == nullptr || this->link_ready_) {
+    this->rescan_pending_ = false;
+    return;
+  }
+  if (this->node_state != espbt::ClientState::IDLE)
+    return;
+  auto state = tracker->get_scanner_state();
+  if (state == esp32_ble_tracker::ScannerState::RUNNING) {
+    tracker->stop_scan();
+    // stop_scan() also ends continuous scanning, which is what restarts it.
+    tracker->set_scan_continuous(true);
+    this->rescan_pending_ = false;
+  } else if (state == esp32_ble_tracker::ScannerState::IDLE) {
+    tracker->set_scan_continuous(true);
+    tracker->start_scan();
+    this->rescan_pending_ = false;
+  }
 }
 
 void HiflowBle::report_link_down_(int reason) {
@@ -341,11 +536,15 @@ void HiflowBle::report_link_down_(int reason) {
     return;
   this->link_reported_ = true;
   this->link_ready_ = false;
+  this->slow_link_tries_ = 0;
+  this->slow_link_next_ms_ = 0;
   this->tx_handle_ = 0;
   this->rx_handle_ = 0;
   this->notify_registered_ms_ = 0;
   if (this->session_started_)
     hiflow_session_link_down(&this->session_, this->now_ms_(), reason);
+  if (this->night_mode_() && !this->night_ && (this->is_standby() || this->night_test_))
+    this->set_night_(true, this->night_test_ ? "link lost, night test" : "link lost after standby");
 }
 
 void HiflowBle::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
@@ -358,6 +557,8 @@ void HiflowBle::gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t ga
       // A new connection: its link-down is reported exactly once again.
       this->link_reported_ = false;
       this->link_ready_ = false;
+      this->slow_link_tries_ = 0;
+      this->slow_link_next_ms_ = 0;
       this->disconnect_reason_ = 0;
       this->notify_registered_ms_ = 0;
       break;

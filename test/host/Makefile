@@ -74,7 +74,16 @@ REPLAY     ?=
 DAYLOG_SRC := test_daylog.c $(CORE)/hiflow_daylog.c
 DAYLOG_BIN := test_daylog
 
-.PHONY: all test test-frame test-pb test-clock test-proto test-session test-daylog clean
+# ---- fake inverter as a library (tools/fake_inverter_ble) ----------
+LIBFAKE     := $(ROOT)/tools/fake_inverter_ble/libfake.so
+LIBFAKE_SRC := $(ROOT)/tools/fake_inverter_ble/shim.c fake_inverter.c \
+               $(CORE)/hiflow_proto.c $(CORE)/hiflow_clock.c \
+               $(CORE)/hiflow_frame.c $(CORE)/hiflow_crypto_openssl.c \
+               $(NANOPB)/pb_common.c $(NANOPB)/pb_decode.c $(NANOPB)/pb_encode.c \
+               $(GEN)/RealDataNew.pb.c $(GEN)/CommCmdPB.pb.c $(GEN)/APPInfomationData.pb.c \
+               $(GEN)/CommandPB.pb.c $(GEN)/GetConfig.pb.c
+
+.PHONY: all test test-frame test-pb test-clock test-proto test-session test-daylog libfake clean
 all: $(FRAME_BIN) $(PB_BIN) $(CLOCK_BIN) $(PROTO_BIN) $(SESSION_BIN) $(DAYLOG_BIN)
 
 $(FRAME_BIN): $(FRAME_SRC) vectors.h
@@ -98,6 +107,12 @@ vectors_proto.h: $(VECTORS) gen_proto_header.py
 $(SESSION_BIN): $(SESSION_SRC) vectors_proto.h
 	$(CC) $(CFLAGS) $(STD) -DHIFLOW_CRYPTO_BACKEND_$(CRYPTO_BACKEND) \
 	    -I$(CORE) -I$(NANOPB) -I$(GEN) -I. -o $@ $(SESSION_SRC) $(FRAME_LIBS) -lm
+
+libfake: $(LIBFAKE)
+
+$(LIBFAKE): $(LIBFAKE_SRC)
+	$(CC) $(CFLAGS) $(STD) -fPIC -shared -Wl,--no-undefined -DHIFLOW_CRYPTO_BACKEND_$(CRYPTO_BACKEND) \
+	    -I$(CORE) -I$(NANOPB) -I$(GEN) -I. -o $@ $(LIBFAKE_SRC) $(FRAME_LIBS) -lm
 
 vectors.h: $(VECTORS) $(ROOT)/test/emit_vectors_h.py
 	$(PYTHON) $(ROOT)/test/emit_vectors_h.py $(VECTORS) $@
@@ -129,8 +144,8 @@ test-daylog: $(DAYLOG_BIN)
 	@echo "=== day log suite ==="
 	@./$(DAYLOG_BIN) $(REPLAY)
 
-test: test-frame test-pb test-clock test-proto test-session test-daylog
+test: test-frame test-pb test-clock test-proto test-session test-daylog libfake
 
 clean:
-	rm -f $(FRAME_BIN) $(PB_BIN) $(CLOCK_BIN) $(PROTO_BIN) $(SESSION_BIN) $(DAYLOG_BIN) \
+	rm -f $(FRAME_BIN) $(PB_BIN) $(CLOCK_BIN) $(PROTO_BIN) $(SESSION_BIN) $(DAYLOG_BIN) $(LIBFAKE) \
 	      vectors.h vectors_pb.h vectors_proto.h

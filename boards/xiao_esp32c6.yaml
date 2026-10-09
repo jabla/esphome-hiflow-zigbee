@@ -10,9 +10,18 @@
 # path is right before the first radio command goes out. An external antenna
 # gained about 19 dB at the reference site.
 
+esp32:
+  variant: esp32c6
+  # Half the default 160 MHz: the bridge mostly waits for the radio, and the
+  # chip runs much cooler.
+  cpu_frequency: 80MHZ
+
 substitutions:
-  # Zigbee OTA image type of this board ("HX"), see zigbee_ota: in esp32c6.yaml.
+  # Zigbee OTA image type of this board ("HX"), see zigbee_ota: in hiflow-zb.yaml.
   ota_image_type: "0x4858"
+  # Sleepy end device (zigbee_power in hiflow-zb.yaml), on unless hiflow_secrets.yaml says
+  # otherwise.
+  sleepy: "true"
 
 output:
   - platform: gpio

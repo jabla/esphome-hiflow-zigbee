@@ -4,37 +4,39 @@
 
 | Path | What |
 |---|---|
-| `esp32c6.yaml` | the device config: Zigbee + `ble_client` + the component, 20 sensors (board independent) |
-| `boards/` | board specific hardware, pulled in by the `board` substitution: `boards/xiao_esp32c6.yaml` (RF switch) and `boards/waveshare_c6_lcd147.yaml` (on-board LCD) |
+| `hiflow-zb.yaml` | the device config: Zigbee + `ble_client` + the component, 20 sensors (board independent) |
+| `boards/` | board specific hardware and the chip variant, pulled in by the `board` substitution: `boards/xiao_esp32c6.yaml` (RF switch), `boards/waveshare_c6_lcd147.yaml` (on-board LCD) and `boards/waveshare_h2_zero.yaml` (ESP32-H2) |
 | `hiflow_secrets.example.yaml` | template for your `hiflow_secrets.yaml` (also holds the `board` selection) |
 | `components/hiflow_ble/` | the ESPHome external component (with flat copies of the C core, see its README) |
 | `src/hiflow_core/` | C99 core: frames/crypto, payloads and paging, session state machine, clock |
 | `src/hiflow_pb/` | vendored nanopb 0.4.9.2 and the generated protobuf code (`regen.sh` reproduces it) |
 | `test/` | host test suites and the reference vectors |
-| `tools/` | bleId generator, HA entity naming, flashing, log capture, BLE-only variant generator |
-| `esp32c6-bleonly.yaml` | generated: the bridge without Zigbee, for diagnosing radio coexistence |
+| `tools/` | bleId generator, HA entity naming, flashing, log capture, BLE-only variant generator, Zigbee OTA files, a fake inverter over BLE for the bench (`tools/fake_inverter_ble/`) |
+| `hiflow-zb-bleonly.yaml` | generated: the bridge without Zigbee, for diagnosing radio coexistence |
 | `docs/` | this file, troubleshooting, energy-dashboard template |
 
 ## Boards
 
-The config is board independent; `boards/<board>.yaml` carries the hardware, and `board` in
-`hiflow_secrets.yaml` selects it (dynamic `!include`, so nothing is duplicated):
+The config is board independent; `boards/<board>.yaml` carries the hardware and the chip
+(`esp32: variant:`), and `board` in `hiflow_secrets.yaml` selects it (dynamic `!include`, so
+nothing is duplicated):
 
 | `board` | Hardware |
 |---|---|
 | `xiao_esp32c6` | Seeed Studio XIAO ESP32-C6. Drives the FM8625H RF switch (GPIO3/GPIO14); `external_antenna` picks the U.FL socket instead of the ceramic antenna. No display. |
 | `waveshare_c6_lcd147` | Waveshare ESP32-C6-LCD-1.47 (non-touch). Shows the values on the on-board 172x320 panel, with pages on the BOOT button (see *Display* in the README). No RF switch, no U.FL socket; `external_antenna` is unused. |
+| `waveshare_h2_zero` | Waveshare ESP32-H2-Zero (ESP32-H2FH4S, 4 MB flash). Tested on the bench only, not yet with an inverter. No RF switch, no U.FL socket, no display. |
 
 A second board only needs a new file under `boards/` plus the substitution in the secrets file. The
-display lambda reads the sensors by `id` (the `id:` lines in `esp32c6.yaml`) and the component's
+display lambda reads the sensors by `id` (the `id:` lines in `hiflow-zb.yaml`) and the component's
 state through `id(hiflow)`. The ids do not affect the Zigbee endpoint numbering, so they are
 harmless on a board without a panel.
 
 Build another board variant without touching the secrets file:
 
 ```bash
-esphome -s board waveshare_c6_lcd147 config  esp32c6.yaml   # validate
-esphome -s board waveshare_c6_lcd147 compile esp32c6.yaml   # build
+esphome -s board waveshare_c6_lcd147 config  hiflow-zb.yaml   # validate
+esphome -s board waveshare_c6_lcd147 compile hiflow-zb.yaml   # build
 ```
 
 What the panel costs, measured with ESPHome 2026.8.2 / ESP-IDF 5.5.5 (`esp_idf_size`):
@@ -54,18 +56,30 @@ A temporary free-heap readout on the panel (`esp_get_free_heap_size()`, removed 
 **247 kB** after boot, before the first BLE connection, and **240 kB** with the HiFlow session up
 and reading data, so the panel leaves ample runtime headroom.
 
-The Waveshare board carries **8 MB** of flash, the XIAO 4 MB. The config keeps `flash_size: 4MB`
-for both, so the partition table is the same and the upper 4 MB stay unused. Switching between
-the two boards therefore needs no special flash layout; `tools/flash_config.sh` still erases the
-flash when the board comes from other firmware, such as a vendor demo image.
+The ESP32-H2 has far less RAM. Built from the same code, `waveshare_h2_zero` needs 129,890 B of
+static DRAM, 50.3 % of its 258,000 B, and 137,120 B (53.1 %) with `sleepy: "true"` (the XIAO C6
+at the same state: 139,362 B, 30.8 % of 452,112 B). Its image is 1,206,792 B (C6: 1,174,778 B).
+On the bench (`tools/quicktest.sh`, which logs the free heap, its low mark and the largest free
+block once a minute, against the fake inverter in `tools/fake_inverter_ble/`), an H2 without
+`sleepy` had **30.5 kB** free with the session up and Zigbee joined, 26.1 kB at the lowest and
+27.6 kB as the largest block, steady over 12 minutes. That is an eighth of the C6's and enough
+for the session. A sleepy build had 19-20 kB free. A delta update over Zigbee took the low mark
+down to 23.2 kB (15.0 kB sleepy); a zlib full image cannot run there (32 KB window), so the
+H2 gets full images as heatshrink, see `components/zigbee_ota/README.md`.
+
+The Waveshare C6 board carries **8 MB** of flash, the XIAO and the H2-Zero 4 MB. The config keeps
+`flash_size: 4MB` for all of them, so the partition table is the same and the upper 4 MB of the
+Waveshare stay unused. Switching between the boards therefore needs no special flash layout;
+`tools/flash_config.sh` still erases the flash when the board comes from other firmware, such as
+a vendor demo image.
 
 ## Build, test, flash
 
 ```bash
 make -C test/host test                  # host tests: frame/crypto, protobuf, clock, payloads, session
 components/hiflow_ble/sync_core.sh      # after changing anything under src/
-python3 tools/make_bleonly_board.py     # after changing esp32c6.yaml
-tools/flash_config.sh esp32c6.yaml      # build + flash with esptool, erases on another partition table (ESP=/ESPTOOL=/DEV=)
+python3 tools/make_bleonly_board.py     # after changing hiflow-zb.yaml
+tools/flash_config.sh hiflow-zb.yaml      # build + flash with esptool, erases on another partition table (ESP=/ESPTOOL=/DEV=)
 bash tools/quicktest.sh 300             # DEBUG image, 5 min of log, summary of the session
 ```
 

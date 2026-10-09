@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Builds an ESPHome config and flashes its factory.bin with esptool.
-# Usage: DEV=/dev/ttyACM0 tools/flash_config.sh esp32c6.yaml [esp32c6-bleonly.yaml]
-# Works for any ESP32-C6 config, e.g. ~/esphome/ble-proxy.yaml when going back to a proxy.
+# Usage: DEV=/dev/ttyACM0 tools/flash_config.sh hiflow-zb.yaml [hiflow-zb-bleonly.yaml]
+# Works for any ESP32-C6 or ESP32-H2 config, e.g. ~/esphome/ble-proxy.yaml when going back to a
+# proxy; the chip comes from the build.
 #
 # If the partition table on the board differs from the new image's, the board ran other
 # firmware before (a BLE proxy, another ESPHome config, another Zigbee firmware), so the
@@ -23,6 +24,9 @@ FACTORY="/tmp/$(basename "${CONF%.yaml}").factory.bin"
 "$ESP" compile "$CONF" >/dev/null
 [ -f "$BUILD" ] || { echo "no $BUILD was built" >&2; exit 1; }
 cp "$BUILD" "$FACTORY"
+SDKCONFIG="$(dirname "$BUILD")/../sdkconfig.$NAME"
+CHIP="$(sed -n 's/^CONFIG_IDF_TARGET="\(.*\)"/\1/p' "$SDKCONFIG")"
+[ -n "$CHIP" ] || { echo "no CONFIG_IDF_TARGET in $SDKCONFIG" >&2; exit 1; }
 
 # The partition table is 0xC00 bytes at 0x8000, in the factory image as on the board.
 TMP="$(mktemp -d)"
@@ -30,14 +34,16 @@ trap 'rm -rf "$TMP"' EXIT
 dd if="$FACTORY" of="$TMP/new.bin" bs=1024 skip=32 count=3 status=none
 [ "$(od -An -tx1 -N2 "$TMP/new.bin" | tr -d ' ')" = aa50 ] \
   || { echo "no partition table at 0x8000 in $FACTORY" >&2; exit 1; }
-"$ESPTOOL" --chip esp32c6 --port "$DEV" read_flash 0x8000 0xC00 "$TMP/board.bin" >/dev/null
+"$ESPTOOL" --chip "$CHIP" --port "$DEV" read_flash 0x8000 0xC00 "$TMP/board.bin" >/dev/null
 if ! cmp -s "$TMP/new.bin" "$TMP/board.bin"; then
   echo "the board has another partition table (other firmware before): erasing the whole flash"
-  "$ESPTOOL" --chip esp32c6 --port "$DEV" erase_flash 2>&1 | tail -1
+  "$ESPTOOL" --chip "$CHIP" --port "$DEV" erase_flash 2>&1 | tail -1
 fi
 
-"$ESPTOOL" --chip esp32c6 --port "$DEV" --baud 460800 --before default_reset --after hard_reset \
-  write_flash --flash_mode dio --flash_freq 80m --flash_size 4MB 0x0 "$FACTORY" \
+# Flash mode, frequency and size stay as the build put them into the bootloader header
+# (the C6 runs its flash at 80 MHz, the H2 at 48 MHz at most).
+"$ESPTOOL" --chip "$CHIP" --port "$DEV" --baud 460800 --before default_reset --after hard_reset \
+  write_flash --flash_mode keep --flash_freq keep --flash_size keep 0x0 "$FACTORY" \
   2>&1 | tail -3
 
 # With zigbee_ota, keep the app image under its version: the next update over

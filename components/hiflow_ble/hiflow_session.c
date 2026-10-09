@@ -351,8 +351,10 @@ static void request_data(hiflow_session_t *s, int64_t now_ms)
     int64_t unix_time = unix_now(s, now_ms);
     size_t len = 0;
 
-    if (s->current_page == 0)
+    if (s->current_page == 0) {
         hiflow_measurements_reset(&s->data);
+        s->data_started_ms = now_ms;
+    }
     if (hiflow_encode_real_data_request(s->tx_pt, sizeof(s->tx_pt), &len, unix_time,
                                         utc_offset(s, unix_time), s->current_page) != HIFLOW_OK) {
         fail(s, now_ms, HIFLOW_FAIL_NO_REPLY, "could not encode the data request");
@@ -508,6 +510,16 @@ static void handle_pairing_reply(hiflow_session_t *s, int64_t now_ms, const uint
     send_login(s, now_ms);
 }
 
+/* The next round starts poll_interval after this one was due, not after it
+   ended: a round is a few request/reply exchanges, and on a slow link (a 1 s
+   connection interval) they took about 2 s, so the cadence had drifted to
+   32 s. A round that took longer than the interval is followed at once. */
+static void schedule_next_data(hiflow_session_t *s, int64_t now_ms)
+{
+    int64_t due = s->data_started_ms + (int64_t) s->cfg.poll_interval_ms;
+    set_timer(s, HT_DATA_POLL, due > now_ms ? due : now_ms);
+}
+
 static void handle_data(hiflow_session_t *s, int64_t now_ms, const uint8_t *pt, size_t len)
 {
     hiflow_data_t out;
@@ -522,7 +534,7 @@ static void handle_data(hiflow_session_t *s, int64_t now_ms, const uint8_t *pt, 
         }
         s->current_page = 0;
         set_state(s, HIFLOW_STATE_READY);
-        set_timer(s, HT_DATA_POLL, now_ms + (int64_t) s->cfg.poll_interval_ms);
+        schedule_next_data(s, now_ms);
         return;
     }
     s->decode_failures = 0;
@@ -550,7 +562,7 @@ static void handle_data(hiflow_session_t *s, int64_t now_ms, const uint8_t *pt, 
     else if (s->ops.on_data != NULL)
         s->ops.on_data(s->ops.ctx, &out);
     set_state(s, HIFLOW_STATE_READY);
-    set_timer(s, HT_DATA_POLL, now_ms + (int64_t) s->cfg.poll_interval_ms);
+    schedule_next_data(s, now_ms);
 }
 
 /* ---------- power limit (side requests between two data polls) ---------- */
@@ -1098,8 +1110,19 @@ void hiflow_session_tick(hiflow_session_t *s, int64_t now_ms)
             enter_wait_link(s, now_ms);
             break;
         case HT_DATA_POLL:
-            if (s->state == HIFLOW_STATE_READY)
+            if (s->state == HIFLOW_STATE_READY) {
+                const int64_t due = s->deadline_ms;
+
                 request_data(s, now_ms);
+                /* The round counts from when it was due: the caller ticks
+                   only now and then (once a second on a sleepy bridge), and
+                   counting from the late start let the cadence drift by half
+                   a tick per round. Only for a tick up to half an interval
+                   late: after a longer stall the next round, due an interval
+                   after the missed one, would follow this one at once. */
+                if (now_ms - due <= (int64_t) s->cfg.poll_interval_ms / 2)
+                    s->data_started_ms = due;
+            }
             break;
         default:
             break;
@@ -1126,6 +1149,20 @@ int64_t hiflow_session_local_time(const hiflow_session_t *s, int64_t now_ms)
         return 0;
     unix_time = unix_now(s, now_ms);
     return unix_time + utc_offset(s, unix_time);
+}
+
+void hiflow_session_retry_now(hiflow_session_t *s, int64_t now_ms)
+{
+    if (s == NULL || s->state != HIFLOW_STATE_BACKOFF || s->timer != HT_BACKOFF_END)
+        return;
+    /* Only a link that did not come up or hold is worth trying early; a
+       refused PIN or login keeps its wait, the inverter's lockout is unknown. */
+    if (s->fail_reason != HIFLOW_FAIL_NO_CONNECTION && s->fail_reason != HIFLOW_FAIL_NO_REPLY &&
+        s->fail_reason != HIFLOW_FAIL_RADIO)
+        return;
+    /* The next tick ends the wait as if its time had come. */
+    if (s->deadline_ms > now_ms)
+        s->deadline_ms = now_ms;
 }
 
 int32_t hiflow_session_retry_in_s(const hiflow_session_t *s, int64_t now_ms)

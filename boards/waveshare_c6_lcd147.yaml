@@ -32,9 +32,21 @@
 #
 # Holding BOOT while the board resets starts the ROM download mode (GPIO9 is a
 # strapping pin); a press during normal operation is harmless.
+#
+# With `sleepy: "true"` (zigbee_power in hiflow-zb.yaml) the chip light-sleeps
+# between its work, by day too: the backlight PWM runs on in light sleep
+# (lcd_power), and the overview is only redrawn when there is something new.
+# At night the panel controller sleeps as well. BOOT wakes the chip, and the
+# panel's lines keep their level.
+
+esp32:
+  variant: esp32c6
+  # Half the default 160 MHz: the bridge mostly waits for the radio, and the
+  # chip runs much cooler.
+  cpu_frequency: 80MHZ
 
 substitutions:
-  # Zigbee OTA image type of this board ("HW"), see zigbee_ota: in esp32c6.yaml.
+  # Zigbee OTA image type of this board ("HW"), see zigbee_ota: in hiflow-zb.yaml.
   ota_image_type: "0x4857"
   # Brightness of the overview by day, in percent.
   lcd_day_brightness: "25"
@@ -42,6 +54,9 @@ substitutions:
   lcd_page_seconds: "15"
   # At night: glow (red LED, panel off) | off | screensaver (panel dim, "HiFlow" bounces).
   lcd_night: "glow"
+  # Sleepy end device (zigbee_power in hiflow-zb.yaml), on unless hiflow_secrets.yaml says
+  # otherwise.
+  sleepy: "true"
 
 # The panel is driven over the SPI bus of the board (SCLK GPIO7, MOSI GPIO6).
 # CS, DC, RST and the backlight come from the board definition of the driver.
@@ -51,33 +66,21 @@ spi:
 
 # The board definition does not drive the backlight (GPIO22), so the panel would
 # stay dark. It runs through LEDC PWM: the backlight is the board's largest
-# load, and the board sits in a closed box next to the inverter. 20 kHz is above
-# what a camera or the eye picks up as flicker. Tied to the display, no Home
-# Assistant entity (on the ESP32 only sensors and binary sensors become Zigbee
-# endpoints, and the button below is internal).
+# load. 20 kHz is above what a camera or the eye picks up as flicker. lcd_power
+# clocks the PWM so that it keeps running while the chip light-sleeps. Tied to
+# the display, no Home Assistant entity (on the ESP32 only sensors and binary
+# sensors become Zigbee endpoints, and the button below is internal).
 output:
-  - platform: ledc
+  - platform: lcd_power
     id: lcd_backlight
     pin: GPIO22
     frequency: 20kHz
 
-light:
-  - platform: esp32_rmt_led_strip
-    id: board_led
-    pin:
-      number: GPIO8
-      ignore_strapping_warning: true
-    num_leds: 1
-    chipset: WS2812
-    rgb_order: RGB
-    internal: true
-    default_transition_length: 0s
-    restore_mode: ALWAYS_OFF
-
-binary_sensor:
-  - platform: gpio
-    id: boot_button
-    internal: true
+# The BOOT button: counted in an interrupt, so a press reaches the panel even
+# while the main loop waits (sleepy: its loop runs once a second) and wakes a
+# sleeping chip. Internal, no Zigbee endpoint.
+zigbee_power:
+  wake_button:
     pin:
       number: GPIO9
       ignore_strapping_warning: true
@@ -85,8 +88,6 @@ binary_sensor:
       mode:
         input: true
         pullup: true
-    filters:
-      - delayed_on: 30ms
     on_press:
       - lambda: |-
           const uint32_t now = millis();
@@ -101,6 +102,10 @@ binary_sensor:
           }
           id(lcd_page_since) = now;
           id(lcd_dirty) = true;
+      - script.execute: lcd_tick
+  # In light sleep the pads would float: the panel's SPI, CS, DC and reset
+  # lines, the backlight (GPIO22) and the RGB LED's data line keep their level.
+  keep_pins: [6, 7, 14, 15, 21, 22, 8]
 
 globals:
   - id: lcd_awake        # after a button press, until the pages have run
@@ -124,6 +129,18 @@ globals:
   - id: lcd_last_draw
     type: uint32_t
     initial_value: "0"
+  - id: lcd_seen_age     # data age at the last tick, ms (-1 none): a drop is new data
+    type: int
+    initial_value: "-1"
+  - id: lcd_seen_status  # session status at the last tick
+    type: int
+    initial_value: "-1"
+  - id: lcd_seen_minute  # clock minute at the last tick
+    type: int
+    initial_value: "-1"
+  - id: lcd_seen_limit   # power limit and on/off at the last tick, as one number
+    type: int
+    initial_value: "-1"
   - id: lcd_saver_x
     type: int
     initial_value: "20"
@@ -141,11 +158,18 @@ esphome:
   on_boot:
     - priority: 600
       then:
-        - lambda: id(lcd_backlight).set_level(${lcd_day_brightness} / 100.0f);
+        - lambda: |-
+            id(lcd_backlight).set_level(${lcd_day_brightness} / 100.0f);
 
 interval:
-  # The panel's state machine: mode, page, backlight, LED, and when to redraw.
   - interval: 1s
+    then:
+      - script.execute: lcd_tick
+
+script:
+  # The panel's state machine: mode, page, backlight, LED, and when to redraw.
+  # Every second, and at once after a press.
+  - id: lcd_tick
     then:
       - lambda: |-
           const uint32_t now = millis();
@@ -195,24 +219,53 @@ interval:
           if (mode != id(lcd_mode)) {
             const float level = mode == 3 ? 1.0f : mode == 0 ? ${lcd_day_brightness} / 100.0f
                                 : mode == 2 ? 0.08f : 0.0f;
+            // The panel controller sleeps while it is dark (a few mA less);
+            // its frame memory stays and can still be written.
+            if (mode != 1)
+              lcd_power::set_panel_sleep(id(on_board_lcd), false);
             id(lcd_backlight).set_level(level);
-            if (mode == 1 && night_mode == "glow") {
-              auto call = id(board_led).turn_on();
-              call.set_rgb(1.0f, 0.0f, 0.0f);
-              // The light's gamma curve makes low values very dim: 30 %
-              // comes out at about 3 % of full power.
-              call.set_brightness(0.3f);
-              call.perform();
-            } else {
-              id(board_led).turn_off().perform();
-            }
+            if (mode == 1)
+              lcd_power::set_panel_sleep(id(on_board_lcd), true);
+            // The RGB LED on GPIO8 (WS2812, R G B order), set once per
+            // change: not ESPHome's esp32_rmt_led_strip, whose channel keeps
+            // the chip from light-sleeping. Red 9 of 255 is the glow the
+            // light's gamma curve made of 30 % brightness before.
+            if (mode == 1 && night_mode == "glow")
+              lcd_power::set_status_led(8, 9, 0, 0);
+            else
+              lcd_power::set_status_led(8, 0, 0, 0);
             id(lcd_mode) = mode;
             id(lcd_dirty) = true;
           }
 
+          // By day the overview only changes with new data, a new status, a
+          // new clock minute or a new power limit or on/off state (a write
+          // from HA lands between two data rounds); each redraw keeps the
+          // chip awake. While the
+          // data is old or the link is not up, the age and the retry count
+          // down on it, so it is redrawn every 5 s then.
+          const int st = id(hiflow).status();
+          const int64_t age = id(hiflow).ms_since_data();
+          const int age_ms = age < 0 ? -1 : (int) std::min<int64_t>(age, INT32_MAX);
+          const int minute = id(hiflow).clock_synced() ? (int) ((id(hiflow).local_time() / 60) % 1440) : -1;
+          const float limit = id(hiflow).last_power_limit_percent();
+          const int limit_key = ((std::isnan(limit) ? 1000 : (int) std::lround(limit)) * 2 +
+                                 (std::isnan(id(hiflow).power_limit_percent()) ? 1 : 0)) * 2 +
+                                (id(hiflow).inverter_off() ? 1 : 0);
+          if (mode == 0 && ((age_ms >= 0 && (id(lcd_seen_age) < 0 || age_ms < id(lcd_seen_age))) ||
+                            st != id(lcd_seen_status) || minute != id(lcd_seen_minute) ||
+                            limit_key != id(lcd_seen_limit)))
+            id(lcd_dirty) = true;
+          id(lcd_seen_age) = age_ms;
+          id(lcd_seen_status) = st;
+          id(lcd_seen_minute) = minute;
+          id(lcd_seen_limit) = limit_key;
+          const bool quiet = st == 6 && age_ms >= 0 && age_ms < 60000 && id(hiflow).retry_in_s() < 0;
+
           // Redraw: awake every second (the age of the data counts up), by day
-          // every 5 s, the screensaver every 2 s, a dark panel only on a change.
-          const uint32_t every = mode == 3 ? 1000u : mode == 0 ? 5000u : mode == 2 ? 2000u : 0u;
+          // as above (at least once a minute), the screensaver every 2 s, a
+          // dark panel only on a change.
+          const uint32_t every = mode == 3 ? 1000u : mode == 0 ? (quiet ? 60000u : 5000u) : mode == 2 ? 2000u : 0u;
           if (mode == 2 && now - id(lcd_last_draw) >= every) {
             // Bounce "HiFlow" off the edges, one jump per redraw.
             int x = id(lcd_saver_x) + id(lcd_saver_dx);
@@ -294,7 +347,9 @@ display:
       } else if (st == 6 && id(hiflow).inverter_off()) {
         snprintf(status, sizeof(status), "TURNED OFF");
       } else if (st == 6) {
-        if (age_ms >= 0)
+        // The age only after a press, or once the data is a minute old: by
+        // day the overview is not redrawn every second.
+        if (age_ms >= 0 && (mode == 3 || age_ms >= 60000))
           snprintf(status, sizeof(status), "LIVE %ds", (int) (age_ms / 1000));
         else
           snprintf(status, sizeof(status), "LIVE");
@@ -346,7 +401,7 @@ display:
 
       // One row: a small grey label on the left, the value right aligned. A
       // sensor is NaN until its first reading (after boot, at night). The rows
-      // show the raw reading of the last poll: the filters in esp32c6.yaml only
+      // show the raw reading of the last poll: the filters in hiflow-zb.yaml only
       // thin out the Zigbee reports.
       int y = 80;
       // A row without a reading is left out.

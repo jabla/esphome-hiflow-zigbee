@@ -1,0 +1,24 @@
+# Waveshare ESP32-H2-Zero: an ESP32-H2FH4S (4 MB flash in the package) on a
+# small board with USB-C and an on-board antenna.
+#
+# The H2 has BLE and 802.15.4 but no WiFi, which the bridge does not use
+# anyway. Like the C6 it has one 2.4 GHz radio path that BLE and Zigbee share,
+# so the coexistence notes in hiflow-zb.yaml apply unchanged.
+#
+# Compared with the C6 the H2 has 320 KB of SRAM instead of 512 KB and runs at
+# 96 MHz instead of 160 MHz; it keeps that clock, where the C6 boards halve
+# theirs to 80 MHz. The bridge uses about half of the H2's static DRAM, so less
+# heap remains than on a C6 (see *Boards* in docs/development.md).
+#
+# No RF switch and no U.FL socket, so the `external_antenna` substitution is
+# unused with it. No display.
+
+esp32:
+  variant: esp32h2
+
+substitutions:
+  # Zigbee OTA image type of this board ("H2"), see zigbee_ota: in hiflow-zb.yaml.
+  ota_image_type: "0x4832"
+  # Sleepy end device (zigbee_power in hiflow-zb.yaml), on unless hiflow_secrets.yaml says
+  # otherwise.
+  sleepy: "true"

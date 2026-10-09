@@ -1,5 +1,5 @@
 """Firmware updates over Zigbee (ZCL OTA Upgrade client) for ESPHome's zigbee
-component on the ESP32-C6.
+component on the ESP32-C6 and ESP32-H2.
 
 ESPHome's zigbee component has no OTA. This adds the OTA Upgrade client cluster
 (0x0019) of esp-zigbee-lib to one endpoint, writes the received image into the
@@ -24,6 +24,7 @@ first image with this component has to go on by cable.
 
 import datetime
 import json
+import re
 from pathlib import Path
 import subprocess
 
@@ -131,21 +132,24 @@ async def to_code(config):
 
 
 def _known_versions(info: Path) -> list[int]:
-    """Versions already handed out for this node: the last compile's and those
-    of the images kept by tools/make_zigbee_ota.py and tools/flash_config.sh
+    """Versions already handed out in this directory: the last compile of every
+    config (.esphome/build/<name>/zigbee_ota.json) and the images kept by
+    tools/make_zigbee_ota.py and tools/flash_config.sh
     (.esphome/zigbee_ota/<name>-<VERSION>.bin). The new build counts on from
-    the highest of them that falls on the same day."""
+    the highest of them that falls on the same day. All configs count, not only
+    this one: two configs for the same board share its image type, and the
+    coordinator offers whichever file has the higher version."""
     known = []
-    try:
-        known.append(int(json.loads(info.read_text())["file_version"]))
-    except (OSError, ValueError, KeyError, TypeError):
-        pass
-    keep = Path(CORE.build_path).parent.parent / "zigbee_ota"
-    for kept in keep.glob(f"{CORE.name}-*.bin"):
+    for compiled in {info, *info.parent.parent.glob("*/zigbee_ota.json")}:
         try:
-            known.append(int(kept.stem.removeprefix(f"{CORE.name}-"), 16))
-        except ValueError:
+            known.append(int(json.loads(compiled.read_text())["file_version"]))
+        except (OSError, ValueError, KeyError, TypeError):
             pass
+    keep = Path(CORE.build_path).parent.parent / "zigbee_ota"
+    for kept in keep.glob("*.bin"):
+        m = re.search(r"-([0-9A-Fa-f]{8})$", kept.stem)
+        if m:
+            known.append(int(m.group(1), 16))
     return known
 
 

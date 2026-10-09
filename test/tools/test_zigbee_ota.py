@@ -14,6 +14,7 @@ import struct
 import sys
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 from unittest import mock
 
@@ -96,11 +97,15 @@ class SummaryTest(unittest.TestCase):
         self.assertLessEqual(len(packer.summary({"label": "x" * 400}, 0x27031401, False)), packer.SUMMARY_MAX)
 
 
-def fake_image(size: int = 4096, seed: int = 0) -> bytes:
-    """Enough of an ESP app image for the packer: magic, hash-appended flag,
-    a body and a trailing SHA-256."""
+CHIP_C6, CHIP_H2 = 13, 16
+
+
+def fake_image(size: int = 4096, seed: int = 0, chip: int = CHIP_C6) -> bytes:
+    """Enough of an ESP app image for the packer: magic, chip id, hash-appended
+    flag, a body and a trailing SHA-256."""
     body = bytearray(hashlib.sha256(str(seed).encode()).digest() * (size // 32))
     body[0] = packer.ESP_IMAGE_MAGIC
+    struct.pack_into("<H", body, 12, chip)
     body[23] = 1
     return bytes(body) + hashlib.sha256(body).digest()
 
@@ -115,11 +120,12 @@ class PackTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def compile(self, version: int, image_type: int = 0x4857, seed: int = 0, **extra) -> bytes:
+    def compile(self, version: int, image_type: int = 0x4857, seed: int = 0, chip: int = CHIP_C6,
+                **extra) -> bytes:
         (self.build_dir / "build").mkdir(parents=True, exist_ok=True)
         info = {"file_version": version, "manufacturer_code": 0x131B, "image_type": image_type, **extra}
         (self.build_dir / "zigbee_ota.json").write_text(json.dumps(info))
-        image = fake_image(seed=seed)
+        image = fake_image(seed=seed, chip=chip)
         firmware = self.build_dir / "build" / "firmware.ota.bin"
         firmware.write_bytes(image)
         # the image is written after the json, as in a real compile
@@ -213,6 +219,44 @@ class PackTest(unittest.TestCase):
         tag, = struct.unpack_from("<H", data, packer.HEADER_LENGTH)
         self.assertEqual(tag, packer.TAG_IMAGE_DELTA)
         self.assertEqual((self.keep / "hiflow-zb-27031402.bin").read_bytes(), new)
+
+    def sub_element(self, path: Path) -> tuple[int, bytes]:
+        """tag and data of the one sub-element after the header"""
+        data = path.read_bytes()
+        tag, length = struct.unpack_from("<HI", data, packer.HEADER_LENGTH)
+        return tag, data[packer.HEADER_LENGTH + 6:packer.HEADER_LENGTH + 6 + length]
+
+    def test_full_image_for_a_c6_is_zlib(self):
+        image = self.compile(0x27031401)
+        self.assertEqual(self.pack(), 0)
+        tag, body = self.sub_element(self.keep / "hiflow-zb-27031401.ota")
+        self.assertEqual(tag, packer.TAG_IMAGE_ZLIB)
+        self.assertEqual(zlib.decompress(body), image)
+
+    @unittest.skipUnless(importlib.util.find_spec("detools"), "detools not installed")
+    def test_full_image_for_an_h2_is_heatshrink(self):
+        import detools
+        image = self.compile(0x27031401, image_type=0x4832, chip=CHIP_H2)
+        self.assertEqual(self.pack(), 0)
+        tag, body = self.sub_element(self.keep / "hiflow-zb-27031401.ota")
+        self.assertEqual(tag, packer.TAG_IMAGE_HEATSHRINK)
+        out = io.BytesIO()
+        detools.apply_patch(io.BytesIO(b""), io.BytesIO(body), out)
+        self.assertEqual(out.getvalue(), image)
+
+    def test_full_image_for_an_h2_needs_detools(self):
+        self.compile(0x27031401, image_type=0x4832, chip=CHIP_H2)
+        with mock.patch.dict(sys.modules, {"detools": None}), self.assertRaises(SystemExit):
+            self.pack()
+        self.assertFalse((self.keep / "hiflow-zb-27031401.ota").exists())
+
+    @unittest.skipUnless(importlib.util.find_spec("detools"), "detools not installed")
+    def test_delta_against_another_chip_is_refused(self):
+        self.compile(0x27031401, seed=1)
+        self.pack()
+        self.compile(0x27031402, seed=2, chip=CHIP_H2)
+        self.assertEqual(self.pack("--from", "0x27031401"), 1)
+        self.assertFalse((self.keep / "hiflow-zb-27031402.ota").exists())
 
 
 if __name__ == "__main__":

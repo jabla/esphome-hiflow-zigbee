@@ -113,7 +113,7 @@ typedef struct {
     int     have_enc_rand;
     int32_t std_offset;                 /* standard UTC offset in seconds      */
     int     eu_dst;                     /* 1 = follow European summer time     */
-    uint32_t poll_interval_ms;          /* data cadence, < the ~90 s idle timeout */
+    uint32_t poll_interval_ms;          /* data cadence (start to start), < the ~90 s idle timeout */
     uint32_t request_timeout_ms;        /* no reply -> end the connection      */
     uint32_t status_poll_gap_ms;        /* wait between two status polls       */
     uint32_t backoff_min_ms;
@@ -192,6 +192,7 @@ typedef struct {
     int32_t  current_page;
 
     int64_t  data_due_ms;          /* data poll deadline parked by a side request */
+    int64_t  data_started_ms;      /* when the current data round was due (page 0), or began if much later */
     int      limit_known;          /* limit_tenths holds a value read from the device */
     int32_t  limit_tenths;         /* last value read from the device */
     int32_t  limit_request;        /* pending percent, -1 = none */
@@ -259,6 +260,11 @@ int64_t  hiflow_session_local_time(const hiflow_session_t *s, int64_t now_ms);
 /* Seconds until the next connection attempt while waiting after a failure,
    -1 in any other state. */
 int32_t  hiflow_session_retry_in_s(const hiflow_session_t *s, int64_t now_ms);
+/* Ends a wait after a link failure (no connection, no reply, radio loss) now,
+   so the next tick allows a connection again (night mode: a scan burst must be
+   able to connect). A PIN, login or key failure keeps its wait. No-op in any
+   other state. */
+void hiflow_session_retry_now(hiflow_session_t *s, int64_t now_ms);
 /* A trusted time from elsewhere, e.g. the Zigbee network's time server. It
    marks the clock as synced and moves it forward if it lags (never back:
    the inverter's clock, set by our time-sync, must not run ahead of ours).

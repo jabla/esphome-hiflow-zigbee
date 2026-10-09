@@ -40,11 +40,15 @@ CONF_INVERTER_CONTROL = "inverter_control"
 CONF_NETWORK_TIME = "network_time"
 CONF_DEMO_DAY = "demo_day"
 CONF_ZIGBEE_ID = "zigbee_id"
+CONF_CONNECTION_INTERVAL = "connection_interval"
+CONF_NIGHT_SCAN_INTERVAL = "night_scan_interval"
+CONF_NIGHT_BLE_OFF = "night_ble_off"
+CONF_NIGHT_TEST = "night_test"
 
 # The power limit slider's Zigbee endpoint. Fixed, and well above the sensors
 # (1-31), so that adding it never renumbers an existing endpoint.
 POWER_LIMIT_ENDPOINT = 32
-# The inverter's on/off switch. 33 is the board's uptime sensor in esp32c6.yaml.
+# The inverter's on/off switch. 33 is the board's uptime sensor in hiflow-zb.yaml.
 INVERTER_SWITCH_ENDPOINT = 34
 # The Time cluster that reads the network time from the coordinator.
 TIME_ENDPOINT = 35
@@ -74,6 +78,36 @@ CONFIG_SCHEMA = cv.Schema(
             cv.positive_time_period_milliseconds,
             cv.Range(min=TimePeriod(seconds=10), max=TimePeriod(seconds=60)),
         ),
+        # BLE connection interval once the session is ready. Every connection
+        # event wakes the chip; ESP-IDF's default is 30-50 ms. The handshake
+        # always runs at the default, and every new connection starts there.
+        # Unset keeps the default for the whole connection.
+        cv.Optional(CONF_CONNECTION_INTERVAL): cv.All(
+            cv.positive_time_period_milliseconds,
+            cv.Range(min=TimePeriod(milliseconds=50), max=TimePeriod(seconds=2)),
+        ),
+        # Night mode, one of two kinds. The bridge goes to night mode when
+        # the link drops after the inverter fed in nothing (standby), or when
+        # it has not seen the inverter for 10 minutes after standby or since
+        # boot (an hour without either); the first link ends it.
+        # night_scan_interval: the scanner only looks this often (the scan
+        # window stays the one of esp32_ble_tracker).
+        cv.Exclusive(CONF_NIGHT_SCAN_INTERVAL, "night_mode"): cv.All(
+            cv.positive_time_period_milliseconds,
+            cv.Range(min=TimePeriod(milliseconds=100), max=TimePeriod(milliseconds=10240)),
+        ),
+        # night_ble_off: BLE off altogether, on for a 15 s scan every
+        # night_ble_off; without BLE the 40 MHz crystal and the peripherals
+        # can sleep too. BLE must not be shared with another ble_client or a
+        # proxy.
+        cv.Exclusive(CONF_NIGHT_BLE_OFF, "night_mode"): cv.All(
+            cv.positive_time_period_milliseconds,
+            cv.Range(min=TimePeriod(seconds=30), max=TimePeriod(minutes=30)),
+        ),
+        # Bench only: every lost link starts night mode at once, without the
+        # standby that a real dusk brings (a fake inverter switched off is
+        # then a night).
+        cv.Optional(CONF_NIGHT_TEST, default=False): cv.boolean,
         # A slider for the inverter's power limit, as a Zigbee Analog Output on
         # endpoint 32. The bridge only writes when the slider moves. On by
         # default wherever the zigbee component is loaded (see below).
@@ -119,7 +153,19 @@ def _reserve_control_endpoints(config):
     return config
 
 
-CONFIG_SCHEMA = cv.All(CONFIG_SCHEMA, _reserve_control_endpoints)
+def _night_options(config):
+    if config[CONF_NIGHT_TEST] and not (
+        CONF_NIGHT_SCAN_INTERVAL in config or CONF_NIGHT_BLE_OFF in config
+    ):
+        raise cv.Invalid("night_test needs night_scan_interval or night_ble_off")
+    if CONF_NIGHT_BLE_OFF in config:
+        # Switching BLE off relies on ESPHome settling the tracker and the
+        # client on the way down, which it does from 2026.9.0 on.
+        cv.require_esphome_version(2026, 9, 0)(config)
+    return config
+
+
+CONFIG_SCHEMA = cv.All(CONFIG_SCHEMA, _night_options, _reserve_control_endpoints)
 
 # The values of hiflow_secrets.example.yaml. A build that still carries one of
 # them runs, but never finds the inverter (the MAC) or never logs in (SN,
@@ -131,7 +177,40 @@ EXAMPLE_BLE_ID = "000000000000000000"
 ALLOW_EXAMPLE_ENV = "HIFLOW_ALLOW_EXAMPLE_SECRETS"
 
 
-def _final_validate(config):
+def _tracker_scan_params(full_config):
+    """The scan_parameters of the esp32_ble_tracker config."""
+    tracker = full_config["esp32_ble_tracker"]
+    if isinstance(tracker, list):
+        tracker = tracker[0]
+    return tracker["scan_parameters"]
+
+
+def _final_validate_night(config):
+    full = fv.full_config.get()
+    if CONF_NIGHT_SCAN_INTERVAL in config:
+        # The stack refuses a window longer than the interval, and the tracker
+        # then restarts the scan forever.
+        window = _tracker_scan_params(full)["window"]
+        if config[CONF_NIGHT_SCAN_INTERVAL].total_milliseconds < window.total_milliseconds:
+            raise cv.Invalid(
+                f"night_scan_interval must not be shorter than the tracker's scan window ({window})"
+            )
+    if CONF_NIGHT_BLE_OFF in config:
+        # BLE off at night takes it from every other BLE user too.
+        others = [
+            client[CONF_ID]
+            for client in full.get("ble_client", [])
+            if client[CONF_ID] != config[CONF_BLE_CLIENT_ID]
+        ]
+        if others or "bluetooth_proxy" in full:
+            raise cv.Invalid(
+                "night_ble_off switches BLE off for everything; it cannot share it "
+                "with another ble_client or bluetooth_proxy"
+            )
+    return config
+
+
+def _final_validate_secrets(config):
     if os.environ.get(ALLOW_EXAMPLE_ENV) == "1":
         return config
     left = []
@@ -152,7 +231,7 @@ def _final_validate(config):
     return config
 
 
-FINAL_VALIDATE_SCHEMA = _final_validate
+FINAL_VALIDATE_SCHEMA = cv.All(_final_validate_night, _final_validate_secrets)
 
 
 async def to_code(config):
@@ -176,6 +255,23 @@ async def to_code(config):
     cg.add(var.set_offset(config[CONF_OFFSET]))
     cg.add(var.set_eu_dst(config[CONF_EU_DST]))
     cg.add(var.set_poll_interval(poll_interval))
+    if CONF_CONNECTION_INTERVAL in config:
+        cg.add(var.set_connection_interval(config[CONF_CONNECTION_INTERVAL]))
+    if config[CONF_NIGHT_TEST]:
+        cg.add(var.set_night_test(True))
+    if CONF_NIGHT_BLE_OFF in config:
+        cg.add(var.set_night_ble_off(config[CONF_NIGHT_BLE_OFF]))
+    if CONF_NIGHT_SCAN_INTERVAL in config:
+        # The day values come from the tracker's own config (0.625 ms units),
+        # so night mode can go back to them.
+        scan = _tracker_scan_params(CORE.config)
+        cg.add(
+            var.set_night_scan(
+                int(config[CONF_NIGHT_SCAN_INTERVAL].total_milliseconds / 0.625),
+                int(scan["interval"].total_milliseconds / 0.625),
+                int(scan["window"].total_milliseconds / 0.625),
+            )
+        )
     cg.add(
         var.set_service_uuid128(
             esp32_ble_tracker.as_reversed_hex_array(SERVICE_UUID)

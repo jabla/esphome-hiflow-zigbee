@@ -22,37 +22,69 @@ jobs:
         run: |
           components/hiflow_ble/sync_core.sh
           git diff --exit-code -- components/
-      - name: BLE-only variant matches esp32c6.yaml
+      - name: BLE-only variant matches hiflow-zb.yaml
         run: |
           python3 tools/make_bleonly_board.py
-          git diff --exit-code -- esp32c6-bleonly.yaml
+          git diff --exit-code -- hiflow-zb-bleonly.yaml
 
   esphome:
     runs-on: ubuntu-26.04
     strategy:
       matrix:
-        # Both supported boards, plus the generated BLE-only variant.
+        # The three supported boards. sleepy is on by default; the XIAO builds the
+        # receiver-on variant, so both are covered. The BLE-only variant is a local
+        # diagnostic tool: the job above only checks that it matches hiflow-zb.yaml.
         include:
-          - config: esp32c6.yaml
-          - config: esp32c6-bleonly.yaml
-          - config: esp32c6.yaml
+          - config: hiflow-zb.yaml
+            sleepy: "false"
+          - config: hiflow-zb.yaml
             board: waveshare_c6_lcd147
+          - config: hiflow-zb.yaml
+            board: waveshare_h2_zero
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install ESPHome
-        run: pip install "esphome==2026.8.2"
+        run: pip install "esphome==2026.9.1"
       - name: Cache the ESP-IDF toolchain
         uses: actions/cache@v6
         with:
           path: ~/.cache/esphome
-          key: esphome-idf-${{ runner.os }}-esphome-2026.8.2
+          key: esphome-idf-${{ runner.os }}-esphome-2026.9.1
       - name: Compile with the example credentials
         # The component refuses the example values unless told otherwise.
         env:
           HIFLOW_ALLOW_EXAMPLE_SECRETS: "1"
         run: |
           cp hiflow_secrets.example.yaml hiflow_secrets.yaml
-          esphome ${{ matrix.board && format('-s board {0}', matrix.board) || '' }} compile ${{ matrix.config }}
+          esphome ${{ matrix.board && format('-s board {0}', matrix.board) || '' }} ${{ matrix.sleepy && format('-s sleepy {0}', matrix.sleepy) || '' }} compile ${{ matrix.config }}
+      - name: phy_guard sits on the 802.15.4 driver's PHY calls
+        # A sleepy build wraps esp_phy_enable/disable (components/zigbee_power/phy_guard.h). A newer
+        # ESP-IDF that stops calling them from the 802.15.4 driver leaves the wrappers unused
+        # without a build error; the linker map's cross reference table shows it.
+        if: matrix.sleepy != 'false'
+        run: |
+          map=$(ls "$(dirname '${{ matrix.config }}')"/.esphome/build/*/build/*.map)
+          for fn in enable disable; do
+            awk -v s="__wrap_esp_phy_$fn" '$1 == s {f = 1; next} f && !/^ / {f = 0} f' "$map" \
+              | grep -q 'libieee802154\.a('
+          done
+      - name: timer_guard sits on every reading of the clock
+        # On the ESP32-C6 the component wraps esp_timer_get_time and esp_timer_impl_get_time
+        # (components/zigbee_power/timer_guard.h). From the linker map: esp-zigbee-lib's alarm
+        # and esp_timer's own dispatcher read through the wrappers, nothing but esp_timer and
+        # the FreeRTOS tick reads the SYSTIMER counter, and the repair sits in IRAM. A new
+        # matrix entry for another chip has to be left out here.
+        if: matrix.board != 'waveshare_h2_zero'
+        run: |
+          map=$(ls "$(dirname '${{ matrix.config }}')"/.esphome/build/*/build/*.map)
+          xref() { awk -v s="$1" '$1 == s {f = 1; next} f && !/^ / {f = 0} f' "$map"; }
+          xref __wrap_esp_timer_get_time | grep -q 'esp_zigbee_plat_alarm'
+          xref __wrap_esp_timer_impl_get_time | grep -q 'libesp_timer\.a(esp_timer\.c'
+          if xref systimer_hal_get_counter_value | grep -v 'port_systick\.c\|esp_timer_impl_systimer\.c'; then
+            exit 1
+          fi
+          awk '$1 == ".text.esp_timer_impl_advance" {if (NF == 1) getline; else $1 = $2; print $1}' "$map" \
+            | grep -q '^0x408'

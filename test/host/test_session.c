@@ -89,11 +89,16 @@ typedef struct {
     uint8_t reply[FAKE_MAX_REPLY];
     size_t  reply_len;
     int     chunk;
+    int     reply_ms;      /* how long the inverter needs to answer */
+    int     tick_ms;       /* the session is ticked this often (0 = every step) */
+    int64_t stall_from;    /* no ticks from here ...                    */
+    int64_t stall_until;   /* ... to here (-1 = no stall)               */
 
     int     connects;
     int64_t connect_at_ms[32];
     int     disconnects;
     int     data_count;
+    int64_t data_at_ms[64];
     hiflow_data_t last_data;
     int     enc_rand_saves;
     uint8_t last_saved_key[HIFLOW_ENC_RAND_LEN];
@@ -118,7 +123,7 @@ static int world_send(void *ctx, const uint8_t *frame, size_t len)
     if (fake_handle_frame(&w->fi, frame, len)) {
         memcpy(w->reply, w->fi.reply, w->fi.reply_len);
         w->reply_len = w->fi.reply_len;
-        w->reply_at = w->now + WORLD_REPLY_MS;
+        w->reply_at = w->now + w->reply_ms;
     }
     if (w->fi.kill_link) {
         w->fi.kill_link = 0;
@@ -159,6 +164,8 @@ static void world_on_data(void *ctx, const hiflow_data_t *data)
 {
     world_t *w = (world_t *) ctx;
 
+    if (w->data_count < (int) (sizeof(w->data_at_ms) / sizeof(w->data_at_ms[0])))
+        w->data_at_ms[w->data_count] = w->now;
     w->data_count++;
     w->last_data = *data;
     if (w->use_daylog && data->have_ac) {
@@ -265,7 +272,10 @@ static void world_run(world_t *w, int64_t duration_ms)
             if (w->link_up)
                 world_deliver_reply(w);
         }
-        hiflow_session_tick(&w->s, w->now);
+        if (w->stall_until >= 0 && w->now >= w->stall_from && w->now < w->stall_until)
+            continue;
+        if (w->tick_ms == 0 || w->now % w->tick_ms == 370 % w->tick_ms)
+            hiflow_session_tick(&w->s, w->now);
     }
 }
 
@@ -301,6 +311,9 @@ static void world_init_ex(world_t *w, int have_key, const char *pin, int power_l
     w->reply_at = -1;
     w->link_down_at = -1;
     w->chunk = WORLD_CHUNK;
+    w->reply_ms = WORLD_REPLY_MS;
+    w->stall_from = -1;
+    w->stall_until = -1;
     w->now = 1000;
     w->last_limit = -1;
 
@@ -415,6 +428,85 @@ static void test_poll_cadence(void)
     expect_int(w.disconnects, 0, "no disconnect");
     expect_int(hiflow_session_state(&w.s), HIFLOW_STATE_READY, "still ready");
     expect_int((long) hiflow_session_failures(&w.s), 0, "no failures");
+}
+
+static void test_poll_cadence_slow_link(void)
+{
+    world_t w;
+    int i;
+
+    printf("[2b] data cadence on a slow link\n");
+    world_init(&w, 1, TEST_PIN);
+    fake_set_pages(&w.fi, VEC_HEX_PAGE0, VEC_HEX_PAGE1);
+    /* A 1 s connection interval: every reply takes a second, so a two-page
+       round takes about 2 s. The rounds still start 30 s apart. */
+    w.reply_ms = 1000;
+
+    world_run(&w, 10 * 60000);
+
+    expect(w.data_count >= 20, "twenty rounds in ten minutes");
+    for (i = 1; i < w.data_count && i < 20; i++)
+        expect(w.data_at_ms[i] - w.data_at_ms[i - 1] == 30000, "rounds 30 s apart");
+    expect_int(w.connects, 1, "one connection");
+    expect_int((long) hiflow_session_failures(&w.s), 0, "no failures");
+}
+
+static void test_poll_cadence_coarse_tick(void)
+{
+    world_t w;
+    int n;
+
+    printf("[2c] data cadence with a coarse tick\n");
+    world_init(&w, 1, TEST_PIN);
+    fake_set_pages(&w.fi, VEC_HEX_PAGE0, VEC_HEX_PAGE1);
+    /* A sleepy bridge runs its main loop, and so the session's tick, about
+       once a second, not in step with the 30 s cadence (1010 ms here): a due
+       round starts up to a second late. The cadence must not drift by that. */
+    w.reply_ms = 1000;
+    w.tick_ms = 1010;
+
+    world_run(&w, 30 * 60000);
+
+    n = w.data_count < 64 ? w.data_count : 64;
+    expect(w.data_count >= 59 && w.data_count <= 61, "one round per 30 s for thirty minutes");
+    if (n >= 3)
+        expect(w.data_at_ms[n - 1] - w.data_at_ms[1] <= (int64_t) (n - 2) * 30000 + 1000,
+               "no drift over thirty minutes");
+    expect_int((long) hiflow_session_failures(&w.s), 0, "no failures");
+}
+
+static void test_poll_cadence_stall(void)
+{
+    world_t w;
+    int64_t stall, max_gap = 0;
+    int i, short_gaps = 0;
+
+    printf("[2d] data cadence after a stalled tick\n");
+    /* The main loop can stall (a flash write, a long BLE call). Whatever the
+       stall, the round after it must not follow the late one at once. Stalls
+       from 20 s to 75 s after a round, so the due round starts up to 47 s
+       late. A round up to 15 s late keeps the 30 s grid, so the next one
+       may come 15 s after it; a gap of a few seconds is a repeated round. */
+    for (stall = 20000; stall <= 75000; stall += 1000) {
+        world_init(&w, 1, TEST_PIN);
+        fake_set_pages(&w.fi, VEC_HEX_PAGE0, VEC_HEX_PAGE1);
+        w.reply_ms = 1000;
+        w.tick_ms = 1010;
+        while (w.data_count < 3 && w.now < 5 * 60000)
+            world_run(&w, WORLD_STEP_MS);
+        w.stall_from = w.now + 1000;
+        w.stall_until = w.now + stall;
+        world_run(&w, 5 * 60000);
+        for (i = 3; i < w.data_count && i < 64; i++) {
+            const int64_t gap = w.data_at_ms[i] - w.data_at_ms[i - 1];
+            if (gap < 12000)
+                short_gaps++;
+            if (gap > max_gap)
+                max_gap = gap;
+        }
+    }
+    expect_int(short_gaps, 0, "no round right behind another");
+    expect(max_gap <= 75000 + 31000, "the cadence comes back after the stall");
 }
 
 static void test_paging(void)
@@ -1196,6 +1288,44 @@ static void test_display_accessors(void)
     expect_int(hiflow_session_power_limit_tenths(&w.s), -1, "limit disabled: -1");
 }
 
+static void test_retry_now(void)
+{
+    world_t w;
+
+    printf("[32] retry_now ends only the wait after a link failure\n");
+    world_init(&w, 1, TEST_PIN);
+    world_single_page(&w);
+    world_run(&w, 5000);
+    hiflow_session_retry_now(&w.s, w.now);
+    expect_int(hiflow_session_retry_in_s(&w.s, w.now), -1, "no-op on a working link");
+
+    world_init(&w, 1, TEST_PIN);
+    world_single_page(&w);
+    w.fi.silent_on_login = 1;
+    world_run(&w, 2000);
+    world_drop_link(&w, HIFLOW_LINK_RADIO_TIMEOUT);
+    world_run(&w, 1000);
+    expect(hiflow_session_retry_in_s(&w.s, w.now) > 0, "waiting after the radio loss");
+    hiflow_session_retry_now(&w.s, w.now);
+    expect_int(hiflow_session_retry_in_s(&w.s, w.now), 0, "radio loss: the wait is over");
+
+    world_init(&w, 1, TEST_PIN);
+    world_single_page(&w);
+    w.fi.require_pin = 1;
+    w.fi.refuse_pin = 1;
+    world_run(&w, 60000);
+    expect_int(hiflow_session_status(&w.s), 13, "PIN refused");
+    hiflow_session_retry_now(&w.s, w.now);
+    expect(hiflow_session_retry_in_s(&w.s, w.now) > 600, "PIN refused: the half-hour wait stays");
+
+    world_init(&w, 1, TEST_PIN);
+    w.fi.kill_link_on_login = 1;
+    world_run(&w, 3000);
+    expect_int(hiflow_session_status(&w.s), 9, "login rejected");
+    hiflow_session_retry_now(&w.s, w.now);
+    expect(hiflow_session_retry_in_s(&w.s, w.now) > 0, "login rejected: the wait stays");
+}
+
 /* ---------- day log (for the display) ---------- */
 
 /* A one-page reply with the given AC power (x0.1 W) and lifetime energy. */
@@ -1232,7 +1362,7 @@ static void test_daylog(void)
     static world_t w;
     int i;
 
-    printf("[32] day log: the session's readings reach it, with the clock and the counters\n");
+    printf("[33] day log: the session's readings reach it, with the clock and the counters\n");
 
     world_init(&w, 1, TEST_PIN);
     w.use_daylog = 1;
@@ -1308,6 +1438,9 @@ int main(int argc, char **argv)
     printf("=== hiflow_session ===\n");
     test_happy_path();
     test_poll_cadence();
+    test_poll_cadence_slow_link();
+    test_poll_cadence_coarse_tick();
+    test_poll_cadence_stall();
     test_paging();
     test_pin_path();
     test_login_in_progress();
@@ -1336,6 +1469,7 @@ int main(int argc, char **argv)
     test_power_switch();
     test_power_failures();
     test_display_accessors();
+    test_retry_now();
     test_daylog();
 
     printf("\n=== summary ===\n");

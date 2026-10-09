@@ -1,18 +1,18 @@
-# HiFlow Pro to Zigbee bridge (ESP32-C6)
+# HiFlow Pro to Zigbee bridge (ESP32-C6 / ESP32-H2)
 
 An ESPHome firmware that reads a **Hoymiles HiFlow Pro** inverter locally over **Bluetooth LE**
 and reports its measurements as a **Zigbee end device** to Home Assistant.
 No WiFi, no cloud: only BLE (to the inverter) and 802.15.4 (to your Zigbee coordinator).
 
 ```
-inverter ──BLE──> ESP32-C6 ──Zigbee──> coordinator ──ZHA / Zigbee2MQTT──> Home Assistant
+inverter ──BLE──> ESP32-C6/H2 ──Zigbee──> coordinator ──ZHA / Zigbee2MQTT──> Home Assistant
 ```
 
 It keeps one **persistent** BLE session (log in once, poll every 30 s over the same link) and
-exposes 32 values: AC power/voltage/current/frequency, reactive power, power factor,
+exposes 33 values: AC power/voltage/current/frequency, reactive power, power factor,
 temperature, energy total/today, the inverter's daily warning count, power/voltage/current and
 energy total/today for each of the four PV ports, plus the session status and the board's
-uptime. A value is reported when it changes noticeably or after a few minutes at the latest,
+uptime and chip temperature. A value is reported when it changes noticeably or after a few minutes at the latest,
 not on every 30 s poll.
 It also adds a slider for the inverter's power limit and a switch that turns the inverter on
 and off.
@@ -23,62 +23,67 @@ library behind the [ha-hiflow-ble](https://github.com/TheTiEr/ha-hiflow-ble) int
 ## Status
 
 Tested on one **HMS-2000-4WB** with a Seeed **XIAO ESP32-C6** and a **Waveshare
-ESP32-C6-LCD-1.47**. Other HiFlow Pro / HMS-WB models that work with ha-hiflow-ble should work
-too. Reports are welcome.
+ESP32-C6-LCD-1.47**. The **Waveshare ESP32-H2-Zero** has run on the bench (with a simulated
+inverter, updates over Zigbee included), not yet at an inverter.
+Other HiFlow Pro / HMS-WB models that work with ha-hiflow-ble should work too. Reports are
+welcome.
 
 ## What you need
 
-<img src="docs/img/waveshare-panel.png" align="right" width="188" alt="Waveshare ESP32-C6-LCD-1.47 overview page: session status, clock, AC power, energy today and in total, power limit">
+- One of the boards in the table below.
+- A Zigbee coordinator in ZHA or Zigbee2MQTT (2.8.0 or newer).
+- ESPHome with native Zigbee on the ESP32-C6 / ESP32-H2 (tested with **2026.9.1**), plus
+  Python 3 for the helper scripts.
+- The inverter within BLE range of the board.
+- **Nothing else connected to the inverter over BLE.** It serves exactly one BLE central, so end
+  every other BLE connection to it (e.g. the S-Miles app).
 
-- A **Seeed Studio XIAO ESP32-C6** ([Amazon.de](https://www.amazon.de/dp/B0D2NKVB34)) or a
-  **Waveshare ESP32-C6-LCD-1.47** ([Amazon.de](https://www.amazon.de/dp/B0DHTMYTCY)). The board
-  is picked with the `board` setting in `hiflow_secrets.yaml` (see *Boards* in
-  `docs/development.md`): the XIAO variant drives its RF switch and can use an external U.FL
-  antenna, the Waveshare variant shows the values on its on-board 172x320 display (rendering on
-  the right, example values; see *Display* below).
-- A Zigbee coordinator in ZHA or Zigbee2MQTT (2.8.0 or newer), on current firmware, for example
-  a ConBee III ([Amazon.de](https://www.amazon.de/dp/B0C8HV79N7)) on deCONZ **0x26550900**.
-- ESPHome with native Zigbee on the ESP32-C6 (tested with **2026.8.2**), plus Python 3 for the
-  helper scripts.
-- The inverter within BLE range of the board. An external U.FL antenna is optional.
-- **Nothing else connected to the inverter over BLE.** It serves exactly one BLE central. Close
-  the S-Miles app, and disable the ha-hiflow-ble integration and any BLE proxy that talks to it.
+### Boards
+
+| | <img src="docs/img/board-c6-lcd.jpg" height="194" alt="Waveshare ESP32-C6-LCD-1.47"><br>ESP32-C6-LCD-1.47 | <img src="docs/img/board-xiao.jpg" height="194" alt="Seeed Studio XIAO ESP32-C6"><br>XIAO ESP32-C6 | <img src="docs/img/board-h2-zero.jpg" height="194" alt="Waveshare ESP32-H2-Zero"><br>ESP32-H2-Zero |
+|---|:---:|:---:|:---:|
+| Price (Amazon) | [~20 €](https://www.amazon.de/dp/B0DHTMYTCY) | [~18 €](https://www.amazon.de/dp/B0D2NKVB34) | [~10 €](https://www.amazon.de/dp/B0FR55G13T) |
+| Chip | ESP32-C6, 512 KB RAM | ESP32-C6, 512 KB RAM | ESP32-H2, 320 KB RAM |
+| Display | 1.47" 172x320 | none | none |
+| Antenna | ceramic | ceramic, or external (U.FL) | ceramic |
+| Good | shows the values on the board itself | external antenna when the Zigbee router/coordinator is far away | cheapest |
+| Downsides | no external antenna | no display | less RAM, slower full updates, no display, no external antenna |
 
 ## Quick start
 
 1. **Credentials.** Copy `hiflow_secrets.example.yaml` to `hiflow_secrets.yaml` and fill it in.
    The comments in the file say where each value comes from:
-   - set `board` to `xiao_esp32c6` or `waveshare_c6_lcd147`;
+   - set `board` to `xiao_esp32c6`, `waveshare_c6_lcd147` or `waveshare_h2_zero`;
    - the serial tail comes from the inverter's BLE name `RMI-XXXXXXXXXXXX`, the MAC address from
      a BLE scanner app or Home Assistant's Bluetooth panel (the two differ);
    - get a `ble_id` from `python3 tools/gen_ble_id.py`, or reuse the one from ha-hiflow-ble;
    - the PIN is the Bluetooth PIN from the S-Miles app;
-   - set whether the external antenna is used.
+   - set whether an external antenna is used (XIAO only);
+   - `sleepy` stays `"true"` for the low-power mode (see *Low power* below).
 
    The build stops with an error while the MAC, the serial or the `ble_id` still hold the
    example values: a bridge built with them would never find the inverter.
-2. **Time zone.** Check `offset` and `eu_dst` under `hiflow_ble:` in `esp32c6.yaml` (default:
+2. **Time zone.** Check `offset` and `eu_dst` under `hiflow_ble:` in `hiflow-zb.yaml` (default:
    CET with European summer time). The inverter's own clock is set from them, and that clock
    drives its daily energy reset.
 3. **Build first:**
    ```bash
-   esphome compile esp32c6.yaml
+   esphome compile hiflow-zb.yaml
    ```
    The first build compiles ESP-IDF and takes several minutes, longer than the coordinator's
    pairing window.
 4. **Open pairing, then flash** over USB. In ZHA click *Add device*, in Zigbee2MQTT *Permit join*,
    and leave it open, then run:
    ```bash
-   DEV=/dev/ttyACM0 tools/flash_config.sh esp32c6.yaml
+   DEV=/dev/ttyACM0 tools/flash_config.sh hiflow-zb.yaml
    ```
    `DEV` is the board's port (`ls /dev/serial/by-id/`, it shows up as *Espressif USB JTAG*); with
-   a Zigbee stick on the same computer, make sure it is not the stick. The board looks for a
-   network only during its first seconds after a boot, then only every 10 minutes.
+   a Zigbee stick on the same computer, make sure it is not the stick.
 
    The script erases the whole flash first if the board ran other firmware before (a BLE proxy,
    another ESPHome config), because that firmware's settings would keep the bridge from coming
    up. Reflashing the bridge keeps its settings and its Zigbee pairing. Flash with `esphome run`
-   only after an erase (`esptool --chip esp32c6 --port /dev/ttyACM0 erase_flash`).
+   only after an erase (`esptool --port /dev/ttyACM0 erase_flash`).
 
    The board joins as `HMS-2000-4WB Bridge`. If it missed the pairing window, open pairing again
    and reset the board (RESET button or re-plug).
@@ -125,12 +130,22 @@ once after joining, then twice a day. The bridge sets the inverter's clock at ev
 that clock drives the inverter's daily energy reset, so the time stays right even after a power
 cut at night.
 
-An existing bridge has to re-join after the flash that adds endpoints (32, 34 and 35): follow
-*After changing the sensor list* in `docs/troubleshooting.md`.
+## Low power
 
-## Display (Waveshare board)
+By default the bridge is a sleepy Zigbee end device: its receiver is off between polls, and the
+chip light-sleeps in between (the C6-LCD by day too, its backlight keeps running). It runs much
+cooler, and it is a first step towards running the bridge on a battery. A command such as the
+power limit still reaches it within a few seconds. With `sleepy: "false"` in
+`hiflow_secrets.yaml` the receiver stays on all the time.
 
-<p align="center"><img src="docs/img/waveshare-pages.png" alt="The five pages of the Waveshare panel: overview, the day's power curve, energy per PV input, grid values, bridge state"></p>
+Switching it either way makes the bridge leave the network and join again, also when an update
+brings the new setting to a bridge that ran the other one: open pairing (ZHA: *Add device*)
+before you flash or install it. ZHA keeps the device and its entities. The details are in
+[`components/zigbee_power/README.md`](components/zigbee_power/README.md).
+
+## Display (ESP32-C6-LCD-1.47)
+
+<p align="center"><img src="docs/img/waveshare-pages.png" alt="The five pages of the C6-LCD panel: overview, the day's power curve, energy per PV input, grid values, bridge state"></p>
 
 Rendered from the display code, with example values (a 40 % power limit).
 
@@ -146,9 +161,10 @@ then goes back to the overview; another press moves on to the next page at once:
 - **Bridge**: uptime, BLE sessions and failures, power limit, output on or off, and the
   inverter's warning count.
 
-A page or a row without data is left out. The status line reads `LIVE` with the age of the last
-data, `STANDBY`, `TURNED OFF`, or the step the session is at (the status codes are in
-`docs/development.md`). After a reboot the power limit shows in grey until it is read again.
+A page or a row without data is left out. The status line reads `LIVE` (with the age of the
+last data after a press, or once it is a minute old), `STANDBY`, `TURNED OFF`, or the step the
+session is at (the status codes are in `docs/development.md`). After a reboot the power limit
+shows in grey until it is read again.
 
 At night the panel goes dark and the RGB LED glows dim red, so the button can be found; a press
 shows the pages. Night means the inverter has fed in nothing for five minutes (`STANDBY`), and
@@ -173,11 +189,6 @@ reached the coordinator again; one that crashes, or cannot reach the coordinator
 minutes, falls back to the previous image by itself. Zigbee2MQTT has no update entity for the
 bridge, the update is started by hand (see below).
 
-The download is slow: ZHA sends 50 bytes per block, about 750 bytes per second. So an update
-is sent as a delta against the image the bridge runs, usually a few ten kilobytes and well
-under a minute. Without the running image at hand it goes as a compressed full image, about
-750 kB and a quarter of an hour.
-
 1. **Once, in ZHA:** give it a folder for update files, in `configuration.yaml`:
    ```yaml
    zha:
@@ -192,41 +203,27 @@ under a minute. Without the running image at hand it goes as a compressed full i
    *installed version* is the firmware's version.
 2. **Build and pack:**
    ```bash
-   esphome compile esp32c6.yaml
+   esphome compile hiflow-zb.yaml
    python3 -m venv .venv && .venv/bin/pip install detools
    .venv/bin/python tools/make_zigbee_ota.py .esphome/build/hiflow-zb --from 0x27031401
    ```
    `--from` is the installed version from the update entity. The tool keeps every image it
    packs, and every image `tools/flash_config.sh` flashes, under
    `.esphome/zigbee_ota/`, and finds the running one there; without it, or without detools,
-   the file holds the compressed full image. With `--from` the tool also stops when the new
-   build is not newer than the installed one, because the coordinator would not offer it.
+   the file holds the compressed full image. The ESP32-H2-Zero needs detools for every image.
+   With `--from` the tool also stops when the new build is not newer than the installed one,
+   because the coordinator would not offer it.
 3. **Install:** copy the `.ota` file from `.esphome/zigbee_ota/` into `/config/zigpy_ota`,
    restart Home Assistant (ZHA reads the folder once a day otherwise), and press *Install* on
    the update entity.
 
 The version is the build date and the build of that day, read in hex: `0x27031402` is the
-second build on 14 March 2027. Each board has its own image type (XIAO `0x4858`, Waveshare
-`0x4857`), so the coordinator only offers a bridge the images built for its board.
+second build on 14 March 2027. Each board has its own image type (C6-LCD `0x4857`, XIAO
+`0x4858`, H2-Zero `0x4832`), so the coordinator only offers a bridge the images built for its
+board.
 
 A board on a weak supply, such as a XIAO on a laptop's USB port, can brown out during a
 download. Set `tx_power: 0` under `zigbee_ota:` for it, see `components/zigbee_ota/README.md`.
-
-The first image with this feature has to go on over USB, because the fallback lives in the
-bootloader. On an existing bridge, click *Reconfigure* on the device in ZHA after that flash,
-then reload the ZHA integration: ZHA reads the bridge's clusters again and adds the update
-entity. The bridge keeps its pairing and its stored data.
-
-### Bridges with an older version
-
-Images from before the date versions carry the Unix time of their build (`0x6A...`) and the
-image type `0x4846` on every board. That number is higher than any date version, and the
-coordinator never offers a lower one. Pack the first update as usual with `--from` and the
-installed version: the tool sees the old version and writes a second file,
-`<name>-<version>-from-<old version>.ota`, which the old firmware takes (header with the old
-image type and the installed version + 1). Copy both files. After the update the bridge reports
-the date version and its board's image type, and the update entity finds the first file as the
-installed version. The old files no longer match the bridge and can go.
 
 ### Update notes (optional)
 
@@ -271,6 +268,10 @@ itself, which takes about 30 seconds.
 - [`docs/troubleshooting.md`](docs/troubleshooting.md): radio, inverter, Zigbee and USB details
 - [`components/hiflow_ble/README.md`](components/hiflow_ble/README.md): the component on its own
   (use it from GitHub in your own ESPHome config), configuration reference, protocol notes
+- [`components/zigbee_power/README.md`](components/zigbee_power/README.md): the low-power mode,
+  joining again after switching it, and the ESP32-H2's restart while it finds no network
+- [`components/zigbee_ota/README.md`](components/zigbee_ota/README.md): updates over Zigbee in
+  detail, the fallback, `tx_power`
 - [`docs/development.md`](docs/development.md): repository layout, host tests, build and flash
   tools, how the session works, and the status codes of `sensor.inverter_zb_status`
 

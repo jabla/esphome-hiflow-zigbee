@@ -1,11 +1,12 @@
 name: CI
 
 on:
+  # Once per pull request; the ruleset checks it against the latest main, so
+  # the merge adds nothing new. By hand from the Actions tab if needed.
   # Documentation-only changes need neither the tests nor a firmware build.
-  push:
-    paths-ignore: ['**.md', 'docs/**']
   pull_request:
     paths-ignore: ['**.md', 'docs/**']
+  workflow_dispatch:
 
 jobs:
   host-tests:

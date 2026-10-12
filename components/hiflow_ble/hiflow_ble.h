@@ -195,6 +195,7 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   // Publishes a lifetime counter unless it is 0 (missing) or below the last one.
   void publish_total_(uint8_t type, float value, float &last);
   void publish_status_(uint8_t status, bool refresh);
+  void publish_dark_zeros_(int64_t now);
   void flush_prefs_();
   void poll_slider_(int64_t now);
   void poll_switch_(int64_t now);
@@ -249,6 +250,8 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   int64_t next_status_refresh_ms_{0};
   int last_status_{-1};
   int64_t last_data_ms_{-1};
+  uint8_t dark_zero_tries_{0};      // zeros sent since the last reading
+  int64_t next_dark_zeros_ms_{0};   // the next ones from then on
 
   // --- day log (for a display) ---
   hiflow_daylog_t daylog_{};

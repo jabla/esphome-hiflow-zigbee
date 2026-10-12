@@ -240,6 +240,11 @@ int hiflow_daylog_inverter_off(const hiflow_daylog_t *d)
     return d != NULL && (d->facts & HIFLOW_FACT_SWITCH_OFF) && !d->fed_since_off;
 }
 
+int hiflow_daylog_dark(const hiflow_daylog_t *d)
+{
+    return d != NULL && d->rec.standby && d->run_last_ms >= 0 && d->rec.last_feed == 0;
+}
+
 int hiflow_daylog_has_curve(const hiflow_daylog_t *d)
 {
     int i;

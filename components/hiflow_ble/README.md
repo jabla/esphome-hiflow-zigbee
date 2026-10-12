@@ -146,6 +146,19 @@ ESPHome's standard filters, as `hiflow-zb.yaml` does:
 The status is the exception: the component publishes it on change and every
 5 minutes, and reports the short state 7 (a data request in flight) as 6.
 
+At night the inverter is dark and sends nothing, so each sensor would keep its
+last reading until the morning, and the last one at dusk can be a few tenths
+of a watt. Once the inverter is dark (in standby: it fed in nothing for 5
+minutes, and the latest reading since the boot was below 1 W) and the link is
+gone, the power and current sensors (AC, reactive, per port) are set to 0;
+voltages, counters, power factor, frequency and temperature keep their last
+values, and a sensor without a reading stays without one. The 0 goes out three
+times, 5.5 minutes apart, so a throttle lets one through and a lost report is
+sent again; a filter chain that never passes a 0 (a lone `delta`, an `offset`)
+keeps the old value. A link lost while the inverter still feeds in, or after a
+boot before the first reading, changes nothing; so a dusk whose last reading
+was 1 W or more keeps that value until the morning.
+
 `power_limit`, `inverter_control` and `network_time` add Zigbee endpoints.
 All three default to `true` wherever the `zigbee` component is loaded
 (`zigbee_id:` picks one if there are several), so the BLE-only build leaves

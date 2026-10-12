@@ -6,6 +6,9 @@
  *     with it to wake; never on a link lost with power, before the first
  *     reading, while the bridge holds the inverter at 0 W and it answers, or
  *     while it refuses the session
+ *   - dark (power and current go to 0) only in standby after a reading of
+ *     this boot without power: not in the first minute at dawn, not after a
+ *     boot before a reading
  *   - a new day comes from the inverter's counters, over any gap; a bad value
  *     makes none
  *   - the clock only places the curve: the same days with any clock, or
@@ -206,21 +209,26 @@ static void test_standby(void)
     /* Dusk: 0 W from the reading at 630 s on, the link up. */
     rig_to(&g, 929, 0.0f, 30);
     expect_int(g.d.rec.standby, 0, "0 W for 4:59: not yet");
+    expect_int(hiflow_daylog_dark(&g.d), 0, "not standby: not dark");
     rig_to(&g, 930, 0.0f, 30);
     expect_int(g.d.rec.standby, 1, "0 W for 5:00: standby");
     expect_int(g.enters, 1, "entered once");
+    expect_int(hiflow_daylog_dark(&g.d), 1, "standby after 0 W: dark");
 
     /* A lone reading with power at dusk, silence, a lone one at dawn: that
        is no minute of power. */
     rig_to(&g, 960, 3.0f, 30);
     rig_to(&g, 3600, 0.0f, 0);
     rig_to(&g, 3630, 2.0f, 30);
+    expect_int(hiflow_daylog_dark(&g.d), 0, "standby, but the latest reading had power: not dark");
     rig_to(&g, 3660, 0.0f, 30);
     expect_int(g.d.rec.standby, 1, "lone readings with power: still standby");
+    expect_int(hiflow_daylog_dark(&g.d), 1, "0 W again: dark");
 
     /* Readings with power a minute apart wake it, half a minute does not. */
     rig_to(&g, 3749, 20.0f, 30); /* readings at 3690 and 3720 */
     expect_int(g.d.rec.standby, 1, "power for 30 s: still standby");
+    expect_int(hiflow_daylog_dark(&g.d), 0, "the first minute at dawn: not dark");
     rig_to(&g, 3750, 20.0f, 30); /* and 3750 */
     expect_int(g.d.rec.standby, 0, "power for 60 s: awake");
     expect_int(g.leaves, 1, "woke once");
@@ -229,6 +237,7 @@ static void test_standby(void)
     rig_to(&g, 4020, 400.0f, 30);
     rig_to(&g, 4020 + 8 * HOUR, 400.0f, 0);
     expect_int(g.d.rec.standby, 0, "a link lost at 400 W, for 8 hours: no standby");
+    expect_int(hiflow_daylog_dark(&g.d), 0, "and not dark");
     /* It comes back at 0 W: five minutes from that reading. */
     rig_to(&g, 4020 + 8 * HOUR + 30, 0.0f, 30);
     rig_to(&g, 4020 + 8 * HOUR + 329, 0.0f, 0);
@@ -241,15 +250,27 @@ static void test_standby(void)
     rig_to(&g, 30, 0.9f, 30);
     rig_to(&g, 330, 0.9f, 0);
     expect_int(g.d.rec.standby, 1, "0.9 W is nothing");
+    expect_int(hiflow_daylog_dark(&g.d), 1, "dark after 0.9 W");
     rig_init(&g, noon, 1);
     rig_to(&g, 30, 1.0f, 30);
     rig_to(&g, 3 * HOUR, 1.0f, 0);
     expect_int(g.d.rec.standby, 0, "1 W is power");
+    expect_int(hiflow_daylog_dark(&g.d), 0, "and not dark");
 
     /* Being set up: never a reading, never standby. */
     rig_init(&g, noon, 1);
     rig_to(&g, 48 * HOUR, 0.0f, 0);
     expect_int(g.d.rec.standby, 0, "no reading ever: not standby");
+
+    /* The link lost in the first minute at dawn: still standby, but the
+       inverter feeds in, so not dark, however long the link stays down. */
+    rig_init(&g, noon, 1);
+    rig_to(&g, 30, 0.0f, 30);
+    rig_to(&g, 3600, 0.0f, 0);
+    rig_to(&g, 3630, 150.0f, 30);
+    rig_to(&g, 3630 + 4 * HOUR, 150.0f, 0);
+    expect_int(g.d.rec.standby, 1, "a link lost at dawn: still standby");
+    expect_int(hiflow_daylog_dark(&g.d), 0, "but not dark");
 }
 
 static void test_held_and_refused(void)
@@ -608,6 +629,7 @@ static void test_restore(void)
     expect_int(hiflow_daylog_save_due(&g.d, 5000, 0), 0, "nothing to save after the restore");
     rig_to(&g, 1, 0.0f, 0);
     expect_int(g.d.rec.standby, 1, "standby at once");
+    expect_int(hiflow_daylog_dark(&g.d), 0, "but no reading of this boot: not dark");
     rig_to(&g, 30, 50.0f, 30);
     expect_int(g.d.rec.standby, 1, "one reading with power: still standby");
     rig_to(&g, 90, 50.0f, 30);
@@ -621,6 +643,9 @@ static void test_restore(void)
     expect_int(g.d.rec.standby, 0, "0 W before the reboot, silent 4:59 after: not yet");
     rig_to(&g, 300, 0.0f, 0);
     expect_int(g.d.rec.standby, 1, "5 minutes after the boot: standby");
+    expect_int(hiflow_daylog_dark(&g.d), 0, "assumed, not seen: not dark");
+    rig_to(&g, 330, 0.0f, 30);
+    expect_int(hiflow_daylog_dark(&g.d), 1, "a reading at 0 W: dark");
 
     /* ...and a power cut while it fed in, back at night: what came before
        the boot says nothing about now, so the silence is standby, not a
@@ -634,6 +659,7 @@ static void test_restore(void)
     expect_int(g.d.rec.standby, 0, "back at night: not in the first 5 minutes");
     rig_to(&g, 300, 0.0f, 0);
     expect_int(g.d.rec.standby, 1, "silent for 5 minutes after the boot: standby");
+    expect_int(hiflow_daylog_dark(&g.d), 0, "after a power cut while feeding in: not dark");
     /* Being set up is another matter: no record, no standby. */
     rig_boot(&g, NULL, 60, 0, 1);
     rig_to(&g, 3 * HOUR, 0.0f, 0);
@@ -820,6 +846,7 @@ typedef struct {
     int64_t enter_t[16], leave_t[16], day_t[16];
     int     standby_by_day;   /* readings with power a minute into a run, in standby */
     int     woke_on_zero;     /* left standby at a reading without power */
+    int     dark_nights;      /* nights that were dark before the morning */
     float   dusk_daily[16];   /* the day's energy on the evening's last reading */
     int     dusks;
 } replay_result_t;
@@ -829,7 +856,7 @@ typedef struct {
 static void replay(int64_t lag_s, int clock_ok, replay_result_t *res)
 {
     static hiflow_daylog_t d;
-    int i = 0, standby, facts = 0;
+    int i = 0, standby, facts = 0, dark = 0;
     int64_t t, feed_since = -1;
     const int64_t t0 = g_lines[0].t, t1 = g_lines[g_nlines - 1].t + 2 * HOUR;
 
@@ -875,10 +902,13 @@ static void replay(int64_t lag_s, int clock_ok, replay_result_t *res)
         }
         standby = d.rec.standby;
         hiflow_daylog_update(&d, (t - t0) * 1000, facts);
+        dark |= hiflow_daylog_dark(&d);
         if (d.rec.standby && !standby && res->enters < 16)
             res->enter_t[res->enters++] = t;
         if (!d.rec.standby && standby && res->leaves < 16) {
             res->leave_t[res->leaves++] = t;
+            res->dark_nights += dark;
+            dark = 0;
             if (d.rec.last_feed != 1)
                 res->woke_on_zero++;
         }
@@ -916,6 +946,7 @@ static void test_replay(const char *path)
     expect_int(base.days, 5, "five new days");
     expect_int(base.standby_by_day, 0, "never standby with power flowing");
     expect_int(base.woke_on_zero, 0, "never woke without power");
+    expect_int(base.dark_nights, base.leaves, "every night dark before the morning");
     for (i = 0; i < base.enters && i < base.leaves; i++) {
         const int64_t evening = base.enter_t[i] % 86400, morning = base.leave_t[i] % 86400;
         expect(evening > 16 * HOUR && evening < 20 * HOUR, "standby in the evening");

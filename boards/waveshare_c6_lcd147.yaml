@@ -401,7 +401,8 @@ display:
 
       // One row: a small grey label on the left, the value right aligned. A
       // sensor is NaN until its first reading (after boot, at night). The rows
-      // show the raw reading of the last poll: the filters in hiflow-zb.yaml only
+      // show the raw reading of the last poll, except power and current, which
+      // go to 0 once the inverter is dark: the filters in hiflow-zb.yaml only
       // thin out the Zigbee reports.
       int y = 80;
       // A row without a reading is left out.

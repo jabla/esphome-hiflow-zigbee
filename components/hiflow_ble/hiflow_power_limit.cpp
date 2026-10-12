@@ -56,6 +56,10 @@ void ZigbeeComponent::add_attr_<hiflow_ble::PowerLimitCluster>(ZigbeeAttribute *
   // The inverter takes 10 % steps only; ZHA uses the resolution as the step.
   float min_value = 0.0f, max_value = 100.0f, resolution = 10.0f;
   uint16_t units = hiflow_ble::BACNET_UNIT_PERCENT;
+  // Group Analog Output, type percentage, index "other". The SDK macro leaves
+  // the group (bits 24 to 31) at 0, the ZCL spec wants 0x01 for this cluster.
+  uint32_t application_type = (uint32_t(EZB_ZCL_AO_GROUP_ID) << 24) |
+                              EZB_ZCL_AO_SET_APP_TYPE_WITH_ID(EZB_ZCL_ANALOG_OUTPUT_APPLICATION_TYPE_PERCENTAGE, 0xFFFF);
   uint8_t *description = get_zcl_string(hiflow_ble::DESCRIPTION, 31);
 
   ezb_zcl_analog_output_cluster_desc_add_attr(cluster, EZB_ZCL_ATTR_ANALOG_OUTPUT_MIN_PRESENT_VALUE_ID, &min_value);
@@ -63,6 +67,8 @@ void ZigbeeComponent::add_attr_<hiflow_ble::PowerLimitCluster>(ZigbeeAttribute *
   ezb_zcl_analog_output_cluster_desc_add_attr(cluster, EZB_ZCL_ATTR_ANALOG_OUTPUT_RESOLUTION_ID, &resolution);
   ezb_zcl_analog_output_cluster_desc_add_attr(cluster, EZB_ZCL_ATTR_ANALOG_OUTPUT_ENGINEERING_UNITS_ID, &units);
   ezb_zcl_analog_output_cluster_desc_add_attr(cluster, EZB_ZCL_ATTR_ANALOG_OUTPUT_DESCRIPTION_ID, description);
+  ezb_zcl_analog_output_cluster_desc_add_attr(cluster, EZB_ZCL_ATTR_ANALOG_OUTPUT_APPLICATION_TYPE_ID,
+                                              &application_type);
   delete[] description;
 
   if (ezb_af_endpoint_add_cluster_desc(ep_desc, cluster) != EZB_ERR_NONE)

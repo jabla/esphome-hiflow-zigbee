@@ -131,6 +131,13 @@ void hiflow_daylog_update(hiflow_daylog_t *d, int64_t now_ms, int facts);
    it wakes in the morning; its first reading with power ends this. */
 int hiflow_daylog_inverter_off(const hiflow_daylog_t *d);
 
+/* 1 while the inverter is dark: in standby, and the latest reading of this
+   boot fed nothing. Its power and current are 0 then, whatever that reading
+   showed (the last one at dusk can be a few tenths of a watt). Not while the
+   latest reading had power (the first minute at dawn is still standby), and
+   not after a boot before a reading (that standby is assumed, not seen). */
+int hiflow_daylog_dark(const hiflow_daylog_t *d);
+
 /* 1 when the day's curve has a reading (it needs a trusted clock). */
 int hiflow_daylog_has_curve(const hiflow_daylog_t *d);
 

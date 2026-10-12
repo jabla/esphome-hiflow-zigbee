@@ -134,7 +134,9 @@ sensor:
   #     published does not reset the delta's), or
   #   - no new value came for 90 s (debounce): the link dropped or the inverter
   #     went dark at dusk. The last reading then still reaches the coordinator
-  #     instead of waiting for a poll that does not come until the morning.
+  #     instead of waiting for a poll that does not come until the morning;
+  #     once the inverter is dark, power and current go to 0 instead (see
+  #     components/hiflow_ble/README.md).
   # The display of the Waveshare board reads the unfiltered values.
   #
   # The sensors that the on-board display of the Waveshare board shows carry an

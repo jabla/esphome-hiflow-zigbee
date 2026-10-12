@@ -33,6 +33,8 @@ static const uint16_t TIME_PREF_VERSION = 2;
 static const char *const TIME_PREF_NAME = "hiflow_time_v2";
 static const int64_t TIME_SAVE_INTERVAL_MS = 300000;  // every 5 minutes
 static const int64_t STATUS_REFRESH_MS = 300000;      // republish the status
+static const int64_t DARK_ZERO_RETRY_MS = 330000;     // longer than a 5-minute throttle
+static const uint8_t DARK_ZERO_TRIES = 3;             // see publish_dark_zeros_()
 static const int64_t LINK_UP_FALLBACK_MS = 3000;      // if no CCCD write is confirmed
 static const int64_t SLIDER_POLL_MS = 500;            // present_value is polled this often
 static const int64_t SLIDER_QUIET_MS = 5000;          // a new value must stand this long
@@ -242,6 +244,7 @@ void HiflowBle::loop() {
       facts |= HIFLOW_FACT_REFUSED;
     hiflow_daylog_update(&this->daylog_, now, facts);
   }
+  this->publish_dark_zeros_(now);
   hiflow_session_tick(&this->session_, now);
   if (this->conn_interval_ms_ != 0 && this->link_ready_ && this->slow_link_tries_ <= SLOW_LINK_TRIES &&
       now >= this->slow_link_next_ms_ && hiflow_session_state(&this->session_) == HIFLOW_STATE_READY)
@@ -701,6 +704,7 @@ void HiflowBle::session_on_data(const hiflow_data_t *data) {
                                                              HIFLOW_PORT3_ENERGY_TOTAL, HIFLOW_PORT4_ENERGY_TOTAL};
 
   this->last_data_ms_ = this->now_ms_();
+  this->dark_zero_tries_ = 0;  // this reading is published: the zeros start over
   if (data->have_ac) {
     hiflow_reading_t reading{};
     reading.now_ms = this->last_data_ms_;
@@ -1007,6 +1011,38 @@ void HiflowBle::publish_total_(uint8_t type, float value, float &last) {
   this->publish_(type, value);
 }
 
+// Once the inverter is dark (hiflow_daylog_dark) and the link is gone, the
+// flows (power and current) go to 0: every sensor would keep its last reading
+// until the morning, and the last one at dusk can be a few tenths of a watt.
+// Voltages and counters keep their last values, and a sensor without a reading
+// stays without one. The 0 goes out DARK_ZERO_TRIES times, DARK_ZERO_RETRY_MS
+// apart, whatever the sensor shows: it replaces a reading a debounce still
+// holds, a throttle passes a later one, and a lost Zigbee report is sent again.
+// A new reading starts them over; a link that comes and goes without one does
+// not. A link lost while the inverter feeds in, or after a boot before a
+// reading, leaves the values alone.
+void HiflowBle::publish_dark_zeros_(int64_t now) {
+  static const uint8_t FLOWS[] = {
+      HIFLOW_AC_POWER,    HIFLOW_AC_CURRENT,    HIFLOW_REACTIVE_POWER,
+      HIFLOW_PORT1_POWER, HIFLOW_PORT1_CURRENT, HIFLOW_PORT2_POWER, HIFLOW_PORT2_CURRENT,
+      HIFLOW_PORT3_POWER, HIFLOW_PORT3_CURRENT, HIFLOW_PORT4_POWER, HIFLOW_PORT4_CURRENT,
+  };
+  if (!hiflow_daylog_dark(&this->daylog_)) {
+    this->dark_zero_tries_ = 0;
+    return;
+  }
+  if (this->link_ready_ || this->dark_zero_tries_ >= DARK_ZERO_TRIES ||
+      (this->dark_zero_tries_ > 0 && now < this->next_dark_zeros_ms_))
+    return;
+  this->dark_zero_tries_++;
+  this->next_dark_zeros_ms_ = now + DARK_ZERO_RETRY_MS;
+  for (uint8_t type : FLOWS) {
+    auto *sensor = this->sensors_[type];
+    if (sensor != nullptr && sensor->has_state())
+      this->publish_(type, 0.0f);
+  }
+}
+
 void HiflowBle::publish_(uint8_t type, float value) {
   if (type >= HIFLOW_SENSOR_TYPE_COUNT)
     return;
@@ -1017,10 +1053,10 @@ void HiflowBle::publish_(uint8_t type, float value) {
 }
 
 // Every published value is a Zigbee report, so the status goes out when it
-// changes and as a keep-alive every STATUS_REFRESH_MS (at night it is the only
-// traffic). READING is folded into READY: it lasts for one request, and sending
-// both would cost two reports per data cycle without telling anything; a
-// request that hangs ends in status 11.
+// changes and as a keep-alive every STATUS_REFRESH_MS (at night the only
+// traffic besides the zeros of publish_dark_zeros_). READING is folded into
+// READY: it lasts for one request, and sending both would cost two reports per
+// data cycle without telling anything; a request that hangs ends in status 11.
 void HiflowBle::publish_status_(uint8_t status, bool refresh) {
   if (status == HIFLOW_STATUS_READING)
     status = HIFLOW_STATUS_READY;

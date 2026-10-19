@@ -166,6 +166,8 @@ typedef struct {
     hiflow_session_config_t cfg;
     hiflow_session_ops_t    ops;
     hiflow_clock_t          clock;
+    hiflow_clock_t          inverter_clock; /* the inverter's time from its last reply, for
+                                               requests (base_unix 0: none yet) */
 
     uint8_t  state;
     uint8_t  status;
@@ -207,6 +209,8 @@ typedef struct {
     int      power_sent;           /* the on/off command in flight */
 
     int      clock_synced;         /* a trusted time arrived since boot */
+    int      network_time_taken;   /* a network time set the clock since boot ... */
+    int64_t  network_time_ms;      /* ... last at this uptime */
     uint32_t failures;             /* failed handshakes since boot */
     uint32_t sessions;             /* successful handshakes since boot */
 
@@ -266,8 +270,11 @@ int32_t  hiflow_session_retry_in_s(const hiflow_session_t *s, int64_t now_ms);
    other state. */
 void hiflow_session_retry_now(hiflow_session_t *s, int64_t now_ms);
 /* A trusted time from elsewhere, e.g. the Zigbee network's time server. It
-   marks the clock as synced and moves it forward if it lags (never back:
-   the inverter's clock, set by our time-sync, must not run ahead of ours).
+   marks the clock as synced and sets it to that time in either direction (in
+   light sleep the clock gains time that nothing else takes back). A step of
+   more than HIFLOW_TIME_AGREE_S is taken only when the inverter's time agrees
+   with it; before there is one, a step forward is taken too. Requests carry
+   the inverter's own time, except the V0 pairing.
    Returns 1 when the clock moved. */
 int      hiflow_session_observe_time(hiflow_session_t *s, int64_t now_ms, int64_t unix_time);
 /* 1 once a trusted time arrived since boot (the inverter's device time or

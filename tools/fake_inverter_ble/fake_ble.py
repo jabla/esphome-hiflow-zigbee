@@ -40,6 +40,9 @@ lib.shim_frame.argtypes = [
 lib.shim_counts.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
 lib.shim_set_power.argtypes = [ctypes.c_void_p, ctypes.c_int32]
 lib.shim_reset_pages.argtypes = [ctypes.c_void_p]
+lib.shim_set_mode.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
+lib.shim_last_login_lead.restype = ctypes.c_int64
+lib.shim_last_login_lead.argtypes = [ctypes.c_void_p]
 fi = lib.shim_new(KEY, SN, PIN, PAGES["page0_hex"].encode(), PAGES["page1_hex"].encode())
 
 
@@ -90,29 +93,78 @@ def apply_power_file():
 async def drop_link():
     """The fake drops the link: disconnect the one connected central."""
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
-    intro = await bus.introspect("org.bluez", "/")
-    manager = bus.get_proxy_object("org.bluez", "/", intro).get_interface("org.freedesktop.DBus.ObjectManager")
-    objects = await manager.call_get_managed_objects()
-    connected = [
-        path for path, ifaces in objects.items()
-        if "org.bluez.Device1" in ifaces and ifaces["org.bluez.Device1"]["Connected"].value
-    ]
-    if len(connected) != 1:
-        log(f"KILL: {len(connected)} devices connected, not dropping any")
+    try:
+        intro = await bus.introspect("org.bluez", "/")
+        manager = bus.get_proxy_object("org.bluez", "/", intro).get_interface("org.freedesktop.DBus.ObjectManager")
+        objects = await manager.call_get_managed_objects()
+        connected = [
+            path for path, ifaces in objects.items()
+            if "org.bluez.Device1" in ifaces and ifaces["org.bluez.Device1"]["Connected"].value
+        ]
+        if len(connected) != 1:
+            log(f"KILL: {len(connected)} devices connected, not dropping any")
+            return
+        intro = await bus.introspect("org.bluez", connected[0])
+        device = bus.get_proxy_object("org.bluez", connected[0], intro).get_interface("org.bluez.Device1")
+        await device.call_disconnect()
+        log("KILL: link dropped")
+    finally:
+        # One connection per kill: refused logins kill the link every few minutes.
+        bus.disconnect()
+
+
+# "mode" next to this script (bench scenarios), words on one line:
+#   refuse     kill the link on every login
+#   rotate     hand out a new key with every V0 pairing
+#   clock N    the device clock runs N seconds off the laptop's
+#   lead N     kill the link on a request (not the V0) N seconds or more ahead of the device clock
+#   lag N      kill the link on a request (not the V0) N seconds or more behind the device clock
+MODE_FILE = HERE / "mode"
+current_mode = None
+clock_offset = 0
+
+
+def apply_mode_file():
+    global current_mode, clock_offset
+    try:
+        txt = MODE_FILE.read_text().strip()
+    except OSError:
+        txt = ""
+    if txt == current_mode:
         return
-    intro = await bus.introspect("org.bluez", connected[0])
-    device = bus.get_proxy_object("org.bluez", connected[0], intro).get_interface("org.bluez.Device1")
-    await device.call_disconnect()
-    log("KILL: link dropped")
+    current_mode = txt  # log once per content, also when it is bad
+    words = txt.split()
+
+    def number(word):
+        return int(words[words.index(word) + 1]) if word in words else 0
+
+    try:
+        clock, lead, lag = number("clock"), number("lead"), number("lag")
+    except (IndexError, ValueError):
+        log(f"mode: {txt!r} has a word without a whole number after it, ignored")
+        return
+    refuse = "refuse" in words
+    rotate = "rotate" in words
+    clock_offset = clock
+    lib.shim_set_mode(fi, int(refuse), int(rotate), lead, lag)
+    log(f"mode: refuse={refuse} rotate={rotate} clock={clock_offset:+d} s lead={lead} lag={lag}")
 
 
 def on_write(characteristic, value, **kwargs):
-    lib.shim_set_time(fi, int(time.time()))
+    apply_mode_file()
+    lib.shim_set_time(fi, int(time.time()) + clock_offset)
     apply_power_file()
+    counts = (ctypes.c_int * 6)()
+    lib.shim_counts(fi, counts)
+    logins_before = counts[1]
     out = ctypes.create_string_buffer(2048)
     kill = ctypes.c_int(0)
     n = lib.shim_frame(fi, bytes(value), len(value), out, ctypes.byref(kill))
     log(f"<- {len(value)} B, -> {n} B{' KILL' if kill.value else ''}")
+    lib.shim_counts(fi, counts)
+    if counts[1] != logins_before:
+        log(f"LOGIN #{counts[1]}: timestamp {lib.shim_last_login_lead(fi):+d} s vs device clock"
+            f"{' -> killed' if kill.value else ''}")
     if n:
         pending.append(out.raw[:n])
     if kill.value:

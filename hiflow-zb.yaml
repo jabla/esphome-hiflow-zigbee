@@ -75,8 +75,9 @@ hiflow_ble:
   ble_id: ${hiflow_ble_id}
   pin: ${hiflow_ble_pin}
   # Standard (winter) UTC offset; eu_dst adds an hour from the last Sunday in
-  # March to the last Sunday in October. The handshake's time-sync sets the
-  # inverter's own clock with it, and that clock drives its daily energy reset.
+  # March to the last Sunday in October. They set the local time of the display
+  # and the day curve. The time-sync at every login also hands them to the
+  # inverter.
   offset: 3600
   eu_dst: true
   # Data cadence on the open session. Must stay below the inverter's idle

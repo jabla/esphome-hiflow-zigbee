@@ -28,6 +28,14 @@ enum {
    long: otherwise every new connection would read, lose the link and log in
    again, twice a minute. */
 #define SIDE_BLOCK_MS 3600000
+/* The inverter's time from its last reply ages with our uptime, which gains
+   up to about 460 ppm in light sleep (20 s a night on the C6-LCD). A login
+   17 s ahead passed on the real inverter; 6 h of age leave about 10 s. After a
+   longer silence the link starts with a V0 pairing to read the time again. */
+#define DEVICE_TIME_MAX_AGE_MS (6LL * 3600 * 1000)
+/* The network time arrives twice a day. While it does, it alone sets our
+   clock; a day without one, the inverter's time takes over again. */
+#define NETWORK_TIME_MAX_AGE_MS (24LL * 3600 * 1000)
 
 static void enter_backoff(hiflow_session_t *s, int64_t now_ms, uint32_t delay_ms);
 static void enter_wait_link(hiflow_session_t *s, int64_t now_ms);
@@ -54,6 +62,37 @@ static void slog(hiflow_session_t *s, int level, const char *fmt, ...)
 static int64_t unix_now(const hiflow_session_t *s, int64_t now_ms)
 {
     return hiflow_clock_now(&s->clock, now_ms);
+}
+
+/* 1 once the inverter has told us its time (base_unix stays 0 until then). */
+static int device_time_known(const hiflow_session_t *s)
+{
+    return s->inverter_clock.base_unix != 0;
+}
+
+/* 1 while the inverter's time from its last reply is recent enough for a
+   login (see DEVICE_TIME_MAX_AGE_MS). */
+static int device_time_fresh(const hiflow_session_t *s, int64_t now_ms)
+{
+    return device_time_known(s) &&
+           now_ms - s->inverter_clock.base_uptime_ms < DEVICE_TIME_MAX_AGE_MS;
+}
+
+/* The time on every request but the V0 pairing. The inverter drops the link
+   on a login about a minute or more ahead of its own clock or behind it, on a
+   time-sync 600 s ahead and on a config read 60 s behind. Our clock restarts
+   behind after a reboot and gains in light sleep, so requests carry the
+   inverter's time from its last reply once there is one. The time-sync still
+   brings our UTC offset. */
+static int64_t device_now(const hiflow_session_t *s, int64_t now_ms)
+{
+    return device_time_known(s) ? hiflow_clock_now(&s->inverter_clock, now_ms) : unix_now(s, now_ms);
+}
+
+/* 1 while a network time set our clock within the last NETWORK_TIME_MAX_AGE_MS. */
+static int network_time_recent(const hiflow_session_t *s, int64_t now_ms)
+{
+    return s->network_time_taken && now_ms - s->network_time_ms < NETWORK_TIME_MAX_AGE_MS;
 }
 
 static int32_t utc_offset(const hiflow_session_t *s, int64_t unix_time)
@@ -258,13 +297,15 @@ static int send_payload(hiflow_session_t *s, int64_t now_ms, uint16_t cmd,
     return 1;
 }
 
+/* The V0 pairing is the request that reads the inverter's time, so it goes
+   out with ours: the inverter answers it whatever its timestamp (seen 1046 s
+   behind). */
 static void send_v0_pairing(hiflow_session_t *s, int64_t now_ms)
 {
-    int64_t unix_time = unix_now(s, now_ms);
+    int64_t t = unix_now(s, now_ms);
     size_t len = 0;
 
-    if (hiflow_encode_app_info_v0(s->tx_pt, sizeof(s->tx_pt), &len, unix_time,
-                                  utc_offset(s, unix_time)) != HIFLOW_OK) {
+    if (hiflow_encode_app_info_v0(s->tx_pt, sizeof(s->tx_pt), &len, t, utc_offset(s, t)) != HIFLOW_OK) {
         fail(s, now_ms, HIFLOW_FAIL_NO_REPLY, "could not encode the V0 pairing request");
         return;
     }
@@ -275,7 +316,7 @@ static void send_v0_pairing(hiflow_session_t *s, int64_t now_ms)
 
 static void send_login(hiflow_session_t *s, int64_t now_ms)
 {
-    int64_t unix_time = unix_now(s, now_ms);
+    int64_t t = device_now(s, now_ms);
     size_t len = 0;
 
     if (s->logins_sent > 0) {
@@ -285,7 +326,7 @@ static void send_login(hiflow_session_t *s, int64_t now_ms)
         fail(s, now_ms, HIFLOW_FAIL_LOGIN_REJECTED, "second login on the same link avoided");
         return;
     }
-    if (hiflow_encode_comm_cmd(s->tx_pt, sizeof(s->tx_pt), &len, unix_time, HIFLOW_ACTION_LOGIN,
+    if (hiflow_encode_comm_cmd(s->tx_pt, sizeof(s->tx_pt), &len, t, HIFLOW_ACTION_LOGIN,
                                s->cfg.ble_id) != HIFLOW_OK) {
         fail(s, now_ms, HIFLOW_FAIL_NO_REPLY, "could not encode the login");
         return;
@@ -298,10 +339,10 @@ static void send_login(hiflow_session_t *s, int64_t now_ms)
 
 static void send_pin(hiflow_session_t *s, int64_t now_ms)
 {
-    int64_t unix_time = unix_now(s, now_ms);
+    int64_t t = device_now(s, now_ms);
     size_t len = 0;
 
-    if (hiflow_encode_comm_cmd(s->tx_pt, sizeof(s->tx_pt), &len, unix_time, HIFLOW_ACTION_PIN,
+    if (hiflow_encode_comm_cmd(s->tx_pt, sizeof(s->tx_pt), &len, t, HIFLOW_ACTION_PIN,
                                s->cfg.pin) != HIFLOW_OK) {
         fail(s, now_ms, HIFLOW_FAIL_PIN, "could not encode the PIN");
         return;
@@ -313,11 +354,11 @@ static void send_pin(hiflow_session_t *s, int64_t now_ms)
 
 static void send_time_sync(hiflow_session_t *s, int64_t now_ms)
 {
-    int64_t unix_time = unix_now(s, now_ms);
+    int64_t t = device_now(s, now_ms);
     size_t len = 0;
 
-    if (hiflow_encode_time_sync(s->tx_pt, sizeof(s->tx_pt), &len, unix_time,
-                                utc_offset(s, unix_time)) != HIFLOW_OK) {
+    if (hiflow_encode_time_sync(s->tx_pt, sizeof(s->tx_pt), &len, t,
+                                utc_offset(s, t)) != HIFLOW_OK) {
         fail(s, now_ms, HIFLOW_FAIL_NO_REPLY, "could not encode the time-sync");
         return;
     }
@@ -328,10 +369,10 @@ static void send_time_sync(hiflow_session_t *s, int64_t now_ms)
 
 static void send_status_poll(hiflow_session_t *s, int64_t now_ms, int32_t action)
 {
-    int64_t unix_time = unix_now(s, now_ms);
+    int64_t t = device_now(s, now_ms);
     size_t len = 0;
 
-    if (hiflow_encode_status_poll(s->tx_pt, sizeof(s->tx_pt), &len, unix_time, action) !=
+    if (hiflow_encode_status_poll(s->tx_pt, sizeof(s->tx_pt), &len, t, action) !=
         HIFLOW_OK) {
         fail(s, now_ms, HIFLOW_FAIL_NO_REPLY, "could not encode the status poll");
         return;
@@ -348,15 +389,15 @@ static void schedule_status_poll(hiflow_session_t *s, int64_t now_ms, int32_t ac
 
 static void request_data(hiflow_session_t *s, int64_t now_ms)
 {
-    int64_t unix_time = unix_now(s, now_ms);
+    int64_t t = device_now(s, now_ms);
     size_t len = 0;
 
     if (s->current_page == 0) {
         hiflow_measurements_reset(&s->data);
         s->data_started_ms = now_ms;
     }
-    if (hiflow_encode_real_data_request(s->tx_pt, sizeof(s->tx_pt), &len, unix_time,
-                                        utc_offset(s, unix_time), s->current_page) != HIFLOW_OK) {
+    if (hiflow_encode_real_data_request(s->tx_pt, sizeof(s->tx_pt), &len, t,
+                                        utc_offset(s, t), s->current_page) != HIFLOW_OK) {
         fail(s, now_ms, HIFLOW_FAIL_NO_REPLY, "could not encode the data request");
         return;
     }
@@ -385,29 +426,36 @@ static void handshake_complete(hiflow_session_t *s, int64_t now_ms)
     request_data(s, now_ms);
 }
 
-/* The inverter's time: taken when it is ahead of our clock. It counts as a
-   trusted time only when it moved the clock or agrees with it; one far behind
-   says the inverter's clock is off, and ours may be too. */
-static void observe_device_time(hiflow_session_t *s, int64_t now_ms, int64_t device_time)
+/* The inverter's time: the requests carry it from now on (see device_now()).
+   It sets our clock (display, day curve) only while no recent network time
+   does: forward by any amount, since our clock restarts behind after a reboot,
+   back by at most HIFLOW_TIME_AGREE_S, since one far behind says the
+   inverter's clock is off. It counts as a trusted time when it agrees with
+   ours within that much or is ahead. */
+static void observe_device_time(hiflow_session_t *s, int64_t now_ms, int64_t device_time,
+                                const char *source)
 {
-    int64_t ahead;
+    int64_t off;
+    int take;
 
     if (device_time <= HIFLOW_TIME_MIN || device_time >= HIFLOW_TIME_MAX)
         return;
-    ahead = device_time - unix_now(s, now_ms);
-    if (hiflow_clock_observe_device_time(&s->clock, now_ms, device_time)) {
-        slog(s, 2, "clock pulled forward to the device time");
+    hiflow_clock_set(&s->inverter_clock, now_ms, device_time);
+    off = device_time - unix_now(s, now_ms);
+    take = off != 0 && off >= -HIFLOW_TIME_AGREE_S && !network_time_recent(s, now_ms);
+    slog(s, 2, "%s: device time %+lld s from our clock%s", source, (long long) off,
+         take ? ", clock set to it" : "");
+    if (off >= -HIFLOW_TIME_AGREE_S)
         s->clock_synced = 1;
-    } else if (ahead >= -HIFLOW_TIME_AGREE_S) {
-        s->clock_synced = 1;
-    }
+    if (take)
+        hiflow_clock_set(&s->clock, now_ms, device_time);
 }
 
 static void handle_login_ack(hiflow_session_t *s, int64_t now_ms, const uint8_t *pt, size_t len)
 {
     int64_t device_time = hiflow_decode_login_ack_time(pt, len);
 
-    observe_device_time(s, now_ms, device_time);
+    observe_device_time(s, now_ms, device_time, "login ack");
 
     set_state(s, HIFLOW_STATE_LOGIN_POLL);
     s->login_polls = 0;
@@ -479,13 +527,10 @@ static void handle_pairing_reply(hiflow_session_t *s, int64_t now_ms, const uint
         return;
     }
 
-    /* The login carries our clock, and after a reboot that clock restarts from
-       the last value saved to flash, i.e. behind the inverter's. The reply's
-       timestamp lets the login go out with the inverter's own time. */
+    /* The reply's timestamp lets the login go out with the inverter's own
+       time (see device_now()). */
     if (device_time > 0) {
-        slog(s, 2, "V0 reply: device time is %ld s ahead of our clock",
-             (long) (device_time - unix_now(s, now_ms)));
-        observe_device_time(s, now_ms, device_time);
+        observe_device_time(s, now_ms, device_time, "V0 reply");
     } else {
         slog(s, 1, "V0 reply carries no device time");
     }
@@ -583,11 +628,11 @@ static void end_side_request(hiflow_session_t *s)
 
 static void send_config_read(hiflow_session_t *s, int64_t now_ms)
 {
-    int64_t unix_time = unix_now(s, now_ms);
+    int64_t t = device_now(s, now_ms);
     size_t len = 0;
 
-    if (hiflow_encode_get_config(s->tx_pt, sizeof(s->tx_pt), &len, unix_time,
-                                 utc_offset(s, unix_time)) != HIFLOW_OK) {
+    if (hiflow_encode_get_config(s->tx_pt, sizeof(s->tx_pt), &len, t,
+                                 utc_offset(s, t)) != HIFLOW_OK) {
         slog(s, 0, "could not encode the config read");
         s->config_due_ms = now_ms + CONFIG_RETRY_MS;
         return;
@@ -603,7 +648,7 @@ static void send_limit_write(hiflow_session_t *s, int64_t now_ms)
     size_t len = 0;
 
     s->limit_request = -1;
-    if (hiflow_encode_set_power_limit(s->tx_pt, sizeof(s->tx_pt), &len, unix_now(s, now_ms),
+    if (hiflow_encode_set_power_limit(s->tx_pt, sizeof(s->tx_pt), &len, device_now(s, now_ms),
                                       percent) != HIFLOW_OK) {
         slog(s, 0, "could not encode the power limit %d %%", (int) percent);
         report_limit(s);
@@ -632,7 +677,7 @@ static void send_power_command(hiflow_session_t *s, int64_t now_ms)
     size_t len = 0;
 
     s->power_request = -1;
-    if (hiflow_encode_inverter_power(s->tx_pt, sizeof(s->tx_pt), &len, unix_now(s, now_ms), on,
+    if (hiflow_encode_inverter_power(s->tx_pt, sizeof(s->tx_pt), &len, device_now(s, now_ms), on,
                                      s->inverter_sn) != HIFLOW_OK) {
         slog(s, 0, "could not encode the inverter %s command", on ? "on" : "off");
         report_power(s, on, 0);
@@ -932,6 +977,11 @@ void hiflow_session_link_up(hiflow_session_t *s, int64_t now_ms)
     hiflow_rx_reset(&s->rx);
     hiflow_measurements_reset(&s->data);
 
+    if (device_time_known(s) && !device_time_fresh(s, now_ms) && !s->need_v0 && s->cfg.sn[0] != '\0') {
+        slog(s, 2, "the inverter's last time is %lld min old: pairing first to read it",
+             (long long) ((now_ms - s->inverter_clock.base_uptime_ms) / 60000));
+        s->need_v0 = 1;
+    }
     if (s->need_v0 || !s->cfg.have_enc_rand) {
         if (s->cfg.sn[0] == '\0') {
             fail(s, now_ms, HIFLOW_FAIL_STALE_KEY,
@@ -1176,12 +1226,38 @@ int32_t hiflow_session_retry_in_s(const hiflow_session_t *s, int64_t now_ms)
 
 int hiflow_session_observe_time(hiflow_session_t *s, int64_t now_ms, int64_t unix_time)
 {
+    int64_t off, device_off;
+
     if (s == NULL || unix_time <= HIFLOW_TIME_MIN || unix_time >= HIFLOW_TIME_MAX)
         return 0;
+    off = unix_time - unix_now(s, now_ms);
+    /* A step of more than HIFLOW_TIME_AGREE_S is a second opinion against
+       ours: the inverter's time has to agree with it (the one we keep gains
+       like our clock, tens of seconds a day). Without one only a step forward
+       is taken, since our clock restarts behind after a reboot. A coordinator
+       whose host lost its clock (no RTC, no NTP yet) must not set ours back
+       by hours. */
+    if (off > HIFLOW_TIME_AGREE_S || off < -HIFLOW_TIME_AGREE_S) {
+        if (device_time_known(s)) {
+            device_off = unix_time - device_now(s, now_ms);
+            if (device_off > HIFLOW_TIME_AGREE_S || device_off < -HIFLOW_TIME_AGREE_S) {
+                slog(s, 1, "network time %+lld s off our clock and %+lld s off the inverter's: not taken",
+                     (long long) off, (long long) device_off);
+                return 0;
+            }
+        } else if (off < 0) {
+            slog(s, 1, "network time %+lld s off our clock and no inverter time yet: not taken",
+                 (long long) off);
+            return 0;
+        }
+    }
     s->clock_synced = 1;
-    if (!hiflow_clock_observe_device_time(&s->clock, now_ms, unix_time))
+    s->network_time_taken = 1;
+    s->network_time_ms = now_ms;
+    if (off == 0)
         return 0;
-    slog(s, 2, "clock pulled forward to the network time");
+    hiflow_clock_set(&s->clock, now_ms, unix_time);
+    slog(s, 2, "clock set to the network time (%+lld s)", (long long) off);
     return 1;
 }
 

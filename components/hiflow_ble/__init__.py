@@ -66,11 +66,12 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Required(CONF_SN): cv.string_strict,
         cv.Required(CONF_BLE_ID): cv.string_strict,
         cv.Required(CONF_PIN): cv.string_strict,
-        # Standard UTC offset (winter time) used in the handshake time-sync and
-        # the protobuf time fields; the vendor app hard-codes 28800 for CST.
+        # Standard UTC offset (winter time) for the display and the day curve.
+        # The handshake time-sync and the protobuf time fields carry it too;
+        # the vendor app hard-codes 28800 for CST.
         cv.Optional(CONF_OFFSET, default=3600): cv.int_,
-        # Add an hour during European summer time. The time-sync (action 104)
-        # sets the inverter's own clock, which drives its daily energy reset.
+        # Add an hour during European summer time (display, day curve,
+        # time-sync).
         cv.Optional(CONF_EU_DST, default=True): cv.boolean,
         # Data cadence. The inverter drops an idle link after roughly 90 s, so
         # anything slower than a minute would lose the session between polls.

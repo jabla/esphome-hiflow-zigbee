@@ -64,8 +64,8 @@ welcome.
    The build stops with an error while the MAC, the serial or the `ble_id` still hold the
    example values: a bridge built with them would never find the inverter.
 2. **Time zone.** Check `offset` and `eu_dst` under `hiflow_ble:` in `hiflow-zb.yaml` (default:
-   CET with European summer time). The inverter's own clock is set from them, and that clock
-   drives its daily energy reset.
+   CET with European summer time). They set the local time of the display and the day curve.
+   The time-sync at every login also hands them to the inverter.
 3. **Build first:**
    ```bash
    esphome compile hiflow-zb.yaml
@@ -126,9 +126,13 @@ into the folder that `zha: custom_quirks_path:` points to and restart Home Assis
 ## Network time
 
 The bridge asks the Zigbee coordinator for the time, through a Time client cluster on endpoint 35:
-once after joining, then twice a day. The bridge sets the inverter's clock at every login, and
-that clock drives the inverter's daily energy reset, so the time stays right even after a power
-cut at night.
+once after joining, then twice a day. It keeps the bridge's clock (display, day curve) right even
+after a power cut at night and takes back what that clock gains in light sleep (tens of seconds a
+day). A time more than five minutes off the bridge's clock is taken only when the inverter's
+time agrees: a coordinator whose host lost its own clock cannot set the bridge back by hours.
+Without a network time the inverter's time sets the bridge's clock. The inverter keeps its own
+clock and drops the link on a login about a minute off it, so every request carries the
+inverter's own time.
 
 ## Low power
 
@@ -174,8 +178,8 @@ feeds in, and a refused PIN, are faults and stay on the panel.
 
 The day's values are kept in flash and survive a reboot or a power cut. A new day begins when
 the inverter restarts its day counter in the morning; until then the pages show the last day.
-The curve needs the time: until the network time has arrived after a boot, energy and peak are
-kept, but no curve is drawn.
+The curve needs the time: until a network or inverter time has arrived after a boot, energy and
+peak are kept, but no curve is drawn.
 
 The brightness, the page time and the night mode (`glow`, `off`, or `screensaver`: the panel
 stays dim with "HiFlow" bouncing off its edges) are substitutions at the top of

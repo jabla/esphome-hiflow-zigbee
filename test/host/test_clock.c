@@ -3,8 +3,8 @@
  *
  * Covers what the old synthetic clock got wrong (see docs/session-core-plan.md):
  *   - the clock must not jump backwards when the 32-bit uptime would wrap
- *   - a reboot must not restart behind a timestamp the inverter has seen
- *   - only plausible device times, and only ones that are ahead, are adopted
+ *   - a reboot restarts from the value saved to flash, not the build time
+ *   - the clock can be set in either direction
  *   - the UTC offset follows European summer time instead of a fixed 3600
  *   - "YYYY-MM-DD HH:MM:SS" matches what the reference library sends
  *
@@ -69,7 +69,7 @@ static void test_base(void)
 
     /* Reboot: the value saved before the reboot is ahead of the build time. */
     hiflow_clock_init(&c, 0, VECTOR_TIME, VECTOR_TIME + 86400);
-    check_i64(hiflow_clock_now(&c, 0), VECTOR_TIME + 86400 + 1, "persisted value wins");
+    check_i64(hiflow_clock_now(&c, 0), VECTOR_TIME + 86400, "persisted value wins");
 
     /* Past the 32-bit millis() wrap the old clock jumped back 49.7 days. */
     hiflow_clock_init(&c, 0, VECTOR_TIME, 0);
@@ -79,22 +79,22 @@ static void test_base(void)
               "100 days of uptime");
 }
 
-static void test_device_time(void)
+static void test_set(void)
 {
     hiflow_clock_t c;
 
-    printf("[2] device time from the login acknowledgement\n");
+    printf("[2] setting the clock\n");
 
     hiflow_clock_init(&c, 0, VECTOR_TIME, 0);
-    check(hiflow_clock_observe_device_time(&c, 1000, VECTOR_TIME + 3600) == 1, "ahead is adopted");
-    check_i64(hiflow_clock_now(&c, 1000), VECTOR_TIME + 3600, "clock moved to the device time");
+    hiflow_clock_set(&c, 1000, VECTOR_TIME + 3600);
+    check_i64(hiflow_clock_now(&c, 1000), VECTOR_TIME + 3600, "set forward");
     check_i64(hiflow_clock_now(&c, 61000), VECTOR_TIME + 3660, "and keeps running from there");
 
-    check(hiflow_clock_observe_device_time(&c, 61000, VECTOR_TIME) == 0, "behind is ignored");
-    check(hiflow_clock_observe_device_time(&c, 61000, -1607349313) == 0, "garbage is ignored");
-    check(hiflow_clock_observe_device_time(&c, 61000, 0) == 0, "zero is ignored");
-    check(hiflow_clock_observe_device_time(&c, 61000, HIFLOW_TIME_MAX + 1) == 0, "far future ignored");
-    check_i64(hiflow_clock_now(&c, 61000), VECTOR_TIME + 3660, "clock untouched by the rejects");
+    hiflow_clock_set(&c, 62000, VECTOR_TIME + 3000);
+    check_i64(hiflow_clock_now(&c, 62000), VECTOR_TIME + 3000, "set back");
+    check_i64(hiflow_clock_now(&c, 63500), VECTOR_TIME + 3001, "and keeps running from there");
+    hiflow_clock_set(&c, 64000, VECTOR_TIME + 4000);
+    check_i64(hiflow_clock_now(&c, 64000), VECTOR_TIME + 4000, "set forward again");
 }
 
 static void test_dst(void)
@@ -159,7 +159,7 @@ int main(void)
 {
     printf("=== hiflow_clock ===\n");
     test_base();
-    test_device_time();
+    test_set();
     test_dst();
     test_format();
 

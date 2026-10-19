@@ -67,12 +67,10 @@ void hiflow_clock_init(hiflow_clock_t *clock, int64_t uptime_ms,
         return;
 
     base = build_time > HIFLOW_TIME_MIN ? build_time : HIFLOW_TIME_MIN;
-    /* A value saved before the reboot wins: the inverter has already seen it,
-       and a login timestamp that goes backwards looks like a replay. */
+    /* A value saved before the reboot wins: it is closer to the real time. */
     if (persisted > base)
-        base = persisted + 1;
-    clock->base_unix = base;
-    clock->base_uptime_ms = uptime_ms;
+        base = persisted;
+    hiflow_clock_set(clock, uptime_ms, base);
 }
 
 int64_t hiflow_clock_now(const hiflow_clock_t *clock, int64_t uptime_ms)
@@ -82,18 +80,12 @@ int64_t hiflow_clock_now(const hiflow_clock_t *clock, int64_t uptime_ms)
     return clock->base_unix + floor_div(uptime_ms - clock->base_uptime_ms, 1000);
 }
 
-int hiflow_clock_observe_device_time(hiflow_clock_t *clock, int64_t uptime_ms,
-                                     int64_t device_time)
+void hiflow_clock_set(hiflow_clock_t *clock, int64_t uptime_ms, int64_t unix_time)
 {
     if (clock == NULL)
-        return 0;
-    if (device_time <= HIFLOW_TIME_MIN || device_time >= HIFLOW_TIME_MAX)
-        return 0;
-    if (device_time <= hiflow_clock_now(clock, uptime_ms))
-        return 0;
-    clock->base_unix = device_time;
+        return;
+    clock->base_unix = unix_time;
     clock->base_uptime_ms = uptime_ms;
-    return 1;
 }
 
 int hiflow_is_eu_dst(int64_t unix_time)

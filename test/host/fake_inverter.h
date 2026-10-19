@@ -10,8 +10,10 @@
  *   - answer the login poll with "in progress" a few times
  *   - kill the link instead of answering, which is what a rotated encRand and a
  *     refused identity both look like
- *   - refuse a login whose timestamp lags the device's clock, which is what the
- *     a power cut in the field looked like
+ *   - kill the link on any request but the V0 pairing whose timestamp is
+ *     outside a window around the device's clock: the tests' check that every
+ *     request carries the inverter's time (the real inverter's limits, as far
+ *     as they were measured, are in docs/troubleshooting.md)
  *   - rotate the session key, and hand out either the new or the stale one on a
  *     V0 pairing
  *   - split replies across notifications of a given size
@@ -52,8 +54,9 @@ typedef struct {
     int kill_link_on_login; /* drop the link instead of acknowledging a login */
     int kill_link_on_data;  /* drop the link on the next data request         */
     int silent_on_login;    /* swallow the login, keep the link up            */
-    int max_login_lag;      /* >0: kill the link on a login this many seconds
-                               or more behind device_time                    */
+    int max_lag;            /* >0: kill the link on a request (not the V0)
+                               this many seconds or more behind device_time  */
+    int max_lead;           /* >0: the same for one this far ahead of it      */
     int v0_without_time;    /* the V0 reply leaves out its timestamp          */
     int silent_on_data;     /* swallow the data request                       */
     int pages;              /* 1 or 2 data pages                              */
@@ -94,6 +97,8 @@ typedef struct {
     char last_pin[32];
     char last_time_sync[48];
     int64_t last_login_time;
+    int64_t last_login_lead;  /* its timestamp minus device_time back then */
+    int     time_refused;     /* requests killed for their timestamp          */
     uint16_t last_tid;
     int      tid_max;
 

@@ -35,3 +35,9 @@ A file `power` next to the script sets the AC power the fake reports, in watts:
 `echo 0 > power` is a dusk (the bridge sees standby after 5 minutes), removing the file goes
 back to the recorded values. Only the power changes; serial and energies stay as recorded.
 Stopping the script is the night.
+
+A file `mode` next to the script switches bench scenarios, words on one line: `refuse` kills
+the link on every login, `rotate` hands out a new key with every V0 pairing, `clock N` runs the
+device clock N seconds off the laptop's, `lead N` and `lag N` kill the link on a request (not the
+V0) that far ahead of the device clock or behind it. An empty or missing file is the normal
+inverter. Example: `echo "clock -300 lead 60" > mode`.

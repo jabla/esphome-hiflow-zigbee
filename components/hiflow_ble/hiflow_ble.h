@@ -165,8 +165,9 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   void session_log(int level, const char *msg);
 
  protected:
-  /// Last timestamp the bridge used. The inverter refuses logins whose time
-  /// goes backwards, so the clock must not restart behind it after a reboot.
+  /// The bridge's clock, saved now and then: after a reboot it restarts from
+  /// there instead of the build time (the display and the day curve need it
+  /// before the first network or inverter time).
   struct TimePref {
     uint16_t magic;
     uint16_t version;

@@ -7,6 +7,7 @@
 
 #include "CommCmdPB.pb.h"
 #include "CommandPB.pb.h"
+#include "GetConfig.pb.h"
 #include "RealDataNew.pb.h"
 
 /* ---------- small protobuf writers (the device's own layouts) ---------- */
@@ -157,6 +158,19 @@ static int reply_status(fake_inverter_t *fi, uint16_t tid, int32_t action, int32
 
 /* ---------- request handling ---------- */
 
+/* Kills the link when `t` is outside the window around the device's clock
+   (max_lag, max_lead) and returns 1 then. */
+static int refuse_time(fake_inverter_t *fi, int64_t t)
+{
+    if ((fi->max_lag > 0 && t <= fi->device_time - fi->max_lag) ||
+        (fi->max_lead > 0 && t >= fi->device_time + fi->max_lead)) {
+        fi->time_refused++;
+        fi->kill_link = 1;
+        return 1;
+    }
+    return 0;
+}
+
 static int handle_comm_cmd(fake_inverter_t *fi, uint16_t tid, const uint8_t *pt, size_t len)
 {
     CommCmdResDTO req = CommCmdResDTO_init_zero;
@@ -172,9 +186,11 @@ static int handle_comm_cmd(fake_inverter_t *fi, uint16_t tid, const uint8_t *pt,
         if (fi->logins_on_link > fi->max_logins_on_link)
             fi->max_logins_on_link = fi->logins_on_link;
         fi->last_login_time = req.time;
+        fi->last_login_lead = (int64_t) req.time - fi->device_time;
         snprintf(fi->last_ble_id, sizeof(fi->last_ble_id), "%s", req.data);
-        if (fi->kill_link_on_login ||
-            (fi->max_login_lag > 0 && req.time <= fi->device_time - fi->max_login_lag)) {
+        if (refuse_time(fi, req.time))
+            return 0;
+        if (fi->kill_link_on_login) {
             fi->kill_link = 1;
             return 0;
         }
@@ -183,6 +199,8 @@ static int handle_comm_cmd(fake_inverter_t *fi, uint16_t tid, const uint8_t *pt,
         return reply_comm_cmd_ack(fi, tid, req.action);
     case HIFLOW_ACTION_PIN:
         fi->pin_frames++;
+        if (refuse_time(fi, req.time))
+            return 0;
         snprintf(fi->last_pin, sizeof(fi->last_pin), "%s", req.data);
         if (!fi->refuse_pin && strcmp(req.data, fi->pin) == 0)
             fi->pin_ok = 1;
@@ -190,6 +208,8 @@ static int handle_comm_cmd(fake_inverter_t *fi, uint16_t tid, const uint8_t *pt,
     case HIFLOW_ACTION_TIME_SYNC:
         fi->time_syncs++;
         snprintf(fi->last_time_sync, sizeof(fi->last_time_sync), "%s", req.data);
+        if (refuse_time(fi, req.time))
+            return 0;
         return reply_comm_cmd_ack(fi, tid, req.action);
     default:
         return 0;
@@ -203,6 +223,8 @@ static int handle_status_poll(fake_inverter_t *fi, uint16_t tid, const uint8_t *
     int32_t sts;
 
     if (!pb_decode(&is, CommCmdStatusResDTO_fields, &req))
+        return 0;
+    if (refuse_time(fi, req.time))
         return 0;
 
     switch (req.action) {
@@ -243,6 +265,8 @@ static int handle_data_request(fake_inverter_t *fi, uint16_t tid, const uint8_t 
         return 0;
     if (!pb_decode(&is, RealDataNewResDTO_fields, &req))
         return 0;
+    if (refuse_time(fi, req.time))
+        return 0;
 
     cp = req.cp;
     if (cp < 0 || cp >= fi->pages || fi->page_len[cp] == 0)
@@ -250,13 +274,19 @@ static int handle_data_request(fake_inverter_t *fi, uint16_t tid, const uint8_t 
     return reply_v1(fi, 0xA211, tid, fi->page[cp], fi->page_len[cp]);
 }
 
-static int handle_config_read(fake_inverter_t *fi, uint16_t tid)
+static int handle_config_read(fake_inverter_t *fi, uint16_t tid, const uint8_t *pt, size_t len)
 {
     static const char ssid[] = "synthetic-ssid";
+    GetConfigResDTO req = GetConfigResDTO_init_zero;
+    pb_istream_t is = pb_istream_from_buffer(pt, len);
     uint8_t out[128];
     size_t n = 0;
 
     fi->config_reads++;
+    if (!pb_decode(&is, GetConfigResDTO_fields, &req))
+        return 0;
+    if (refuse_time(fi, req.time))
+        return 0;
     if (fi->kill_link_on_config) {
         fi->kill_link = 1;
         return 0;
@@ -293,6 +323,8 @@ static int handle_command(fake_inverter_t *fi, uint16_t tid, const uint8_t *pt, 
             fi->power_untimed++;
             return 0;
         }
+        if (refuse_time(fi, req.time))
+            return 0;
         if (fi->kill_link_on_power) {
             fi->kill_link = 1;
             return 0;
@@ -311,6 +343,8 @@ static int handle_command(fake_inverter_t *fi, uint16_t tid, const uint8_t *pt, 
     if (req.action != HIFLOW_ACTION_LIMIT_POWER)
         return 0;
     fi->limit_writes++;
+    if (refuse_time(fi, req.time))
+        return 0;
     if (fi->silent_on_limit)
         return 0;
     if (sscanf(req.data, "A:%d,", &tenths) == 1 && !fi->limit_ignored && fi->limit_err_code == 0 &&
@@ -370,7 +404,7 @@ int fake_handle_frame(fake_inverter_t *fi, const uint8_t *frame, size_t len)
     case HIFLOW_CMD_REAL_DATA:
         return handle_data_request(fi, tid, pt, pt_len);
     case HIFLOW_CMD_GET_CONFIG:
-        return handle_config_read(fi, tid);
+        return handle_config_read(fi, tid, pt, pt_len);
     case HIFLOW_CMD_COMMAND:
         return handle_command(fi, tid, pt, pt_len);
     default:

@@ -23,6 +23,7 @@
  */
 #include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "RealDataNew.pb.h"
@@ -110,6 +111,10 @@ typedef struct {
     int     last_power_on;
     int     last_power_confirmed;
     int     dark;          /* the inverter's radio is off: no connection comes up */
+    int     device_runs;   /* fi.device_time follows the virtual time ...  */
+    int64_t device_base;   /* ... from this unix time ...                   */
+    int64_t device_base_ms; /* ... at this uptime ...                       */
+    int64_t device_slow_ppm; /* ... this many ppm slower than ours          */
     int     use_daylog;
     hiflow_daylog_t daylog;
 } world_t;
@@ -250,6 +255,9 @@ static void world_run(world_t *w, int64_t duration_ms)
 
     while (w->now < end) {
         w->now += WORLD_STEP_MS;
+        if (w->device_runs)
+            w->fi.device_time = w->device_base +
+                                (w->now - w->device_base_ms) * (1000000 - w->device_slow_ppm) / 1000000000;
 
         if (w->connect_at >= 0 && w->now >= w->connect_at && !w->dark) {
             w->connect_at = -1;
@@ -355,6 +363,17 @@ static void world_init_control(world_t *w)
 {
     world_init_ex(w, 1, TEST_PIN, 0);
     w->s.cfg.inverter_control = 1;
+}
+
+/* Lets the inverter's clock run with the virtual time, starting `offset_s`
+   off ours and running `slow_ppm` slower. */
+static void world_device_clock(world_t *w, int64_t offset_s, int64_t slow_ppm)
+{
+    w->device_runs = 1;
+    w->device_base = hiflow_session_unix_time(&w->s, w->now) + offset_s;
+    w->device_base_ms = w->now;
+    w->device_slow_ppm = slow_ppm;
+    w->fi.device_time = w->device_base;
 }
 
 /* A one-page reply (ap = 1) with the AC block and ports 1 and 2. */
@@ -872,7 +891,7 @@ static void test_clock_behind_after_reboot(void)
     world_init(&w, 0, TEST_PIN);
     world_single_page(&w);
     w.fi.device_time += 300;
-    w.fi.max_login_lag = 60;
+    w.fi.max_lag = 60;
 
     world_run(&w, 10000);
     expect_int(w.connects, 1, "a single connection");
@@ -885,7 +904,7 @@ static void test_clock_behind_after_reboot(void)
     world_init(&w, 0, TEST_PIN);
     world_single_page(&w);
     w.fi.device_time += 300;
-    w.fi.max_login_lag = 60;
+    w.fi.max_lag = 60;
     w.fi.v0_without_time = 1;
 
     world_run(&w, 60000);
@@ -1430,6 +1449,255 @@ static void test_daylog(void)
     expect_int(hiflow_session_clock_synced(&w.s), 1, "a device time ahead moves the clock: synced");
 }
 
+static void test_clock_ahead_of_inverter(void)
+{
+    world_t w;
+
+    printf("[34] our clock ahead of the inverter's: the login carries the inverter's time\n");
+    world_init(&w, 1, TEST_PIN);
+    world_single_page(&w);
+    world_device_clock(&w, -300, 0);
+    w.fi.max_lead = 60;
+    w.fi.max_lag = 60;
+
+    world_run(&w, 60000);
+    expect_int(w.fi.v0_requests, 1, "one V0 pairing after the refused login");
+    expect_int(w.fi.logins_seen, 2, "the second login is accepted");
+    expect(w.fi.last_login_lead > -5 && w.fi.last_login_lead < 5, "the login carries the device's time");
+    expect(w.data_count >= 1, "data flows");
+    expect_int(hiflow_session_status(&w.s), HIFLOW_STATUS_READY, "ready");
+
+    printf("[35] the next link logs in with the inverter's time, without a V0\n");
+    world_drop_link(&w, HIFLOW_LINK_RADIO_TIMEOUT);
+    world_run(&w, 60000);
+    expect_int(w.fi.v0_requests, 1, "no further V0 pairing");
+    expect_int(w.fi.logins_seen, 3, "one more login, accepted");
+    expect(w.data_count >= 2, "data flows again");
+    expect_int(hiflow_session_status(&w.s), HIFLOW_STATUS_READY, "ready again");
+}
+
+static void test_clock_gains(void)
+{
+    world_t w;
+    int64_t before, gain;
+    int i, ready = 1, data;
+
+    printf("[36] our clock gains on the inverter's for hours: every login is accepted\n");
+    /* In the field the clock gained about 20 s a night in light sleep and
+       could only move forward. After three nights it was over a minute ahead
+       of the inverter, which refused every login until a reboot. Here it
+       runs 1 % fast and the link drops every ten minutes. A network time at
+       the start keeps the inverter's time from setting our clock. */
+    world_init(&w, 1, TEST_PIN);
+    world_single_page(&w);
+    world_device_clock(&w, 0, 10000);
+    w.fi.max_lead = 60;
+    w.fi.max_lag = 60;
+    hiflow_session_observe_time(&w.s, w.now, w.fi.device_time);
+
+    for (i = 0; i < 18; i++) {
+        world_run(&w, 600000);
+        if (hiflow_session_status(&w.s) != HIFLOW_STATUS_READY)
+            ready = 0;
+        world_drop_link(&w, HIFLOW_LINK_RADIO_TIMEOUT);
+    }
+    world_run(&w, 60000);
+    gain = hiflow_session_unix_time(&w.s, w.now) - w.fi.device_time;
+    expect(gain > 100, "our clock is well over a minute ahead");
+    expect(ready, "ready before every drop");
+    expect_int(w.fi.v0_requests, 0, "no login refused, so no V0 pairing");
+    expect_int(w.fi.logins_seen, 19, "one login per link");
+    expect_int(w.fi.time_refused, 0, "no request refused for its time");
+    expect_int(hiflow_session_status(&w.s), HIFLOW_STATUS_READY, "ready at the end");
+
+    printf("[37] the network time takes the gain back\n");
+    before = hiflow_session_unix_time(&w.s, w.now);
+    expect_int(hiflow_session_observe_time(&w.s, w.now, w.fi.device_time), 1, "the clock moved back");
+    expect(hiflow_session_unix_time(&w.s, w.now) == w.fi.device_time, "it shows the network time");
+    expect(hiflow_session_unix_time(&w.s, w.now) < before, "it went back");
+    expect_int(hiflow_session_observe_time(&w.s, w.now, w.fi.device_time), 0, "the same time again: no move");
+    data = w.data_count;
+    world_drop_link(&w, HIFLOW_LINK_RADIO_TIMEOUT);
+    world_run(&w, 60000);
+    expect_int(w.fi.logins_seen, 20, "the next login ...");
+    expect_int(w.fi.v0_requests, 0, "... is accepted");
+    expect(w.fi.last_login_lead > -5 && w.fi.last_login_lead < 5, "it carries the inverter's time");
+    expect(w.data_count > data, "data flows");
+    expect_int(hiflow_session_status(&w.s), HIFLOW_STATUS_READY, "ready");
+
+    printf("[37b] without a network time the inverter's time takes the gain back\n");
+    world_init(&w, 1, TEST_PIN);
+    world_single_page(&w);
+    world_device_clock(&w, 0, 10000);
+    w.fi.max_lead = 60;
+    w.fi.max_lag = 60;
+    for (i = 0; i < 18; i++) {
+        world_run(&w, 600000);
+        world_drop_link(&w, HIFLOW_LINK_RADIO_TIMEOUT);
+    }
+    world_run(&w, 60000);
+    gain = hiflow_session_unix_time(&w.s, w.now) - w.fi.device_time;
+    expect(gain >= 0 && gain < 10, "our clock stays within the last ten minutes' gain");
+    expect_int(hiflow_session_clock_synced(&w.s), 1, "synced");
+    expect_int(w.fi.time_refused, 0, "no request refused for its time");
+}
+
+/* Brings the link down and keeps the inverter dark for `dark_ms`. */
+static void world_dark_for(world_t *w, int64_t dark_ms)
+{
+    w->dark = 1;
+    world_drop_link(w, HIFLOW_LINK_RADIO_TIMEOUT);
+    world_run(w, dark_ms);
+    w->dark = 0;
+}
+
+static void test_device_time_age(void)
+{
+    world_t w;
+    int v0, logins;
+
+    printf("[38] after more than 6 h without the inverter the link pairs first\n");
+    /* Our clock and the inverter's time we keep run 0.1 % fast (3.6 s an
+       hour): 7 h dark leave 25 s, more than the window allows. */
+    world_init(&w, 1, TEST_PIN);
+    world_single_page(&w);
+    world_device_clock(&w, 0, 1000);
+    w.fi.max_lead = 20;
+    w.fi.max_lag = 20;
+    world_run(&w, 60000);
+    expect_int(hiflow_session_status(&w.s), HIFLOW_STATUS_READY, "ready");
+    v0 = w.fi.v0_requests;
+    logins = w.fi.logins_seen;
+    world_dark_for(&w, 7LL * 3600 * 1000);
+    world_run(&w, 600000);
+    expect_int(w.fi.v0_requests, v0 + 1, "one V0 pairing first");
+    expect_int(w.fi.logins_seen, logins + 1, "then one login, accepted");
+    expect(w.fi.last_login_lead > -5 && w.fi.last_login_lead < 5, "it carries the inverter's fresh time");
+    expect_int(w.fi.time_refused, 0, "no request refused for its time");
+    expect_int(hiflow_session_status(&w.s), HIFLOW_STATUS_READY, "ready again");
+
+    printf("[38b] after a shorter silence the link logs in straight away\n");
+    v0 = w.fi.v0_requests;
+    logins = w.fi.logins_seen;
+    world_dark_for(&w, 3600LL * 1000);
+    world_run(&w, 600000);
+    expect_int(w.fi.v0_requests, v0, "no V0 pairing");
+    expect_int(w.fi.logins_seen, logins + 1, "one login, accepted");
+    expect_int(hiflow_session_status(&w.s), HIFLOW_STATUS_READY, "ready again");
+}
+
+static void test_network_time_rules(void)
+{
+    world_t w;
+    int64_t t0;
+
+    printf("[39] a network time far behind needs the inverter's time to agree\n");
+    world_init(&w, 1, TEST_PIN);
+    world_single_page(&w);
+    world_device_clock(&w, 0, 0);
+    world_run(&w, 60000);
+    t0 = hiflow_session_unix_time(&w.s, w.now);
+    expect_int(hiflow_session_observe_time(&w.s, w.now, w.fi.device_time - 3 * 3600), 0,
+               "3 h behind ours and the inverter's: not taken");
+    expect(hiflow_session_unix_time(&w.s, w.now) == t0, "our clock stays");
+    expect_int(hiflow_session_observe_time(&w.s, w.now, w.fi.device_time - 100), 1, "100 s back: taken");
+    hiflow_clock_set(&w.s.clock, w.now, w.fi.device_time + 3600);
+    expect_int(hiflow_session_observe_time(&w.s, w.now, w.fi.device_time), 1,
+               "an hour back, confirmed by the inverter: taken");
+    expect(hiflow_session_unix_time(&w.s, w.now) == w.fi.device_time, "our clock shows it");
+    expect_int(hiflow_session_observe_time(&w.s, w.now, w.fi.device_time + 3600), 0,
+               "an hour ahead of the inverter's: not taken");
+
+    printf("[39c] the inverter's time from this morning still counts against one far ahead\n");
+    world_init(&w, 1, TEST_PIN);
+    world_single_page(&w);
+    world_device_clock(&w, 0, 0);
+    world_run(&w, 7LL * 3600 * 1000);
+    expect_int(w.fi.logins_seen, 1, "one link all day, its login 7 h ago");
+    expect_int(hiflow_session_observe_time(&w.s, w.now, w.fi.device_time + 3600), 0,
+               "an hour ahead of the inverter's: not taken");
+
+    printf("[39b] without the inverter's time only a step forward is taken\n");
+    world_init(&w, 1, TEST_PIN);
+    t0 = hiflow_session_unix_time(&w.s, w.now);
+    expect_int(hiflow_session_observe_time(&w.s, w.now, t0 - 3600), 0, "an hour back: not taken");
+    expect_int(hiflow_session_clock_synced(&w.s), 0, "not synced by it");
+    expect_int(hiflow_session_observe_time(&w.s, w.now, t0 + 3600), 1, "an hour forward (power cut): taken");
+    expect_int(hiflow_session_clock_synced(&w.s), 1, "synced");
+
+    printf("[40] with a recent network time the inverter's time does not set our clock\n");
+    world_init(&w, 1, TEST_PIN);
+    world_single_page(&w);
+    world_device_clock(&w, 40, 0);
+    w.fi.max_lead = 60;
+    w.fi.max_lag = 60;
+    hiflow_session_observe_time(&w.s, w.now, hiflow_session_unix_time(&w.s, w.now));
+    world_run(&w, 60000);
+    world_drop_link(&w, HIFLOW_LINK_RADIO_TIMEOUT);
+    world_run(&w, 60000);
+    expect(w.fi.device_time - hiflow_session_unix_time(&w.s, w.now) == 40, "our clock stays on the network time");
+    expect(w.fi.last_login_lead > -5 && w.fi.last_login_lead < 5, "the login carries the inverter's time");
+    expect_int(hiflow_session_status(&w.s), HIFLOW_STATUS_READY, "ready");
+
+    printf("[41] without a network time the inverter's time sets our clock back by up to 300 s\n");
+    world_init(&w, 1, TEST_PIN);
+    world_single_page(&w);
+    world_device_clock(&w, -100, 0);
+    w.fi.max_lead = 120;
+    world_run(&w, 60000);
+    expect(llabs(hiflow_session_unix_time(&w.s, w.now) - w.fi.device_time) <= 1, "100 s behind: taken");
+    expect_int(hiflow_session_clock_synced(&w.s), 1, "synced");
+
+    printf("[41b] one far behind is ignored\n");
+    world_init(&w, 1, TEST_PIN);
+    world_single_page(&w);
+    world_device_clock(&w, -400, 0);
+    world_run(&w, 60000);
+    expect(hiflow_session_unix_time(&w.s, w.now) - w.fi.device_time == 400, "400 s behind: our clock stays");
+    expect_int(hiflow_session_clock_synced(&w.s), 0, "not synced");
+    expect_int(hiflow_session_status(&w.s), HIFLOW_STATUS_READY, "data flows anyway");
+
+    printf("[41c] an implausible device time is ignored\n");
+    world_init(&w, 0, TEST_PIN);
+    world_single_page(&w);
+    w.fi.device_time = HIFLOW_TIME_MAX + 10;
+    world_run(&w, 60000);
+    expect(w.s.inverter_clock.base_unix == 0, "not kept for the requests");
+    expect_int(hiflow_session_clock_synced(&w.s), 0, "not synced");
+}
+
+static void test_every_request_carries_device_time(void)
+{
+    world_t w;
+
+    printf("[42] PIN, polls, data, config read, limit write, on/off: all carry the inverter's time\n");
+    /* Our clock 300 s ahead, kept there by a network time: the first login
+       (no inverter time yet) is refused, everything after the V0 has to
+       carry the inverter's time. */
+    world_init_ex(&w, 1, TEST_PIN, 1);
+    w.s.cfg.inverter_control = 1;
+    world_single_page(&w);
+    world_device_clock(&w, -300, 0);
+    w.fi.require_pin = 1;
+    w.fi.max_lead = 60;
+    w.fi.max_lag = 60;
+    hiflow_session_observe_time(&w.s, w.now, hiflow_session_unix_time(&w.s, w.now));
+    world_run(&w, 90000);
+    expect_int(w.fi.v0_requests, 1, "one V0 pairing after the refused login");
+    expect_int(w.fi.time_refused, 1, "only that login refused");
+    expect(w.fi.pin_frames >= 1, "the PIN went out");
+    expect(w.fi.config_reads >= 1, "the config read went out");
+    expect_int(hiflow_session_request_power_limit(&w.s, w.now, 90.0f), 90, "90 % accepted");
+    world_run(&w, 60000);
+    expect_int(w.fi.limit_tenths, 900, "the limit was written");
+    expect_int(hiflow_session_request_inverter_power(&w.s, w.now, 0), 0, "off accepted");
+    world_run(&w, 60000);
+    expect_int(w.fi.output_on, 0, "the output is off");
+    expect_int(w.fi.time_refused, 1, "still only that login refused");
+    expect(hiflow_session_unix_time(&w.s, w.now) - w.fi.device_time >= 299, "our clock still 300 s ahead");
+    expect_int(hiflow_session_status(&w.s), HIFLOW_STATUS_READY, "ready");
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && strcmp(argv[1], "-v") == 0)
@@ -1471,6 +1739,11 @@ int main(int argc, char **argv)
     test_display_accessors();
     test_retry_now();
     test_daylog();
+    test_clock_ahead_of_inverter();
+    test_clock_gains();
+    test_device_time_age();
+    test_network_time_rules();
+    test_every_request_carries_device_time();
 
     printf("\n=== summary ===\n");
     printf("%d checks passed, %d failed\n", g_pass, g_fail);

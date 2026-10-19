@@ -937,11 +937,9 @@ void HiflowBle::poll_network_time_(int64_t now) {
     return;
   int status = -1;
   int64_t network_time = take_network_time(&status);
-  if (network_time > 0) {
-    int64_t before = hiflow_session_unix_time(&this->session_, now);
+  // The session logs whether it took the time and by how much it moved the clock.
+  if (network_time > 0)
     hiflow_session_observe_time(&this->session_, now, network_time);
-    ESP_LOGI(TAG, "network time received, our clock was %lld s behind", (long long) (network_time - before));
-  }
   if (status != this->last_time_status_) {
     this->last_time_status_ = status;
     if (status != NETWORK_TIME_OK && status != NETWORK_TIME_NONE) {

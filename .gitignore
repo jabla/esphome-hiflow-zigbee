@@ -17,6 +17,7 @@ test/host/vectors_proto.h
 __pycache__/
 .venv/
 *.log
-# fake BLE inverter: built library and the power override
+# fake BLE inverter: built library, power and mode overrides
 tools/fake_inverter_ble/libfake.so
 tools/fake_inverter_ble/power
+tools/fake_inverter_ble/mode

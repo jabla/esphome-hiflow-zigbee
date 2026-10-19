@@ -1,18 +1,25 @@
 /*
  * hiflow_clock — the bridge's notion of wall-clock time.
  *
- * The board has no RTC and no network time: it keeps a base unix timestamp plus
- * the monotonic uptime, and pulls the base forward whenever the inverter reports
- * a plausible time in its login acknowledgement.
+ * The board has no RTC: it keeps a base unix timestamp plus the monotonic
+ * uptime. The session sets the base from the network time or, without a
+ * recent one, from the inverter's time. In light sleep the uptime gains tens
+ * of seconds a day (about 20 s a night on the C6-LCD). The clock serves the
+ * display, the day curve and the V0 pairing; the other requests carry the
+ * inverter's time.
  *
  * Two properties matter for the protocol:
  *
- *   * The timestamp in a login frame must move forward. The uptime is therefore
- *     taken as 64-bit milliseconds (esp_timer_get_time() / 1000 on target), not
- *     as 32-bit millis(), which wraps after 49.7 days and made the clock jump
- *     back by the same amount.
- *   * The handshake's time-sync (action 104) sets the inverter's own clock, so
- *     the UTC offset has to follow European summer time instead of a fixed 3600.
+ *   * The uptime is taken as 64-bit milliseconds (esp_timer_get_time() / 1000
+ *     on target), not as 32-bit millis(), which wraps after 49.7 days and made
+ *     the clock jump back by the same amount.
+ *   * The handshake's time-sync (action 104) carries the UTC offset, so it
+ *     has to follow European summer time instead of a fixed 3600.
+ *
+ * The timestamp of a login has to stay within about a minute of the
+ * inverter's own clock, ahead or behind. The session keeps a second clock for
+ * its requests, set from the inverter's replies (see device_now() in
+ * hiflow_session.c).
  *
  * No libc date functions are used: the civil-date conversion below is exact for
  * the whole int64 range and behaves the same on host and target.
@@ -33,8 +40,9 @@ extern "C" {
 #define HIFLOW_TIME_MIN ((int64_t) 1704067200)
 #define HIFLOW_TIME_MAX ((int64_t) 2208988800)
 
-/* How far behind our clock the inverter's time may be and still count as
-   agreeing with it (seconds). */
+/* How far apart two times may be and still count as agreeing (seconds): the
+   inverter's and ours, the network's and the inverter's. It also bounds how
+   far an unconfirmed time may set our clock back. */
 #define HIFLOW_TIME_AGREE_S ((int64_t) 300)
 
 /* Length of the "YYYY-MM-DD HH:MM:SS" string including the NUL. */
@@ -46,19 +54,16 @@ typedef struct {
 } hiflow_clock_t;
 
 /* Start the clock. `build_time` is the firmware build timestamp, `persisted` the
-   last value written to flash (0 if none). The later of both wins, so the clock
-   never restarts behind a timestamp the inverter has already seen. */
+   last value written to flash (0 if none). The later of both wins. */
 void hiflow_clock_init(hiflow_clock_t *clock, int64_t uptime_ms,
                        int64_t build_time, int64_t persisted);
 
 /* Current unix time. */
 int64_t hiflow_clock_now(const hiflow_clock_t *clock, int64_t uptime_ms);
 
-/* Adopt the device's time (login acknowledgement, field 2). It is taken only
-   when it is plausible and ahead of ours, so the clock keeps moving forward.
-   Returns 1 when the base was moved, 0 otherwise. */
-int hiflow_clock_observe_device_time(hiflow_clock_t *clock, int64_t uptime_ms,
-                                     int64_t device_time);
+/* Set the clock to a time, in either direction. Which time to trust is the
+   session's call (see observe_device_time() in hiflow_session.c). */
+void hiflow_clock_set(hiflow_clock_t *clock, int64_t uptime_ms, int64_t unix_time);
 
 /* 1 while European summer time is in effect: from the last Sunday in March
    01:00 UTC until the last Sunday in October 01:00 UTC. */

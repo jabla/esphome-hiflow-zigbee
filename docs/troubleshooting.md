@@ -24,9 +24,12 @@ Each point below cost at least one debugging session. Don't undo them casually.
   bridge. While the bridge is connected, the inverter barely advertises, so "the app cannot find
   the inverter" usually just means the bridge holds the slot. Unplug the board to free it.
 - **The login timestamp must be close to the inverter's clock.** The inverter drops the link on
-  a login whose time lags its own too far (55 s behind passed, 90 s did not). The board has no
-  real time: after a power cut its clock restarts from the last value saved to flash. That is why
-  the session adopts the inverter's time from the V0 pairing reply (field 2) before every login.
+  a login whose time is about a minute or more off its own, ahead or behind (55 s behind and 17 s
+  ahead passed, 90 s behind and 77 s ahead did not). The board has no real time: after a power cut
+  its clock restarts from the last value saved to flash. In light sleep it gains tens of seconds
+  a day. A time-sync 600 s ahead is dropped the same way. That is why every request
+  carries the inverter's own time, taken from the V0 pairing reply (field 2) and the login
+  acknowledgement. After 6 hours without either, the next link pairs first to read it again.
 - **The session key rotates.** The inverter hands out its current `encRand` in the V0 pairing.
   The bridge pairs after every boot and after every failed handshake, and never stores the key.
 - **An abrupt loss is not a lockout.** If the board loses power mid-session, it reconnects like

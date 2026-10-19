@@ -238,14 +238,23 @@ handshake, and keeps it in RAM only.
 ## Notes
 
 * **Time**: the session runs a synthetic clock (`hiflow_clock`: the build time
-  or the last time saved in flash, plus the uptime) and adopts the inverter's
-  own time from the V0 pairing reply before every login; the inverter refuses a
-  login whose timestamp lags its clock too far. So the clock only ever moves
-  forward: a time that is ahead of it is taken, one that is behind is ignored.
-  With `network_time`, the coordinator's time is offered once after the join
-  and then twice a day (every 10 minutes while the request fails). The clock
-  counts as set (the display shows it, the day curve uses it) once a time
-  arrived that moved it or agrees with it within five minutes.
+  or the last time saved in flash, plus the uptime). In light sleep the uptime
+  gains tens of seconds a day. With `network_time`, the coordinator's time is
+  offered once after the join and then twice a day (every 10 minutes while the
+  request fails). It sets the clock in either direction; a step of more than
+  five minutes needs the inverter's time to agree with it. Before there is
+  one, a step forward is taken too: after a power cut the clock restarts behind.
+  Without a network time in the last day, the inverter's time sets the clock:
+  forward by any amount, back by at most five minutes. The clock counts as set
+  (the display shows it, the day curve uses it) once a time arrived that set
+  it or agrees with it within five minutes.
+* **Request timestamps**: the inverter refuses a login about a minute or more
+  ahead of its own clock or behind it. A time-sync 600 s ahead is refused too.
+  So every request carries the inverter's own time, taken from its last V0
+  pairing reply or login acknowledgement, instead of our clock; the time-sync
+  adds our UTC offset. The V0 pairing carries our clock: it is the request
+  that reads the inverter's time. Once that time is 6 hours old (the uptime
+  gains up to about 10 s in that span), the next link starts with a V0 pairing.
 * `energy_total` and `energy_daily` are sums over the PV ports.
 * Single-phase installs report through `SGSMO`, three-phase through `TGSMO`;
   the component handles both and picks port 0 for the AC values.

@@ -54,6 +54,14 @@ extern "C" {
 #endif
 
 #define HIFLOW_DAYLOG_SLOTS    288   /* 5-minute slots of a day */
+/* The day's curve is only drawn by a display. A build without one defines
+   HIFLOW_DAYLOG_NO_CURVE (the ESPHome component does when the config has no
+   display) and saves its 576 bytes twice, in the record and in its saved copy. */
+#ifndef HIFLOW_DAYLOG_NO_CURVE
+#define HIFLOW_DAYLOG_CURVE    1
+#else
+#define HIFLOW_DAYLOG_CURVE    0
+#endif
 #define HIFLOW_DAYREC_MAGIC    0x4844u /* 'HD' */
 #define HIFLOW_DAYREC_VERSION  4u
 #define HIFLOW_DAYLOG_PORTS    4     /* PV inputs kept per day */
@@ -81,7 +89,9 @@ typedef struct {
     int8_t   last_feed;        /* the last reading: 1 with power, 0 without, -1 none yet */
     uint8_t  standby;          /* 1 while the inverter is in standby */
     float    port_daily_wh[HIFLOW_DAYLOG_PORTS]; /* the day counter per PV input */
+#if HIFLOW_DAYLOG_CURVE
     uint16_t curve[HIFLOW_DAYLOG_SLOTS]; /* W, the highest reading per slot */
+#endif
 } hiflow_dayrec_t;
 
 /* One complete set of measurements. */

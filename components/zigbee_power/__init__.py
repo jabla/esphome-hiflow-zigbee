@@ -46,6 +46,7 @@ from esphome.components.esp32 import (
     include_builtin_idf_component,
     only_on_variant,
 )
+from esphome.components.zigbee.const import ZigbeeComponent
 import esphome.config_validation as cv
 from esphome.const import CONF_ID, CONF_ON_PRESS, CONF_PIN, CONF_TRIGGER_ID
 import esphome.final_validate as fv
@@ -55,6 +56,7 @@ _LOGGER = logging.getLogger(__name__)
 DEPENDENCIES = ["zigbee"]
 CODEOWNERS = []
 
+CONF_ZIGBEE_ID = "zigbee_id"
 CONF_SLEEPY = "sleepy"
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_AWAKE_AFTER_BOOT = "awake_after_boot"
@@ -149,6 +151,7 @@ CONFIG_SCHEMA = cv.All(
     cv.Schema(
         {
             cv.GenerateID(): cv.declare_id(ZigbeePower),
+            cv.GenerateID(CONF_ZIGBEE_ID): cv.use_id(ZigbeeComponent),
             cv.Optional(CONF_SLEEPY, default=False): cv.boolean,
             # ESPHome's main loop interval (16 ms by default); every round
             # wakes the chip, scheduled work still runs on time. 1 s by
@@ -209,10 +212,16 @@ FINAL_VALIDATE_SCHEMA = _final_validate
 
 
 async def to_code(config):
+    zb = await cg.get_variable(config[CONF_ZIGBEE_ID])
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
+    cg.add(var.set_zigbee(zb))
     # zigbee_ota tells this component about a firmware update.
     cg.add_define("USE_ZIGBEE_POWER")
+    # Since ESPHome 2026.10 ZigbeeComponent::setup() sets the stack up and
+    # starts its task in one go. This component goes in on the way, when
+    # ESPHome adds its signal handler; see attach_to_stack() in zigbee_power.cpp.
+    cg.add_build_flag("-Wl,--wrap=ezb_app_signal_add_handler")
     if CONF_LOOP_INTERVAL in config:
         cg.add(var.set_loop_interval(config[CONF_LOOP_INTERVAL]))
     if button := config.get(CONF_WAKE_BUTTON):

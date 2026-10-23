@@ -48,12 +48,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install ESPHome
-        run: pip install "esphome==2026.9.1"
+        run: pip install "esphome==2026.10.0"
       - name: Cache the ESP-IDF toolchain
         uses: actions/cache@v6
         with:
           path: ~/.cache/esphome
-          key: esphome-idf-${{ runner.os }}-esphome-2026.9.1
+          key: esphome-idf-${{ runner.os }}-esphome-2026.10.0
       - name: Compile with the example credentials
         # The component refuses the example values unless told otherwise.
         env:
@@ -72,6 +72,14 @@ jobs:
             awk -v s="__wrap_esp_phy_$fn" '$1 == s {f = 1; next} f && !/^ / {f = 0} f' "$map" \
               | grep -q 'libieee802154\.a('
           done
+      - name: zigbee_power goes in where ESPHome adds its signal handler
+        # zigbee_power wraps ezb_app_signal_add_handler (attach_to_stack in
+        # components/zigbee_power/zigbee_power.cpp). From the linker map: ESPHome's zigbee
+        # component calls it through the wrapper.
+        run: |
+          map=$(ls "$(dirname '${{ matrix.config }}')"/.esphome/build/*/build/*.map)
+          awk -v s=__wrap_ezb_app_signal_add_handler '$1 == s {f = 1; next} f && !/^ / {f = 0} f' "$map" \
+            | grep -q 'zigbee_esp32\.cpp\.obj'
       - name: timer_guard sits on every reading of the clock
         # On the ESP32-C6 the component wraps esp_timer_get_time and esp_timer_impl_get_time
         # (components/zigbee_power/timer_guard.h). From the linker map: esp-zigbee-lib's alarm

@@ -22,9 +22,8 @@ library behind the [ha-hiflow-ble](https://github.com/TheTiEr/ha-hiflow-ble) int
 
 ## Status
 
-Tested on one **HMS-2000-4WB** with a Seeed **XIAO ESP32-C6** and a **Waveshare
-ESP32-C6-LCD-1.47**. The **Waveshare ESP32-H2-Zero** has run on the bench (with a simulated
-inverter, updates over Zigbee included), not yet at an inverter.
+Tested on one **HMS-2000-4WB** with a Seeed **XIAO ESP32-C6**, a **Waveshare
+ESP32-C6-LCD-1.47** and a **Waveshare ESP32-H2-Zero**.
 Other HiFlow Pro / HMS-WB models that work with ha-hiflow-ble should work too. Reports are
 welcome.
 
@@ -32,8 +31,8 @@ welcome.
 
 - One of the boards in the table below.
 - A Zigbee coordinator in ZHA or Zigbee2MQTT (2.8.0 or newer).
-- ESPHome with native Zigbee on the ESP32-C6 / ESP32-H2 (tested with **2026.9.1**), plus
-  Python 3 for the helper scripts.
+- ESPHome with native Zigbee on the ESP32-C6 / ESP32-H2 (tested with **2026.9.1** and
+  **2026.10.0**), plus Python 3 for the helper scripts.
 - The inverter within BLE range of the board.
 - **Nothing else connected to the inverter over BLE.** It serves exactly one BLE central, so end
   every other BLE connection to it (e.g. the S-Miles app).

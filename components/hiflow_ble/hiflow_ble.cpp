@@ -137,7 +137,9 @@ static void fill_demo_day(hiflow_daylog_t *d, int64_t local_time) {
         w *= 0.6f;
       w *= 1.0f + 0.03f * sinf(slot * 1.7f);  // a little ripple
     }
+#if HIFLOW_DAYLOG_CURVE
     d->rec.curve[slot] = static_cast<uint16_t>(w + 0.5f);
+#endif
     d->rec.energy_daily_wh += w * 5.0f / 60.0f;
     if (w > d->rec.peak_w) {
       d->rec.peak_w = w;

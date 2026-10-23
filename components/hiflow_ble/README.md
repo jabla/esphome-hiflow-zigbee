@@ -231,6 +231,20 @@ hiflow_ble:
 * `night_test`: bench only. Every lost link starts night mode at once, so a
   fake inverter switched off counts as a night.
 
+### Memory
+
+The ESP32-H2 is short of RAM. `hiflow-zb.yaml` trims the BLE stack on every
+board, so all boards run the same stack:
+
+* The day's curve, which only a display draws, is left out when the config
+  has no `display:` (1.1 kB).
+* `btu_task_stack_size` (3072 to 8192 bytes): the stack of Bluedroid's BTU
+  task. `esp32_ble_tracker` sets 8192, which `sdkconfig_options` cannot
+  override; `hiflow-zb.yaml` sets the ESP-IDF default of 4096.
+* A config may build Bluedroid without its security manager
+  (`CONFIG_BT_BLE_SMP_ENABLE: n`): nothing pairs with the inverter. ESPHome
+  still calls two of its functions; `ble_smp_off.cpp` stands in for them.
+
 There is no `enc_rand:` option: the inverter rotates its session key, so the
 session fetches it with a V0 pairing after every boot and after every failed
 handshake, and keeps it in RAM only.

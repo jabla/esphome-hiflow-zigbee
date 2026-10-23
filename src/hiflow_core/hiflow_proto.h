@@ -74,6 +74,10 @@ extern "C" {
 /* A whole frame: header + ciphertext + GCM tag. */
 #define HIFLOW_MAX_FRAME_LEN (HIFLOW_HEADER_LEN + HIFLOW_MAX_PLAINTEXT + HIFLOW_TAG_LEN)
 
+/* The largest frame we send: a request with its GCM tag, or with the 16 bytes
+   of PKCS#7 padding at most on the V0 path. */
+#define HIFLOW_MAX_TX_FRAME_LEN (HIFLOW_HEADER_LEN + HIFLOW_MAX_REQUEST + 16)
+
 /* 1 for the commands that travel on the V0 (SN-keyed CBC, no tag) path. */
 int hiflow_is_v0_cmd(uint16_t cmd);
 

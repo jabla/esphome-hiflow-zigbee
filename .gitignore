@@ -11,6 +11,7 @@ test/host/test_clock
 test/host/test_proto
 test/host/test_session
 test/host/test_daylog
+test/host/test_daylog_nocurve
 test/host/vectors.h
 test/host/vectors_pb.h
 test/host/vectors_proto.h

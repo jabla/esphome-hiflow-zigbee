@@ -37,6 +37,11 @@
 #include "esp_private/sleep_sys_periph.h"
 #endif
 
+extern "C" {
+ezb_err_t __real_ezb_app_signal_add_handler(ezb_app_signal_handler_t handler);
+ezb_err_t __wrap_ezb_app_signal_add_handler(ezb_app_signal_handler_t handler);
+}
+
 namespace esphome {
 namespace zigbee_power {
 
@@ -96,6 +101,8 @@ static std::atomic<bool> s_updating{false};
 static ESPPreferenceObject s_join_pref;
 static bool s_joined_rx_on = true;
 static std::atomic<bool> s_joined_now{false};
+// attach_to_stack() put our part into the stack.
+static bool s_attached = false;
 
 static volatile uint32_t s_sleeps = 0;
 static volatile uint32_t s_sleeps_pd_top = 0;
@@ -420,6 +427,38 @@ uint32_t ZigbeePower::pd_blockers() const {
 #endif
 }
 
+// Our signal handler, the poll interval and the request hook go into the
+// stack once it is set up, before it runs. In ESPHome 2026.7 to 2026.9
+// ZigbeeComponent's constructor set the stack up, so setup() did this. Since
+// 2026.10 ZigbeeComponent::setup() sets the stack up and starts its task in
+// one go; any Zigbee call before it asserts. In between it adds ESPHome's
+// signal handler: the linker sends that call through the wrapper at the end
+// of this file (-Wl,--wrap, see __init__.py), which puts ours in first.
+// The stack hands a signal to one handler after the other until one returns
+// true. ESPHome's always does, so ours must come before it; ours never does.
+void ZigbeePower::attach_to_stack() {
+  if (s_power == nullptr || s_attached)
+    return;
+  esp_zigbee_lock_acquire(portMAX_DELAY);
+  // esp-zigbee-lib 2.0.4 keeps 3 signal handlers: its own, this one and
+  // ESPHome's (which comes next and fails without a free slot).
+  if (__real_ezb_app_signal_add_handler(ZigbeePower::signal_handler_) != EZB_ERR_NONE) {
+    esp_zigbee_lock_release();
+    ESP_LOGE(TAG, "Could not add the signal handler");
+    s_power->mark_failed();
+    return;
+  }
+#ifdef USE_ZIGBEE_POWER_SLEEPY
+  ezb_nwk_set_keepalive_interval(s_power->poll_interval_ms());
+  // The stack has one slot for this hook: a later registration elsewhere
+  // would replace ours, which ends the fast poll after requests.
+  if (s_power->request_poll_window_ms() > 0)
+    ezb_apsde_data_indication_handler_register(on_aps_indication);
+#endif
+  esp_zigbee_lock_release();
+  s_attached = true;
+}
+
 void ZigbeePower::setup() {
   s_power = this;
 #ifdef USE_ZIGBEE_POWER_SLEEPY
@@ -430,23 +469,15 @@ void ZigbeePower::setup() {
   if (s_join_pref.load(&joined_rx_on))
     s_joined_rx_on = joined_rx_on != 0;
 
-  esp_zigbee_lock_acquire(portMAX_DELAY);
-  // esp-zigbee-lib 2.0.4 keeps 3 signal handlers: its own, this one and
-  // ESPHome's (which comes later and fails without a free slot).
-  if (ezb_app_signal_add_handler(ZigbeePower::signal_handler_) != EZB_ERR_NONE) {
-    esp_zigbee_lock_release();
-    ESP_LOGE(TAG, "Could not add the signal handler");
-    this->mark_failed();
-    return;
-  }
-#ifdef USE_ZIGBEE_POWER_SLEEPY
-  ezb_nwk_set_keepalive_interval(this->poll_interval_ms_);
-  // The stack has one slot for this hook: a later registration elsewhere
-  // would replace ours, and the fast poll after requests would stop.
-  if (this->request_poll_window_ms_ > 0)
-    ezb_apsde_data_indication_handler_register(on_aps_indication);
-#endif
-  esp_zigbee_lock_release();
+  // Without our part in the stack (see attach_to_stack()) the receiver mode
+  // and the poll would be wrong without a sign, so that fails loudly.
+  this->zb_->add_on_start_callback([this]() {
+    if (!s_attached && !this->is_failed()) {
+      ESP_LOGE(TAG, "Not in the Zigbee stack: ESPHome no longer adds its signal handler the way this "
+                    "component expects");
+      this->mark_failed();
+    }
+  });
 
 #ifdef USE_ZIGBEE_POWER_SLEEPY
   esp_pm_config_t pm = {
@@ -575,5 +606,13 @@ void ZigbeePower::dump_config() {
 
 }  // namespace zigbee_power
 }  // namespace esphome
+
+// The linker sends ezb_app_signal_add_handler() calls here (-Wl,--wrap).
+// ESPHome's handler gets ours in front of it, see attach_to_stack().
+ezb_err_t __wrap_ezb_app_signal_add_handler(ezb_app_signal_handler_t handler) {
+  if (handler == &esphome::zigbee::ZigbeeComponent::app_signal_handler)
+    esphome::zigbee_power::ZigbeePower::attach_to_stack();
+  return __real_ezb_app_signal_add_handler(handler);
+}
 
 #endif

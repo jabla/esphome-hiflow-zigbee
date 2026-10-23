@@ -3,7 +3,8 @@
 #include <string.h>
 
 /* The record is compared byte for byte with what flash holds: no padding. */
-_Static_assert(sizeof(hiflow_dayrec_t) == 40 + 2 * HIFLOW_DAYLOG_SLOTS, "hiflow_dayrec_t has padding");
+_Static_assert(sizeof(hiflow_dayrec_t) == 40 + 2 * HIFLOW_DAYLOG_SLOTS * HIFLOW_DAYLOG_CURVE,
+               "hiflow_dayrec_t has padding");
 
 /* How a pair of counters (lifetime, day) moved since the last reading. */
 enum { COUNTERS_UNKNOWN, COUNTERS_SAME_DAY, COUNTERS_RESTARTED };
@@ -22,7 +23,9 @@ int hiflow_local_minute(int64_t local_time)
    state belong to the inverter, not to the day, and stay. */
 static void clear_day(hiflow_daylog_t *d)
 {
+#if HIFLOW_DAYLOG_CURVE
     memset(d->rec.curve, 0, sizeof(d->rec.curve));
+#endif
     memset(d->rec.port_daily_wh, 0, sizeof(d->rec.port_daily_wh));
     d->rec.energy_daily_wh = 0.0f;
     d->daily_pending = 0.0f;
@@ -140,7 +143,9 @@ static void note_run(hiflow_daylog_t *d, const hiflow_reading_t *r)
 static void record(hiflow_daylog_t *d, const hiflow_reading_t *r)
 {
     int i, minute = -1;
+#if HIFLOW_DAYLOG_CURVE
     uint16_t w;
+#endif
 
     /* The counters as the inverter reports them; within a day a day counter
        never goes back, so a lower value is a bad one. */
@@ -171,9 +176,11 @@ static void record(hiflow_daylog_t *d, const hiflow_reading_t *r)
         if (d->rec.day < 0 || d->rec.peak_w < HIFLOW_FEED_MIN_W)
             d->rec.day = hiflow_local_day(r->local_time);
         minute = hiflow_local_minute(r->local_time);
+#if HIFLOW_DAYLOG_CURVE
         w = (uint16_t) (r->ac_w > 65000.0f ? 65000.0f : r->ac_w + 0.5f);
         if (w > d->rec.curve[minute / 5])
             d->rec.curve[minute / 5] = w;
+#endif
     }
     if (r->ac_w > d->rec.peak_w) {
         d->rec.peak_w = r->ac_w;
@@ -247,12 +254,16 @@ int hiflow_daylog_dark(const hiflow_daylog_t *d)
 
 int hiflow_daylog_has_curve(const hiflow_daylog_t *d)
 {
+#if HIFLOW_DAYLOG_CURVE
     int i;
 
     for (i = 0; d != NULL && i < HIFLOW_DAYLOG_SLOTS; i++) {
         if (d->rec.curve[i] > 0)
             return 1;
     }
+#else
+    (void) d;
+#endif
     return 0;
 }
 

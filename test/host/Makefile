@@ -73,6 +73,8 @@ CLOCK_BIN := test_clock
 REPLAY     ?=
 DAYLOG_SRC := test_daylog.c $(CORE)/hiflow_daylog.c
 DAYLOG_BIN := test_daylog
+# The same suite built like a board without a display (no day curve).
+DAYLOG_NC_BIN := test_daylog_nocurve
 
 # ---- fake inverter as a library (tools/fake_inverter_ble) ----------
 LIBFAKE     := $(ROOT)/tools/fake_inverter_ble/libfake.so
@@ -97,6 +99,9 @@ $(CLOCK_BIN): $(CLOCK_SRC)
 
 $(DAYLOG_BIN): $(DAYLOG_SRC)
 	$(CC) $(CFLAGS) $(STD) -I$(CORE) -o $@ $(DAYLOG_SRC) -lm
+
+$(DAYLOG_NC_BIN): $(DAYLOG_SRC)
+	$(CC) $(CFLAGS) $(STD) -DHIFLOW_DAYLOG_NO_CURVE -I$(CORE) -o $@ $(DAYLOG_SRC) -lm
 
 $(PROTO_BIN): $(PROTO_SRC) vectors_proto.h
 	$(CC) $(CFLAGS) $(STD) -I$(CORE) -I$(NANOPB) -I$(GEN) -I. -o $@ $(PROTO_SRC) -lm
@@ -140,12 +145,14 @@ test-session: $(SESSION_BIN)
 	@echo "=== session state machine suite ==="
 	@./$(SESSION_BIN)
 
-test-daylog: $(DAYLOG_BIN)
+test-daylog: $(DAYLOG_BIN) $(DAYLOG_NC_BIN)
 	@echo "=== day log suite ==="
 	@./$(DAYLOG_BIN) $(REPLAY)
+	@echo "=== day log suite, no day curve ==="
+	@./$(DAYLOG_NC_BIN) $(REPLAY)
 
 test: test-frame test-pb test-clock test-proto test-session test-daylog libfake
 
 clean:
-	rm -f $(FRAME_BIN) $(PB_BIN) $(CLOCK_BIN) $(PROTO_BIN) $(SESSION_BIN) $(DAYLOG_BIN) $(LIBFAKE) \
+	rm -f $(FRAME_BIN) $(PB_BIN) $(CLOCK_BIN) $(PROTO_BIN) $(SESSION_BIN) $(DAYLOG_BIN) $(DAYLOG_NC_BIN) $(LIBFAKE) \
 	      vectors.h vectors_pb.h vectors_proto.h

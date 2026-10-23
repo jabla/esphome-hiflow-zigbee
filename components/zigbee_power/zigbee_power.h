@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "driver/temperature_sensor.h"
+#include "esphome/components/zigbee/zigbee_esp32.h"
 #include "esphome/core/automation.h"
 #include "esphome/core/component.h"
 #include "esphome/core/helpers.h"
@@ -21,6 +22,7 @@ namespace zigbee_power {
 
 class ZigbeePower : public Component {
  public:
+  void set_zigbee(zigbee::ZigbeeComponent *zb) { this->zb_ = zb; }
   void set_poll_interval(uint32_t ms) { this->poll_interval_ms_ = ms; }
   void set_awake_after_boot(uint32_t ms) { this->awake_after_boot_ms_ = ms; }
   void set_loop_interval(uint32_t ms) { this->loop_interval_ms_ = ms; }
@@ -34,9 +36,15 @@ class ZigbeePower : public Component {
   void setup() override;
   void loop() override;
   void dump_config() override;
-  // Before ZigbeeComponent::setup() (DATA), which starts the Zigbee task: the
-  // receiver mode and our signal handler must be in place before the stack runs.
+  // Before ZigbeeComponent::setup() (DATA), which sets the stack up and starts
+  // the Zigbee task: phy_guard and the join record must be ready by then, see
+  // attach_to_stack().
   float get_setup_priority() const override { return setup_priority::BUS; }
+
+  /// Adds our signal handler, the poll interval and the request hook to the
+  /// stack. The ezb_app_signal_add_handler() wrapper calls it right before
+  /// ESPHome's handler goes in (see zigbee_power.cpp).
+  static void attach_to_stack();
 
   /// Milliseconds spent in light sleep since boot (0 without `sleepy`).
   uint32_t slept_ms() const;
@@ -67,6 +75,7 @@ class ZigbeePower : public Component {
   void rejoin_if_pending_();
   void apply_keep_pins_();
 
+  zigbee::ZigbeeComponent *zb_{nullptr};
   uint32_t poll_interval_ms_{0};
   temperature_sensor_handle_t tsens_{nullptr};
   bool tsens_failed_{false};

@@ -217,7 +217,7 @@ typedef struct {
     hiflow_measurements_t data;
     hiflow_rx_t           rx;
     uint8_t tx_pt[HIFLOW_MAX_REQUEST];
-    uint8_t tx_frame[HIFLOW_MAX_FRAME_LEN];
+    uint8_t tx_frame[HIFLOW_MAX_TX_FRAME_LEN];
     uint8_t rx_pt[HIFLOW_MAX_PLAINTEXT];
 } hiflow_session_t;
 

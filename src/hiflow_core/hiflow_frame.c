@@ -246,7 +246,6 @@ int hiflow_build_frame_v0(const char *sn, uint16_t cmd, uint16_t tid,
 {
     uint8_t key[HIFLOW_KEY_LEN];
     uint8_t iv[HIFLOW_IV_LEN];
-    uint8_t padded[HIFLOW_MAX_PLAINTEXT + 16];
     size_t pad_len, padded_len, total;
     uint8_t *ct;
     uint16_t crc;
@@ -260,20 +259,22 @@ int hiflow_build_frame_v0(const char *sn, uint16_t cmd, uint16_t tid,
     /* PKCS#7: always append between 1 and 16 bytes. */
     pad_len = 16 - (pt_len % 16);
     padded_len = pt_len + pad_len;
-    if (pt_len)
-        memcpy(padded, plaintext, pt_len);
-    for (i = 0; i < pad_len; i++)
-        padded[pt_len + i] = (uint8_t)pad_len;
-
     total = HIFLOW_HEADER_LEN + padded_len;
     if (cap < total)
         return HIFLOW_ERR_BUFFER;
 
+    /* Padded and encrypted in place in `buf`: no copy of the plaintext on the
+       stack, which runs on the small loop task of the target. */
+    ct = buf + HIFLOW_HEADER_LEN;
+    if (pt_len)
+        memmove(ct, plaintext, pt_len);
+    for (i = 0; i < pad_len; i++)
+        ct[pt_len + i] = (uint8_t)pad_len;
+
     hiflow_v0_derive_key(sn, key);
     hiflow_v0_derive_iv(sn, cmd, tid, iv);
 
-    ct = buf + HIFLOW_HEADER_LEN;
-    if (hiflow_crypto_aes128_cbc_encrypt(key, iv, padded, padded_len, ct) !=
+    if (hiflow_crypto_aes128_cbc_encrypt(key, iv, ct, padded_len, ct) !=
         HIFLOW_CRYPTO_OK)
         return HIFLOW_ERR_CRYPTO;
 

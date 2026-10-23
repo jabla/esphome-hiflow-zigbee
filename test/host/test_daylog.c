@@ -568,7 +568,11 @@ static void test_clock(void)
     g.clock_ok = 1;
     rig_to(&g, 90, 600.0f, 30);
     expect_int(g.d.rec.day, DAY0, "dated");
+#if HIFLOW_DAYLOG_CURVE
     expect_int(g.d.rec.curve[(12 * 60 + 1) / 5], 600, "the curve slot of 12:01");
+#else
+    expect_int(hiflow_daylog_has_curve(&g.d), 0, "no curve in a build without one");
+#endif
     expect_int(g.d.rec.peak_min, 12 * 60 + 1, "the peak at 12:01");
 
     /* Three days (sunrise 06:40, sunset 19:10, flapping dawn and dusk links)

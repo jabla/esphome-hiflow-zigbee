@@ -15,6 +15,7 @@ import os
 
 import esphome.codegen as cg
 from esphome.components import ble_client, esp32_ble_tracker
+from esphome.components.esp32 import add_idf_sdkconfig_option
 from esphome.components.zigbee.const import ZigbeeComponent
 import esphome.config_validation as cv
 from esphome.const import CONF_ID, CONF_MAC_ADDRESS, CONF_UPDATE_INTERVAL
@@ -44,6 +45,7 @@ CONF_CONNECTION_INTERVAL = "connection_interval"
 CONF_NIGHT_SCAN_INTERVAL = "night_scan_interval"
 CONF_NIGHT_BLE_OFF = "night_ble_off"
 CONF_NIGHT_TEST = "night_test"
+CONF_BTU_TASK_STACK_SIZE = "btu_task_stack_size"
 
 # The power limit slider's Zigbee endpoint. Fixed, and well above the sensors
 # (1-31), so that adding it never renumbers an existing endpoint.
@@ -124,6 +126,11 @@ CONFIG_SCHEMA = cv.Schema(
         # For testing the display at night: fills today's day log with a made-up
         # sunny day at boot, never saved to flash. Not for production.
         cv.Optional(CONF_DEMO_DAY, default=False): cv.boolean,
+        # Stack of Bluedroid's BTU task, in bytes. esp32_ble_tracker sets 8192
+        # (to match Arduino); the ESP-IDF default is 4096. A board short of RAM
+        # (the ESP32-H2) sets it here, because sdkconfig_options cannot
+        # override the tracker's value.
+        cv.Optional(CONF_BTU_TASK_STACK_SIZE): cv.int_range(min=3072, max=8192),
         cv.OnlyWith(CONF_ZIGBEE_ID, "zigbee"): cv.use_id(ZigbeeComponent),
     }
 ).extend(cv.COMPONENT_SCHEMA)
@@ -294,6 +301,14 @@ async def to_code(config):
     if config[CONF_DEMO_DAY]:
         cg.add_define("HIFLOW_DEMO_DAY")
 
+    # The day's curve is only drawn by a display (see hiflow_daylog.h). A
+    # build flag, not a define: the C core has to see it too.
+    if "display" not in CORE.config:
+        cg.add_build_flag("-DHIFLOW_DAYLOG_NO_CURVE")
+
+    if CONF_BTU_TASK_STACK_SIZE in config:
+        CORE.add_job(_set_btu_task_stack_size, config[CONF_BTU_TASK_STACK_SIZE])
+
     if config[CONF_NETWORK_TIME]:
         zb = await cg.get_variable(config[CONF_ZIGBEE_ID])
         cg.add(var.set_network_time(zb, TIME_ENDPOINT))
@@ -316,3 +331,9 @@ async def _add_inverter_switch_cluster(zb):
 @coroutine_with_priority(CoroPriority.LATE)
 async def _add_time_cluster(zb):
     cg.add(hiflow_ble_ns.add_time_cluster(zb, TIME_ENDPOINT))
+
+
+# After esp32_ble_tracker's to_code, which sets its own value.
+@coroutine_with_priority(CoroPriority.FINAL)
+async def _set_btu_task_stack_size(size):
+    add_idf_sdkconfig_option("CONFIG_BT_BTU_TASK_STACK_SIZE", size)

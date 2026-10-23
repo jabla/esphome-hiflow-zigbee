@@ -25,7 +25,7 @@ nothing is duplicated):
 |---|---|
 | `xiao_esp32c6` | Seeed Studio XIAO ESP32-C6. Drives the FM8625H RF switch (GPIO3/GPIO14); `external_antenna` picks the U.FL socket instead of the ceramic antenna. No display. |
 | `waveshare_c6_lcd147` | Waveshare ESP32-C6-LCD-1.47 (non-touch). Shows the values on the on-board 172x320 panel, with pages on the BOOT button (see *Display* in the README). No RF switch, no U.FL socket; `external_antenna` is unused. |
-| `waveshare_h2_zero` | Waveshare ESP32-H2-Zero (ESP32-H2FH4S, 4 MB flash). Tested on the bench only, not yet with an inverter. No RF switch, no U.FL socket, no display. |
+| `waveshare_h2_zero` | Waveshare ESP32-H2-Zero (ESP32-H2FH4S, 4 MB flash). No RF switch, no U.FL socket, no display. |
 
 A second board only needs a new file under `boards/` plus the substitution in the secrets file. The
 display lambda reads the sensors by `id` (the `id:` lines in `hiflow-zb.yaml`) and the component's
@@ -66,6 +66,17 @@ block once a minute, against the fake inverter in `tools/fake_inverter_ble/`), a
 for the session. A sleepy build had 19-20 kB free. A delta update over Zigbee took the low mark
 down to 23.2 kB (15.0 kB sleepy); a zlib full image cannot run there (32 KB window), so the
 H2 gets full images as heatshrink, see `components/zigbee_ota/README.md`.
+
+At a real inverter the H2 had 7.8 kB free at the lowest by day and 2.3 kB while it reconnected at
+dusk. `hiflow-zb.yaml` therefore cuts the BLE stack down to one link without BLE 5 features: the
+controller's code runs from flash, its buffers are smaller, Bluedroid has no security manager and
+its BTU task the ESP-IDF stack size. Without a display the component also leaves out the day
+curve. The sleepy H2 build then needs 108,576 B of static DRAM (42.1 %) instead of 137,120 B.
+At the inverter it then had about 48 kB free at the lowest, also while it took an update over
+Zigbee with the session up.
+The C6 boards do not need the RAM but run the same trimmed stack, so a test on one board holds
+for all: the XIAO needs 113,912 B (25.2 %) instead of 138,264 B, the C6-LCD 133,208 B (29.5 %)
+instead of 157,898 B.
 
 The Waveshare C6 board carries **8 MB** of flash, the XIAO and the H2-Zero 4 MB. The config keeps
 `flash_size: 4MB` for all of them, so the partition table is the same and the upper 4 MB of the

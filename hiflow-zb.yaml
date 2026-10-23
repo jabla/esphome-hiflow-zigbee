@@ -16,6 +16,26 @@ esp32:
   flash_size: 4MB
   framework:
     type: esp-idf
+    # The BLE stack is sized for several links with BLE 5 features; the bridge
+    # keeps one link to one inverter with BLE 4.2. The ESP32-H2 needs the RAM
+    # (see boards/waveshare_h2_zero.yaml); the C6 boards run the same trimmed
+    # stack, so a test on one board holds for all.
+    sdkconfig_options:
+      # The BLE controller's code runs from flash instead of RAM: about 20 kB.
+      # Espressif marks it experimental (slower code); the bridge's link runs
+      # at a 1 s connection interval.
+      CONFIG_BT_CTRL_RUN_IN_FLASH_ONLY: y
+      # No extended advertising or periodic sync in the controller: its HCI
+      # event buffers shrink from 257 to 70 bytes.
+      CONFIG_BT_LE_50_FEATURE_SUPPORT: n
+      # One link instead of three, with buffers to match. An ACL buffer
+      # holds one link-layer payload (251 bytes at most) plus its header.
+      CONFIG_BT_LE_MAX_CONNECTIONS: "1"
+      CONFIG_BT_LE_ACL_BUF_COUNT: "5"
+      CONFIG_BT_LE_ACL_BUF_SIZE: "255"
+      CONFIG_BT_LE_MSYS_2_BLOCK_COUNT: "12"
+      # No BLE pairing: the inverter's login is part of its own protocol.
+      CONFIG_BT_BLE_SMP_ENABLE: n
 
 # The radio front end and any on-board display live in the board file, see
 # boards/<board>.yaml.
@@ -44,6 +64,10 @@ external_components:
       type: local
       path: components
     components: [hiflow_ble, lcd_power, zigbee_ota, zigbee_power]
+
+# One link for the host stack too (CONFIG_BT_ACL_CONNECTIONS follows it).
+esp32_ble:
+  max_connections: 1
 
 # Keep the BLE scan window small: the chip has ONE 2.4 GHz radio path, and Espressif
 # names "Zigbee end device + BLE scan" as the fragile combination. A continuously
@@ -74,6 +98,8 @@ hiflow_ble:
   sn: ${hiflow_sn}
   ble_id: ${hiflow_ble_id}
   pin: ${hiflow_ble_pin}
+  # Bluedroid's BTU task with the ESP-IDF default instead of ESPHome's 8192.
+  btu_task_stack_size: 4096
   # Standard (winter) UTC offset; eu_dst adds an hour from the last Sunday in
   # March to the last Sunday in October. They set the local time of the display
   # and the day curve. The time-sync at every login also hands them to the

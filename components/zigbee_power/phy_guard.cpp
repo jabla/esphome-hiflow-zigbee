@@ -24,7 +24,9 @@
 // driver switches the PHY off with esp_phy_disable() from its interrupt, and phy_get_lock()
 // returns the _lock_t holding the FreeRTOS mutex that esp_phy_enable()/esp_phy_disable() take.
 // esp-zigbee-lib 2.0.4 and ESP-IDF 5.5.5 never switch the 802.15.4 radio on where it cannot
-// block; nb_enable shows it if a newer version does.
+// block; nb_enable shows it if a newer version does. esp-zigbee-lib 2.0.5 has the same radio
+// code (esp_zigbee_plat_radio and esp_zigbee_sleep, the only callers of the driver and the PHY,
+// are byte for byte the same on the C6 and the H2).
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 2, 0)
 #warning "phy_guard: not checked against this ESP-IDF version, see phy_guard.cpp"
 #endif

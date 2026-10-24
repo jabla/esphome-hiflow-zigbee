@@ -45,11 +45,15 @@ What it does:
   ESPHome no longer marks the image valid at boot; this component does, after the OTA server
   answered a Query Next Image. An image that crashes before that is replaced by the previous
   one at the next boot. The bootloader only changes with a USB flash.
-- esp-zigbee-lib 2.0.4 crashes when the client finishes an upgrade the regular way: it sends a
-  packet that was never set up and fails an assert, before it acknowledges the server's
-  Upgrade End Response. ZHA then reports the update as failed although it worked. The
-  component answers the apply step with an abort instead, which takes the library's sound
-  path, and reboots into the new image 2 seconds later.
+- It needs esp-zigbee-lib 2.0.5 or newer. ESPHome 2026.10 asks for 2.0.4, so the component
+  raises that request (the build log notes the version change) and refuses to build against
+  an older library. 2.0.4 crashes when the client finishes an upgrade: it sends a packet that
+  was never set up and fails an assert. 2.0.5 fixed that. It also starts in about a second
+  where 2.0.4 took 30 s to 2 minutes: 2.0.4 reads every stored reporting entry once per
+  endpoint (each read a walk through the whole NVS) and writes them all again at every boot.
+- After the upgrade finished the component reboots into the new image, 2 seconds later or
+  after the delay the server asked for. An upgrade that stops between the selection of the
+  image and the finish puts the running image back as the boot image.
 - An offer that arrives before the new image was marked valid counts as the server's answer:
   the image is marked valid and the download starts (the first update after an update used to
   fail once).

@@ -31,8 +31,8 @@ welcome.
 
 - One of the boards in the table below.
 - A Zigbee coordinator in ZHA or Zigbee2MQTT (2.8.0 or newer).
-- ESPHome with native Zigbee on the ESP32-C6 / ESP32-H2 (tested with **2026.9.1** and
-  **2026.10.0**), plus Python 3 for the helper scripts.
+- ESPHome **2026.10.0** or newer (native Zigbee on the ESP32-C6 / ESP32-H2), plus Python 3
+  for the helper scripts.
 - The inverter within BLE range of the board.
 - **Nothing else connected to the inverter over BLE.** It serves exactly one BLE central, so end
   every other BLE connection to it (e.g. the S-Miles app).

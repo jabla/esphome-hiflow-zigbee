@@ -58,6 +58,7 @@ class ZigbeeOta : public Component {
   void release_decoders_();
   /// Ends the download and frees its state (on the Zigbee task or under its lock).
   void end_download_();
+  void unselect_image_();
   void resync_file_offset_(uint32_t block_len);
   /// From the download to the restart (see zigbee_power::set_updating):
   /// fast poll on the sleepy build, and a pending join waits. Tracked so the
@@ -106,7 +107,9 @@ class ZigbeeOta : public Component {
   std::atomic<uint32_t> offset_{0};
   std::atomic<bool> downloading_{false};
   std::atomic<bool> server_answered_{false};
+  std::atomic<bool> applied_{false};  // APPLY selected the new image for the next boot
   std::atomic<bool> restart_{false};
+  std::atomic<uint32_t> restart_delay_ms_{0};
   std::atomic<bool> updating_{false};
   std::atomic<uint32_t> last_progress_ms_{0};  // last progress callback of the stack
 

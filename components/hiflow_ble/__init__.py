@@ -166,14 +166,14 @@ def _night_options(config):
         CONF_NIGHT_SCAN_INTERVAL in config or CONF_NIGHT_BLE_OFF in config
     ):
         raise cv.Invalid("night_test needs night_scan_interval or night_ble_off")
-    if CONF_NIGHT_BLE_OFF in config:
-        # Switching BLE off relies on ESPHome settling the tracker and the
-        # client on the way down, which it does from 2026.9.0 on.
-        cv.require_esphome_version(2026, 9, 0)(config)
     return config
 
 
-CONFIG_SCHEMA = cv.All(CONFIG_SCHEMA, _night_options, _reserve_control_endpoints)
+# night_ble_off relies on ESPHome settling the tracker and the client when BLE
+# goes off; the bridge is built and tested on 2026.10 and newer only.
+CONFIG_SCHEMA = cv.All(
+    CONFIG_SCHEMA, cv.require_esphome_version(2026, 10, 0), _night_options, _reserve_control_endpoints
+)
 
 # The values of hiflow_secrets.example.yaml. A build that still carries one of
 # them runs, but never finds the inverter (the MAC) or never logs in (SN,

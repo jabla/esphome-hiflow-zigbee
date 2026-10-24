@@ -472,7 +472,7 @@ void HiflowBle::check_night_(int64_t now) {
 // the inverter connects and the link-up ends night mode. BLE goes off once the
 // client is idle (no attempt, no link going down); an attempt still running
 // after the cap is dropped. A running scan needs nothing: on the way down
-// ESPHome (2026.9.0 on) stops it, settles the tracker and the client and drops
+// ESPHome stops it, settles the tracker and the client and drops
 // their late events. Stopping it here first raced the end of the tracker's own
 // scan period, which comes at the same time when night starts 10 minutes after
 // the scan did, and logged two "Unexpected state" errors.

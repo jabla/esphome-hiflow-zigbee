@@ -187,6 +187,9 @@ CONFIG_SCHEMA = cv.All(
         }
     ).extend(cv.COMPONENT_SCHEMA),
     cv.only_on_esp32,
+    # Hooks into the stack the way ZigbeeComponent sets it up since 2026.10
+    # (see attach_to_stack() in zigbee_power.cpp).
+    cv.require_esphome_version(2026, 10, 0),
     only_on_variant(supported=[VARIANT_ESP32C6, VARIANT_ESP32H2], msg_prefix="zigbee_power"),
     _sleepy_options,
     _timer_guard_option,

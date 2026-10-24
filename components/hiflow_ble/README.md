@@ -221,8 +221,7 @@ hiflow_ble:
     a 15 s scan every `night_ble_off`. Without BLE the 40 MHz crystal and the
     peripherals can sleep too. BLE must not be shared with another
     `ble_client` or a `bluetooth_proxy`. The first link after dusk can take
-    up to this long. Needs ESPHome 2026.9.0 or newer, which settles the
-    scanner and the client when BLE goes off.
+    up to this long.
 
   Night mode starts when the link drops after the inverter fed in nothing
   (standby), or when the bridge has not seen the inverter (no advert, no

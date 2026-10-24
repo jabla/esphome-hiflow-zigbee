@@ -428,20 +428,19 @@ uint32_t ZigbeePower::pd_blockers() const {
 }
 
 // Our signal handler, the poll interval and the request hook go into the
-// stack once it is set up, before it runs. In ESPHome 2026.7 to 2026.9
-// ZigbeeComponent's constructor set the stack up, so setup() did this. Since
-// 2026.10 ZigbeeComponent::setup() sets the stack up and starts its task in
-// one go; any Zigbee call before it asserts. In between it adds ESPHome's
-// signal handler: the linker sends that call through the wrapper at the end
-// of this file (-Wl,--wrap, see __init__.py), which puts ours in first.
+// stack once it is set up, before it runs. ZigbeeComponent::setup() sets the
+// stack up and starts its task in one go; any Zigbee call before it asserts.
+// In between it adds ESPHome's signal handler: the linker sends that call
+// through the wrapper at the end of this file (-Wl,--wrap, see __init__.py),
+// which puts ours in first.
 // The stack hands a signal to one handler after the other until one returns
 // true. ESPHome's always does, so ours must come before it; ours never does.
 void ZigbeePower::attach_to_stack() {
   if (s_power == nullptr || s_attached)
     return;
   esp_zigbee_lock_acquire(portMAX_DELAY);
-  // esp-zigbee-lib 2.0.4 keeps 3 signal handlers: its own, this one and
-  // ESPHome's (which comes next and fails without a free slot).
+  // esp-zigbee-lib (2.0.4, 2.0.5) keeps 3 signal handlers: its own, this one
+  // and ESPHome's (which comes next and fails without a free slot).
   if (__real_ezb_app_signal_add_handler(ZigbeePower::signal_handler_) != EZB_ERR_NONE) {
     esp_zigbee_lock_release();
     ESP_LOGE(TAG, "Could not add the signal handler");

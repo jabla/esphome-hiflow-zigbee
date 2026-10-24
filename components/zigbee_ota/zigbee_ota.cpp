@@ -9,6 +9,7 @@
 #include "esp_system.h"
 #include "miniz.h"
 #include "esp_zigbee.h"
+#include "esp_zigbee_version.h"
 #include "ezbee/zcl/cluster/ota_upgrade.h"
 #include "esphome/core/application.h"
 #include "esphome/core/hal.h"
@@ -21,6 +22,12 @@ namespace esphome {
 namespace zigbee_ota {
 
 static const char *const TAG = "zigbee_ota";
+
+// 2.0.4 panics when the client finishes an upgrade (see __init__.py, which
+// raises ESPHome's request to 2.0.5).
+#if ESP_ZIGBEE_VER_MAJOR * 10000 + ESP_ZIGBEE_VER_MINOR * 100 + ESP_ZIGBEE_VER_PATCH < 20005
+#error "zigbee_ota needs esp-zigbee-lib 2.0.5 or newer"
+#endif
 
 // OTA file layout (ZCL spec 11.4): a header whose length sits at offset 6,
 // then sub-elements of tag (2 bytes) + length (4 bytes) + data. The ESP-IDF
@@ -39,6 +46,7 @@ static const uint8_t SUB_ELEMENT_HEADER_LEN = 6;
 static const uint32_t QUERY_PERIOD_MS = 30000;
 static const uint32_t PROGRESS_LOG_MS = 15000;
 static const uint32_t RESTART_DELAY_MS = 2000;
+static const uint32_t RESTART_DELAY_MAX_S = 86400;
 // The stack asks again for a block whose answer has not come within this
 // time (its default is 5 s). The parent holds an answer for a sleepy device
 // for at most macTransactionPersistenceTime (7.68 s by default), so after 10 s
@@ -160,8 +168,9 @@ void ZigbeeOta::loop() {
 
   if (this->restart_.load()) {
     if (this->restart_at_ms_ == 0) {
-      this->restart_at_ms_ = now + RESTART_DELAY_MS;
-      ESP_LOGW(TAG, "Rebooting into the new image in %" PRIu32 " ms", RESTART_DELAY_MS);
+      const uint32_t delay_ms = std::max(this->restart_delay_ms_.load(), RESTART_DELAY_MS);
+      this->restart_at_ms_ = now + delay_ms;
+      ESP_LOGW(TAG, "Rebooting into the new image in %" PRIu32 " ms", delay_ms);
     } else if (static_cast<int32_t>(now - this->restart_at_ms_) >= 0) {
       App.reboot();
     }
@@ -194,6 +203,10 @@ void ZigbeeOta::loop() {
         ezb_zcl_set_attr_value(this->endpoint_, EZB_ZCL_CLUSTER_ID_OTA_UPGRADE, EZB_ZCL_CLUSTER_CLIENT,
                                EZB_ZCL_ATTR_OTA_UPGRADE_IMAGE_UPGRADE_STATUS_ID, EZB_ZCL_STD_MANUF_CODE, &status,
                                false);
+      } else if (this->applied_.load()) {
+        ESP_LOGE(TAG, "No FINISH for %" PRIu32 " s after APPLY", STALL_MS / 1000);
+        this->unselect_image_();
+        this->set_updating_(false);
       } else {
         // Complete and checked, waiting for APPLY: the stack keeps the image
         // and its state, a later APPLY still selects it.
@@ -270,6 +283,13 @@ void ZigbeeOta::on_progress_(void *message) {
 
   switch (msg->in.progress) {
     case EZB_ZCL_OTA_UPGRADE_PROGRESS_START: {
+      // The other slot holds the image selected for the next boot: a new
+      // download would overwrite it.
+      if (this->applied_.load()) {
+        ESP_LOGW(TAG, "Offer refused, a new image waits for the reboot");
+        result = EZB_ZCL_STATUS_ABORT;
+        break;
+      }
       ESP_LOGW(TAG, "Download starts: version 0x%08" PRIX32 ", %" PRIu32 " bytes", msg->in.start.file_version,
                msg->in.start.image_size);
       if (this->handle_ != 0)
@@ -448,36 +468,38 @@ void ZigbeeOta::on_progress_(void *message) {
         result = EZB_ZCL_STATUS_ABORT;
       } else {
         ESP_LOGW(TAG, "New image selected for the next boot (%s)", this->partition_->label);
-        // Workaround for esp-zigbee-lib 2.0.4: after a successful APPLY the
-        // stack calls FINISH and then sends a response packet it never set
-        // up (disassembly of ota_upgrade_cluster_cli_cmd_proc_handler); the
-        // download context lookup for that packet's endpoint fails an assert
-        // and the chip panics before it acknowledged the server's Upgrade End
-        // Response (zigpy then reports the update as failed). Espressif's
-        // ota_client example hides this by restarting inside FINISH. Any
-        // APPLY result other than 0x96/0x99 takes the stack's default
-        // response path instead, which is sound. The image is already
-        // selected, so the reboot is ours: from the main loop, with a moment
-        // for the acknowledgements to go out.
-        this->restart_ = true;
-        App.wake_loop_threadsafe();
-        result = EZB_ZCL_STATUS_ABORT;
+        this->applied_ = true;
       }
       break;
     }
 
-    case EZB_ZCL_OTA_UPGRADE_PROGRESS_FINISH:
-      // Not reached while APPLY answers ABORT (see above); kept for a stack
-      // that fixes the FINISH path.
-      ESP_LOGW(TAG, "Upgrade finished, restart in %" PRIu32 " s", msg->in.finish.count_down_delay);
+    case EZB_ZCL_OTA_UPGRADE_PROGRESS_FINISH: {
+      if (!this->applied_.load()) {
+        ESP_LOGW(TAG, "Upgrade finished without a selected image, no reboot");
+        break;
+      }
+      // The reboot comes from the main loop, after the delay the server asked
+      // for and at least a moment for the last acknowledgements to go out
+      // (Espressif's example restarts right here). 0xFFFFFFFF asks to wait for
+      // the server's Upgrade Command, which ZHA and Zigbee2MQTT do not send.
+      const uint32_t delay_s = msg->in.finish.count_down_delay;
+      ESP_LOGW(TAG, "Upgrade finished, the server asks for a reboot in %" PRIu32 " s", delay_s);
+      if (delay_s == UINT32_MAX)
+        ESP_LOGW(TAG, "Waiting for an Upgrade Command is not supported, rebooting now");
+      else
+        this->restart_delay_ms_ = std::min(delay_s, RESTART_DELAY_MAX_S) * 1000;
       this->restart_ = true;
+      App.wake_loop_threadsafe();
       break;
+    }
 
     case EZB_ZCL_OTA_UPGRADE_PROGRESS_ABORT:
-      // The stack turns APPLY's deliberate ABORT (see above) into this one
-      // too; the new image is selected by then and the reboot is near.
       if (this->restart_.load())
         break;
+      if (this->applied_.load()) {
+        ESP_LOGW(TAG, "Upgrade aborted after APPLY");
+        this->unselect_image_();
+      }
       ESP_LOGW(TAG, "Download aborted at %" PRIu32 " bytes", this->offset_.load());
       this->end_download_();
       break;
@@ -486,6 +508,17 @@ void ZigbeeOta::on_progress_(void *message) {
       break;
   }
   msg->out.result = result;
+}
+
+// The running image becomes the boot image again; the next offer starts over.
+void ZigbeeOta::unselect_image_() {
+  esp_err_t err = esp_ota_set_boot_partition(esp_ota_get_running_partition());
+  if (err != ESP_OK)
+    ESP_LOGE(TAG, "Could not select the running image again: %s", esp_err_to_name(err));
+  this->applied_ = false;
+  uint8_t status = EZB_ZCL_OTA_UPGRADE_IMAGE_UPGRADE_STATUS_NORMAL;
+  ezb_zcl_set_attr_value(this->endpoint_, EZB_ZCL_CLUSTER_ID_OTA_UPGRADE, EZB_ZCL_CLUSTER_CLIENT,
+                         EZB_ZCL_ATTR_OTA_UPGRADE_IMAGE_UPGRADE_STATUS_ID, EZB_ZCL_STD_MANUF_CODE, &status, false);
 }
 
 void ZigbeeOta::end_download_() {

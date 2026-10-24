@@ -30,10 +30,11 @@ import subprocess
 
 import esphome.codegen as cg
 from esphome.components.esp32 import add_idf_component, add_idf_sdkconfig_option
+from esphome.components.esp32.const import KEY_COMPONENTS, KEY_ESP32, KEY_PATH, KEY_REF, KEY_REPO
 from esphome.components.zigbee.const import ZigbeeComponent
 import esphome.config_validation as cv
 from esphome.const import CONF_ID, __version__ as ESPHOME_VERSION
-from esphome.core import CORE, EsphomeError
+from esphome.core import CORE, EsphomeError, Version
 from esphome.coroutine import CoroPriority, coroutine_with_priority
 
 from .version import next_version
@@ -81,6 +82,9 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_TX_POWER): cv.int_range(min=-24, max=20),
     }
 ).extend(cv.COMPONENT_SCHEMA)
+# The esp-zigbee-lib request is raised in ESPHome's IDF component registry,
+# see _require_zigbee_lib().
+CONFIG_SCHEMA = cv.All(CONFIG_SCHEMA, cv.require_esphome_version(2026, 10, 0))
 
 
 async def to_code(config):
@@ -129,6 +133,7 @@ async def to_code(config):
     add_idf_component(name="espressif/esp_delta_ota", ref="1.1.4")
 
     CORE.add_job(_add_cluster, var)
+    CORE.add_job(_require_zigbee_lib)
 
 
 def _known_versions(info: Path) -> list[int]:
@@ -176,3 +181,28 @@ def _git_describe() -> str | None:
 @coroutine_with_priority(CoroPriority.LATE)
 async def _add_cluster(var):
     cg.add(var.add_cluster())
+
+
+# esp-zigbee-lib 2.0.4 panics when the client finishes an upgrade (an assert on
+# a response packet it never set up, esp-zigbee-sdk issue 906). It also takes
+# 30 s to 2 minutes to start: it reads every stored reporting entry once per
+# endpoint, each read a walk through the whole NVS. 2.0.5 fixed both. ESPHome
+# 2026.10 asks for 2.0.4. Once the zigbee component made its request, this
+# raises a lower version to 2.0.5. A newer version, a git source or a local
+# path stays; zigbee_ota.cpp refuses to build against anything below 2.0.5.
+ZIGBEE_LIB = "espressif/esp-zigbee-lib"
+ZIGBEE_LIB_MIN = "2.0.5"
+
+
+@coroutine_with_priority(CoroPriority.FINAL)
+async def _require_zigbee_lib():
+    entry = CORE.data[KEY_ESP32][KEY_COMPONENTS].get(ZIGBEE_LIB)
+    if not entry or entry.get(KEY_REPO) or entry.get(KEY_PATH):
+        return
+    try:
+        have = Version.parse(entry.get(KEY_REF) or "")
+    except ValueError:
+        return
+    want = Version.parse(ZIGBEE_LIB_MIN)
+    if (have.major, have.minor, have.patch) < (want.major, want.minor, want.patch):
+        add_idf_component(name=ZIGBEE_LIB, ref=ZIGBEE_LIB_MIN)

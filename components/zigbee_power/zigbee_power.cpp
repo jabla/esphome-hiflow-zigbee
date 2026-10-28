@@ -577,10 +577,31 @@ bool ZigbeePower::signal_handler_(const ezb_app_signal_t *app_signal) {
       }
 #endif
       break;
+    case EZB_NWK_SIGNAL_NETWORK_STATUS:
+      // Since esp-zigbee-lib 2.0.5 a parent link failure only means that one
+      // poll or frame did not reach the parent. The stack retries by itself
+      // and raises EZB_ZDO_SIGNAL_PARENT_LOST once the parent stayed silent for
+      // a whole end device timeout. ESPHome's handler, written for 2.0.4,
+      // answers every failure with a leave and a rejoin: in production one
+      // short dropout ended with the node out of the network, its network data
+      // gone. So the failure stops here.
+      if (static_cast<const ezb_nwk_signal_network_status_params_t *>(ezb_app_signal_get_params(app_signal))->status ==
+          EZB_NWK_NETWORK_STATUS_PARENT_LINK_FAILURE) {
+        ESP_LOGD(TAG, "Parent link failure, the stack retries");
+        return true;
+      }
+      break;
+    case EZB_ZDO_SIGNAL_PARENT_LOST:
+      // The parent is gone for good: rejoin through another one, keeping the
+      // network data. The initialization tries a secure rejoin and a TC rejoin
+      // on every channel; ESPHome retries a failed one every second.
+      ESP_LOGW(TAG, "Parent lost, rejoining");
+      ezb_bdb_start_top_level_commissioning(EZB_BDB_MODE_INITIALIZATION);
+      break;
     default:
       break;
   }
-  // Never consume a signal: ESPHome's handler needs every one of them.
+  // Consume nothing else: ESPHome's handler needs every other signal.
   return false;
 }
 

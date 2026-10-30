@@ -7,7 +7,7 @@
 #include "esphome/core/log.h"
 #include "esphome/components/esp32_ble/ble.h"
 #include "esphome/components/esp32_ble_tracker/esp32_ble_tracker.h"
-#ifdef USE_ZIGBEE_POWER_SLEEPY
+#ifdef USE_ZIGBEE_POWER
 #include "esphome/components/zigbee_power/zigbee_power.h"
 #endif
 
@@ -231,6 +231,9 @@ void HiflowBle::loop() {
     this->report_link_up_();
   }
 
+#ifdef USE_ZIGBEE_POWER
+  this->zigbee_radio_tick_(now);
+#endif
   this->poll_slider_(now);
   this->poll_switch_(now);
   this->poll_network_time_(now);
@@ -480,7 +483,7 @@ void HiflowBle::night_ble_tick_(int64_t now) {
   static const int64_t BURST_MS = 15000;
   static const int64_t QUIET_CAP_MS = 30000;  // a connection attempt times out after 20 s
   auto *ble = esp32_ble::global_ble;
-  if (ble == nullptr || this->link_ready_ || now < this->night_next_ms_)
+  if (ble == nullptr || this->link_ready_ || this->zigbee_quiet_ || now < this->night_next_ms_)
     return;
   if (!this->night_burst_) {
     this->night_burst_ = true;
@@ -511,6 +514,46 @@ void HiflowBle::night_ble_tick_(int64_t now) {
   this->night_next_ms_ = now + this->night_ble_off_ms_;
   ble->disable();
 }
+
+#ifdef USE_ZIGBEE_POWER
+// A rejoin after a lost Zigbee parent wants the radio to itself (see
+// zigbee_power::radio_wanted): while BLE scans, the rejoin cannot finish. The
+// stack then ends up dropping the network data. So BLE goes off as at night
+// (the link first) until the node is in again.
+void HiflowBle::zigbee_radio_tick_(int64_t now) {
+  static const int64_t DROP_CAP_MS = 3000;
+  auto *ble = esp32_ble::global_ble;
+  if (ble == nullptr)
+    return;
+  const bool wanted = zigbee_power::radio_wanted();
+  if (wanted && !this->zigbee_quiet_) {
+    if (this->node_state != espbt::ClientState::IDLE && this->parent() != nullptr) {
+      if (this->zigbee_drop_ms_ == 0) {
+        ESP_LOGW(TAG, "Zigbee rejoin: dropping the BLE link");
+        this->zigbee_drop_ms_ = now;
+        this->parent()->disconnect();
+        return;
+      }
+      if (now - this->zigbee_drop_ms_ < DROP_CAP_MS)
+        return;
+      this->parent()->release_services();
+      this->report_link_down_(HIFLOW_LINK_NOT_ESTABLISHED);
+    }
+    this->zigbee_drop_ms_ = 0;
+    this->zigbee_quiet_ = true;
+    ble->disable();
+    zigbee_power::set_ble_quiet(true);
+    ESP_LOGW(TAG, "BLE off while Zigbee rejoins");
+  } else if (!wanted && this->zigbee_quiet_) {
+    this->zigbee_quiet_ = false;
+    zigbee_power::set_ble_quiet(false);
+    // At night with BLE off the scan bursts take over again.
+    if (!(this->night_ && this->night_ble_off_ms_ != 0))
+      ble->enable();
+    ESP_LOGI(TAG, "BLE back on after the Zigbee rejoin");
+  }
+}
+#endif
 
 // A running scan keeps its parameters: stop it, the tracker starts it again
 // with the new ones. Waits while the client is busy (a link going down, an

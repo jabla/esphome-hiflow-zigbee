@@ -95,6 +95,18 @@ static std::atomic<bool> s_join_restart{false};
 // A firmware update runs (set_updating): a pending join waits for its end, as
 // the leave would restart the chip in the middle of it.
 static std::atomic<bool> s_updating{false};
+// A lost parent (EZB_ZDO_SIGNAL_PARENT_LOST) ends in a leave with rejoin, sent
+// once BLE is off. BLE takes the one radio in turns with 802.15.4. A rejoin that
+// cannot finish while BLE scans ends about 25 s later in the stack's own full
+// leave, which drops the network data (bench test). hiflow_ble turns BLE off
+// while radio_wanted() and says so with set_ble_quiet(); without it the leave
+// goes out after BLE_QUIET_WAIT_MS. Set on the Zigbee task, acted on in the main
+// loop.
+static std::atomic<bool> s_radio_wanted{false};
+static std::atomic<bool> s_ble_quiet{false};
+static std::atomic<bool> s_rejoin_leave_sent{false};
+static const uint32_t BLE_QUIET_WAIT_MS = 30000;
+
 // The stack does not keep the receiver mode of the join (it starts with the
 // receiver on), so this component does: 1 on, 0 off. A node without the
 // record joined with an image from before it, receiver on.
@@ -209,6 +221,14 @@ static esp_err_t IRAM_ATTR on_light_sleep_exit(int64_t slept_us, void *arg) {
 }
 #endif
 
+bool radio_wanted() { return s_radio_wanted.load(); }
+
+void set_ble_quiet(bool quiet) {
+  s_ble_quiet.store(quiet);
+  if (s_power != nullptr)
+    s_power->enable_loop_soon_any_context();
+}
+
 void set_updating(bool on) {
   if (s_power == nullptr || s_updating.exchange(on) == on)
     return;
@@ -260,6 +280,29 @@ void ZigbeePower::setup_button_() {
   gpio_wakeup_enable((gpio_num_t) this->button_gpio_, level ? GPIO_INTR_LOW_LEVEL : GPIO_INTR_HIGH_LEVEL);
   esp_sleep_enable_gpio_wakeup();
 #endif
+}
+
+// The leave with rejoin ESPHome sends on a parent link failure, sent here only
+// for a lost parent, once.
+void ZigbeePower::leave_to_rejoin_() {
+  esp_zigbee_lock_acquire(portMAX_DELAY);
+  if (ezb_bdb_dev_joined()) {
+    ESP_LOGW(TAG, "Parent lost: leaving to rejoin through another parent%s",
+             s_ble_quiet.load() ? ", BLE is off" : "");
+    ezb_zdo_nwk_mgmt_leave_req_t leave_req = {
+        .dst_nwk_addr = ezb_nwk_get_short_address(),
+        .field =
+            {
+                .remove_children = false,
+                .rejoin = true,
+            },
+    };
+    s_rejoin_leave_sent.store(true);
+    ezb_zdo_nwk_mgmt_leave_req(&leave_req);
+  } else {
+    s_radio_wanted.store(false);
+  }
+  esp_zigbee_lock_release();
 }
 
 // A node that joined with the other receiver mode leaves the network and
@@ -351,6 +394,16 @@ void ZigbeePower::loop() {
       this->rejoin_if_pending_();
     }
   }
+  const bool radio_wait = s_radio_wanted.load() && !s_rejoin_leave_sent.load();
+  if (radio_wait) {
+    const uint32_t now = millis();
+    if (this->radio_wanted_ms_ == 0)
+      this->radio_wanted_ms_ = now;
+    if (s_ble_quiet.load() || now - this->radio_wanted_ms_ >= BLE_QUIET_WAIT_MS)
+      this->leave_to_rejoin_();
+  } else {
+    this->radio_wanted_ms_ = 0;
+  }
   // Every press counted since the last round: several come in while the
   // loop waits its interval.
   const uint32_t presses = this->presses_;
@@ -365,7 +418,7 @@ void ZigbeePower::loop() {
 #ifndef USE_ZIGBEE_POWER_TIMER_GUARD
   // With timer_guard the loop stays on for its log: the main loop runs every
   // loop_interval anyway, so that costs no wakeup.
-  if (!rejoin_pending)
+  if (!rejoin_pending && !radio_wait)
     this->disable_loop();
 #endif
 }
@@ -556,6 +609,11 @@ bool ZigbeePower::signal_handler_(const ezb_app_signal_t *app_signal) {
       // ESPHome retries a failed one every second, forever.
       if (*((ezb_bdb_comm_status_t *) ezb_app_signal_get_params(app_signal)) == EZB_BDB_STATUS_SUCCESS) {
         s_reboot_failures.store(0);
+        // Back in after a lost parent: BLE may come back.
+        if (s_rejoin_leave_sent.exchange(false)) {
+          s_radio_wanted.store(false);
+          s_power->enable_loop_soon_any_context();
+        }
       } else if (s_rejoin_pending.load()) {
         if (s_reboot_failures.load() == 0)
           s_reboot_failing_since_ms.store(millis());
@@ -579,12 +637,15 @@ bool ZigbeePower::signal_handler_(const ezb_app_signal_t *app_signal) {
       break;
     case EZB_NWK_SIGNAL_NETWORK_STATUS:
       // Since esp-zigbee-lib 2.0.5 a parent link failure only means that one
-      // poll or frame did not reach the parent. The stack retries by itself
-      // and raises EZB_ZDO_SIGNAL_PARENT_LOST once the parent stayed silent for
-      // a whole end device timeout. ESPHome's handler, written for 2.0.4,
-      // answers every failure with a leave and a rejoin: in production one
-      // short dropout ended with the node out of the network, its network data
-      // gone. So the failure stops here.
+      // poll or frame did not reach the parent, which BLE causes often enough
+      // by taking the radio. The stack retries by itself and raises
+      // EZB_ZDO_SIGNAL_PARENT_LOST once the parent stayed silent for a whole end
+      // device timeout. ESPHome's handler, written for 2.0.4, answers every
+      // failure with a leave and a rejoin. While BLE holds the radio that rejoin
+      // cannot finish, so about 25 s later the stack leaves for good and drops
+      // the network data; ESPHome then resets the node to factory new (bench
+      // test; the bridge in production lost its network that way). So the
+      // failure stops here.
       if (static_cast<const ezb_nwk_signal_network_status_params_t *>(ezb_app_signal_get_params(app_signal))->status ==
           EZB_NWK_NETWORK_STATUS_PARENT_LINK_FAILURE) {
         ESP_LOGD(TAG, "Parent link failure, the stack retries");
@@ -592,11 +653,16 @@ bool ZigbeePower::signal_handler_(const ezb_app_signal_t *app_signal) {
       }
       break;
     case EZB_ZDO_SIGNAL_PARENT_LOST:
-      // The parent is gone for good: rejoin through another one, keeping the
-      // network data. The initialization tries a secure rejoin and a TC rejoin
-      // on every channel; ESPHome retries a failed one every second.
-      ESP_LOGW(TAG, "Parent lost, rejoining");
-      ezb_bdb_start_top_level_commissioning(EZB_BDB_MODE_INITIALIZATION);
+      // The parent stayed silent for a whole end device timeout. If only it was
+      // down, the node is back by itself once it answers again (bench: 67 min
+      // without the coordinator). If it is gone for good, only a rejoin through
+      // another parent helps: a leave with rejoin, sent from the loop once BLE
+      // is off (see s_radio_wanted). The stack repeats the signal every few
+      // seconds while the parent stays away.
+      if (ezb_bdb_dev_joined() && !s_radio_wanted.exchange(true)) {
+        ESP_LOGW(TAG, "Parent lost, rejoining once BLE is off");
+        s_power->enable_loop_soon_any_context();
+      }
       break;
     default:
       break;

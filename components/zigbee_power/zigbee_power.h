@@ -73,6 +73,7 @@ class ZigbeePower : public Component {
   static void button_isr_(ZigbeePower *self);
   void setup_button_();
   void rejoin_if_pending_();
+  void leave_to_rejoin_();
   void apply_keep_pins_();
 
   zigbee::ZigbeeComponent *zb_{nullptr};
@@ -98,6 +99,7 @@ class ZigbeePower : public Component {
   uint32_t rejoin_checked_ms_{0};
   bool rejoin_leaving_{false};  // the local reset is under way
   uint32_t rejoin_leave_ms_{0};
+  uint32_t radio_wanted_ms_{0};  // a lost parent asked for the radio (0 = not yet seen)
   CallbackManager<void()> press_callback_;
 
   std::vector<uint8_t> keep_pins_;
@@ -109,6 +111,14 @@ class PressTrigger : public Trigger<> {
     parent->add_on_press_callback([this]() { this->trigger(); });
   }
 };
+
+/// True from a lost parent until the node rejoined: the rejoin wants the radio
+/// to itself (BLE takes it in turns with 802.15.4). Read from the main loop.
+bool radio_wanted();
+/// BLE is off (true) or back on (false) for the rejoin; called from the main
+/// loop by whoever owns BLE. Without such a caller the leave goes out after
+/// 30 s anyway.
+void set_ble_quiet(bool quiet);
 
 /// While `on` (a firmware update, from the download to the restart): a
 /// pending join with the other receiver mode waits, and the sleepy build polls

@@ -83,6 +83,15 @@ Things to know:
   joins.
   Both happened on the ESP32-H2 after a USB flash; without this the node stayed out of the
   network for good and needed its Zigbee data erased by hand.
+- A lost poll does not make the node leave. Since esp-zigbee-lib 2.0.5 the stack raises a parent
+  link failure for a single failed poll or frame, which BLE on the same radio causes now and
+  then. ESPHome answers each one with a leave and a rejoin. While BLE holds the radio that rejoin
+  often cannot finish, so about 25 s later the stack leaves for good and drops the Zigbee data:
+  the node then needs a new pairing. The component stops the link failure before ESPHome sees
+  it; the stack retries by itself. Only a parent that stayed silent for the whole end device
+  timeout (64 minutes) makes the node leave with rejoin, to find another parent. `hiflow_ble`
+  turns BLE off for that rejoin and back on once the node is in again (without `hiflow_ble` the
+  leave goes out after 30 s).
 - On the ESP32-H2 a node that is not in a network restarts after three failed join tries in a
   row. In about one boot in five the H2 does not find the network for the whole boot (every try
   ends after about 17 s with "no network", while a C6 next to it joins at once), and a restart

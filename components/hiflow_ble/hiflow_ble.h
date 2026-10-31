@@ -192,6 +192,7 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   void check_night_(int64_t now);
   void apply_rescan_();
   void night_ble_tick_(int64_t now);
+  void zigbee_radio_tick_(int64_t now);
   void publish_(uint8_t type, float value);
   // Publishes a lifetime counter unless it is 0 (missing) or below the last one.
   void publish_total_(uint8_t type, float value, float &last);
@@ -220,6 +221,8 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   bool night_test_{false};     // bench: any lost link starts night mode
   uint32_t night_ble_off_ms_{0};  // 0 = BLE stays on at night
   int64_t night_next_ms_{0};   // next scan burst (BLE off) or its end (burst)
+  bool zigbee_quiet_{false};   // BLE off while Zigbee rejoins after a lost parent
+  int64_t zigbee_drop_ms_{0};  // the link was asked to go down for that rejoin (0 = not yet)
   bool link_reported_{false};  // link-down already reported for this connection
   int64_t notify_registered_ms_{0};
   int disconnect_reason_{0};

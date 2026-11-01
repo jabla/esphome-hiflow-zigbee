@@ -17,6 +17,7 @@
 #include "esp_ota_ops.h"
 #include "esphome/components/zigbee/zigbee_esp32.h"
 #include "esphome/core/component.h"
+#include "ota_blocks.h"
 
 namespace esphome {
 namespace zigbee_ota {
@@ -59,7 +60,8 @@ class ZigbeeOta : public Component {
   /// Ends the download and frees its state (on the Zigbee task or under its lock).
   void end_download_();
   void unselect_image_();
-  void resync_file_offset_(uint32_t block_len);
+  uint32_t file_offset_() const;
+  void set_file_offset_(uint32_t offset);
   /// From the download to the restart (see zigbee_power::set_updating):
   /// fast poll on the sleepy build, and a pending join waits. Tracked so the
   /// main loop can end an update the server walked away from.
@@ -84,6 +86,7 @@ class ZigbeeOta : public Component {
   const esp_partition_t *partition_{nullptr};
   esp_ota_handle_t handle_{0};
   uint32_t file_size_{0};
+  ota_blocks_t *blocks_{nullptr};  // which answers continue the data (ota_blocks.h), during a download
   uint32_t header_length_{0};      // OTA file header, from its own length field
   uint32_t element_left_{0};       // bytes left in the current sub-element
   ImageFormat format_{ImageFormat::NONE};  // of the current sub-element
@@ -102,6 +105,7 @@ class ZigbeeOta : public Component {
   uint8_t delta_header_[64];
   uint8_t delta_header_len_{0};
   bool failed_{false};
+  bool file_offset_logged_{false};  // FileOffset unreadable, said once per download
 
   // Shared with the main loop.
   std::atomic<uint32_t> offset_{0};

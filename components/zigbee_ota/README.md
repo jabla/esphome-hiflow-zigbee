@@ -57,6 +57,13 @@ What it does:
 - An offer that arrives before the new image was marked valid counts as the server's answer:
   the image is marked valid and the download starts (the first update after an update used to
   fail once).
+- A block answer that does not continue the data is skipped: a late one that arrives after
+  the answer to the retried request, or one from beyond the data because Zigbee2MQTT dropped a
+  request (it takes one at a time). The library does not check the offset of an answer, so
+  the component keeps track of the requests and moves the library's file offset back when the
+  request for the missing block got lost (`ota_blocks.h`, host test
+  `test/host/test_ota_blocks.c`). More than 32 answers in a row that the requests still in
+  flight do not explain end the download.
 - A download without progress for 60 s is ended: the server answered a block with an error
   (a ZHA reload mid-download does that), and the library stops without telling. The
   component frees the download and resets the upgrade status, so the next offer is taken.

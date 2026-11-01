@@ -7,6 +7,8 @@
 #   test_proto.c         request payloads, paged replies and reassembly
 #   test_session.c       the session state machine against a simulated inverter
 #   test_daylog.c        the day log: standby, new days, restore, recorded days
+#   test_ota_blocks.c    OTA block answers out of place, against a model of the
+#                        Zigbee stack and two OTA servers
 #
 #   make              build both test binaries
 #   make test         build + run both suites (exit 0 only if all pass)
@@ -17,6 +19,7 @@
 #   make test-session run only the session suite (-v on the binary: trace log)
 #   make test-daylog  run only the day log suite; REPLAY=<file> adds a replay of
 #                     recorded days (real readings, not part of the repo)
+#   make test-ota     run only the OTA block suite (-v on the binary: every run)
 #   make clean        remove build products
 #
 # Expected values come from the ground-truth test/vectors.json, reshaped into
@@ -76,6 +79,11 @@ DAYLOG_BIN := test_daylog
 # The same suite built like a board without a display (no day curve).
 DAYLOG_NC_BIN := test_daylog_nocurve
 
+# ---- OTA block bookkeeping (components/zigbee_ota) -----------------
+OTA_DIR := $(ROOT)/components/zigbee_ota
+OTA_SRC := test_ota_blocks.c $(OTA_DIR)/ota_blocks.c
+OTA_BIN := test_ota_blocks
+
 # ---- fake inverter as a library (tools/fake_inverter_ble) ----------
 LIBFAKE     := $(ROOT)/tools/fake_inverter_ble/libfake.so
 LIBFAKE_SRC := $(ROOT)/tools/fake_inverter_ble/shim.c fake_inverter.c \
@@ -85,8 +93,8 @@ LIBFAKE_SRC := $(ROOT)/tools/fake_inverter_ble/shim.c fake_inverter.c \
                $(GEN)/RealDataNew.pb.c $(GEN)/CommCmdPB.pb.c $(GEN)/APPInfomationData.pb.c \
                $(GEN)/CommandPB.pb.c $(GEN)/GetConfig.pb.c
 
-.PHONY: all test test-frame test-pb test-clock test-proto test-session test-daylog libfake clean
-all: $(FRAME_BIN) $(PB_BIN) $(CLOCK_BIN) $(PROTO_BIN) $(SESSION_BIN) $(DAYLOG_BIN)
+.PHONY: all test test-frame test-pb test-clock test-proto test-session test-daylog test-ota libfake clean
+all: $(FRAME_BIN) $(PB_BIN) $(CLOCK_BIN) $(PROTO_BIN) $(SESSION_BIN) $(DAYLOG_BIN) $(OTA_BIN)
 
 $(FRAME_BIN): $(FRAME_SRC) vectors.h
 	$(CC) $(CFLAGS) $(FRAME_CFLAGS) $(FRAME_INCS) -o $@ $(FRAME_SRC) $(FRAME_LIBS)
@@ -102,6 +110,9 @@ $(DAYLOG_BIN): $(DAYLOG_SRC)
 
 $(DAYLOG_NC_BIN): $(DAYLOG_SRC)
 	$(CC) $(CFLAGS) $(STD) -DHIFLOW_DAYLOG_NO_CURVE -I$(CORE) -o $@ $(DAYLOG_SRC) -lm
+
+$(OTA_BIN): $(OTA_SRC) $(OTA_DIR)/ota_blocks.h
+	$(CC) $(CFLAGS) $(STD) -I$(OTA_DIR) -o $@ $(OTA_SRC)
 
 $(PROTO_BIN): $(PROTO_SRC) vectors_proto.h
 	$(CC) $(CFLAGS) $(STD) -I$(CORE) -I$(NANOPB) -I$(GEN) -I. -o $@ $(PROTO_SRC) -lm
@@ -151,8 +162,13 @@ test-daylog: $(DAYLOG_BIN) $(DAYLOG_NC_BIN)
 	@echo "=== day log suite, no day curve ==="
 	@./$(DAYLOG_NC_BIN) $(REPLAY)
 
-test: test-frame test-pb test-clock test-proto test-session test-daylog libfake
+test-ota: $(OTA_BIN)
+	@echo "=== OTA block suite ==="
+	@./$(OTA_BIN)
+
+test: test-frame test-pb test-clock test-proto test-session test-daylog test-ota libfake
 
 clean:
 	rm -f $(FRAME_BIN) $(PB_BIN) $(CLOCK_BIN) $(PROTO_BIN) $(SESSION_BIN) $(DAYLOG_BIN) $(DAYLOG_NC_BIN) $(LIBFAKE) \
+	      $(OTA_BIN) \
 	      vectors.h vectors_pb.h vectors_proto.h

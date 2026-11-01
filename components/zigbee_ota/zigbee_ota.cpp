@@ -303,6 +303,18 @@ void ZigbeeOta::on_progress_(void *message) {
       this->image_written_ = 0;
       this->failed_ = false;
       this->offset_ = 0;
+      // The request record (about half a kilobyte) only lives as long as a
+      // download.
+      free(this->blocks_);
+      this->blocks_ = static_cast<ota_blocks_t *>(malloc(sizeof(ota_blocks_t)));
+      if (this->blocks_ == nullptr) {
+        ESP_LOGE(TAG, "No memory for the download");
+        this->failed_ = true;
+        result = EZB_ZCL_STATUS_ABORT;
+        break;
+      }
+      ota_blocks_start(this->blocks_, this->file_size_, this->block_size_);
+      this->file_offset_logged_ = false;
       this->partition_ = esp_ota_get_next_update_partition(nullptr);
       // Sequential writes erase sector by sector as the data comes, instead of
       // erasing the whole slot up front and stalling the Zigbee task.
@@ -337,25 +349,50 @@ void ZigbeeOta::on_progress_(void *message) {
         result = EZB_ZCL_STATUS_ABORT;
         break;
       }
-      const uint32_t block_offset = msg->in.receiving.file_offset;
-      const uint8_t *data = msg->in.receiving.block;
-      uint32_t len = msg->in.receiving.block_size;
-      const uint32_t expected = this->offset_.load();
-      if (block_offset != expected && block_offset + len <= expected) {
-        // A repeat of data already written: an answer came later than the
-        // stack's retry, and both answers arrived (see BLOCK_RETRY_MS).
-        ESP_LOGW(TAG, "Block at %" PRIu32 " again (expected %" PRIu32 "), skipped", block_offset, expected);
-        this->resync_file_offset_(msg->in.receiving.block_size);
+      if (this->blocks_ == nullptr)  // an answer after the end of the download
         break;
+      const uint32_t block_offset = msg->in.receiving.file_offset;
+      const uint32_t expected = this->blocks_->written;
+      const uint32_t stack_offset = this->file_offset_();
+      if (stack_offset == UINT32_MAX && !this->file_offset_logged_) {
+        ESP_LOGE(TAG, "FileOffset cannot be read: blocks out of place are skipped, never asked for again");
+        this->file_offset_logged_ = true;
       }
-      if (block_offset != expected) {
-        ESP_LOGE(TAG, "Block at %" PRIu32 ", expected %" PRIu32, block_offset, expected);
+      // A repeat (an answer later than the stack's retry, see BLOCK_RETRY_MS)
+      // or a block beyond the data (the server dropped a request) is skipped,
+      // and FileOffset moved where needed (ota_blocks.h).
+      const ota_block_step_t step =
+          ota_blocks_answer(this->blocks_, block_offset, msg->in.receiving.block_size, stack_offset);
+      if (step.give_up) {
+        ESP_LOGE(TAG, "More than %d blocks in a row out of place, download given up at %" PRIu32 " bytes",
+                 OTA_BLOCKS_MAX_MISSES, expected);
         this->failed_ = true;
         result = EZB_ZCL_STATUS_ABORT;
         break;
       }
-      uint32_t pos = block_offset;
-      this->offset_ = block_offset + len;
+      if (step.take == 0) {
+        // An answer to an older request, or one after the end, is expected:
+        // FileOffset moves bring such requests. Only the others are news.
+        if (step.explained) {
+          ESP_LOGD(TAG, "Block at %" PRIu32 " %s (expected %" PRIu32 "), skipped", block_offset,
+                   step.gap ? "ahead" : "again", expected);
+        } else {
+          ESP_LOGW(TAG, "Block at %" PRIu32 " %s (expected %" PRIu32 "), skipped", block_offset,
+                   step.gap ? "ahead" : "again", expected);
+        }
+        if (step.set_offset) {
+          ESP_LOGD(TAG, "FileOffset %" PRIu32 " set to %" PRIu32, stack_offset, step.offset);
+          this->set_file_offset_(step.offset);
+        }
+        break;
+      }
+      if (step.skip > 0)
+        ESP_LOGW(TAG, "Block at %" PRIu32 " overlaps the data (up to %" PRIu32 "), %" PRIu32 " bytes taken",
+                 block_offset, expected, step.take);
+      const uint8_t *data = msg->in.receiving.block + step.skip;
+      uint32_t len = step.take;
+      uint32_t pos = expected;
+      this->offset_ = this->blocks_->written;
 
       while (len > 0) {
         // File header: only its length field matters here, the stack already
@@ -425,8 +462,12 @@ void ZigbeeOta::on_progress_(void *message) {
         data += take;
         len -= take;
       }
-      if (!this->failed_)
-        this->resync_file_offset_(msg->in.receiving.block_size);
+      if (!this->failed_ && step.set_offset) {
+        // Near the end, every download: FileOffset stays behind the data.
+        ESP_LOGD(TAG, "FileOffset %" PRIu32 " set to %" PRIu32 " (data up to %" PRIu32 ")", stack_offset,
+                 step.offset, this->blocks_->written);
+        this->set_file_offset_(step.offset);
+      }
       break;
     }
 
@@ -437,6 +478,8 @@ void ZigbeeOta::on_progress_(void *message) {
       const uint32_t secs = (millis() - this->download_start_ms_) / 1000;
       ESP_LOGW(TAG, "Download complete: %" PRIu32 " bytes in %" PRIu32 " s, image %" PRIu32 " bytes",
                this->offset_.load(), secs, this->image_written_);
+      free(this->blocks_);
+      this->blocks_ = nullptr;
       if (this->failed_ || this->offset_.load() != this->file_size_ || this->element_left_ != 0 ||
           this->finish_image_() != ESP_OK || this->image_written_ == 0) {
         ESP_LOGE(TAG, "Incomplete download");
@@ -448,6 +491,10 @@ void ZigbeeOta::on_progress_(void *message) {
         result = EZB_ZCL_STATUS_INVALID_IMAGE;
         break;
       }
+      // The end of the download left the stack's count a little past the file
+      // size (ota_blocks.h); back to the size, as after a plain download.
+      if (this->file_offset_() != this->file_size_)
+        this->set_file_offset_(this->file_size_);
       // esp_ota_end() checks the app image (magic, segments, SHA-256), which
       // also catches a delta applied to the wrong base.
       esp_err_t err = esp_ota_end(this->handle_);
@@ -525,30 +572,26 @@ void ZigbeeOta::end_download_() {
   this->downloading_ = false;
   this->set_updating_(false);
   this->release_decoders_();
+  free(this->blocks_);
+  this->blocks_ = nullptr;
   if (this->handle_ != 0)
     esp_ota_abort(this->handle_);
   this->handle_ = 0;
 }
 
-// The stack does not check the offset of a block answer: it adds every
-// answer's length to FileOffset, a repeat's too, asks for the next block from
-// there before this callback runs, and ends the download once FileOffset plus
-// an answer's length reaches the image size. After a repeat it runs a block
-// ahead (two requests in flight, the data stays in order); on the answer
-// before the last one that would end the download with the last block still
-// on its way. So when the next answer could end it, FileOffset goes back to
-// the data written. Only one repeat this close to the end still fails; the
-// longer retry time makes even one rare.
-void ZigbeeOta::resync_file_offset_(uint32_t block_len) {
+// FileOffset (attribute 0x0001): the stack's own count of the download, which
+// the component moves (ota_blocks.h). UINT32_MAX when it cannot be read: the
+// data is still placed, FileOffset left alone.
+uint32_t ZigbeeOta::file_offset_() const {
   ezb_zcl_attr_desc_t attr = ezb_zcl_get_attr_desc(this->endpoint_, EZB_ZCL_CLUSTER_ID_OTA_UPGRADE, EZB_ZCL_CLUSTER_CLIENT,
                                                    EZB_ZCL_ATTR_OTA_UPGRADE_FILE_OFFSET_ID, EZB_ZCL_STD_MANUF_CODE);
-  uint32_t stack_offset = 0;
-  if (attr == EZB_INVALID_ZCL_ATTR_DESC || ezb_zcl_attr_desc_get_value(attr, &stack_offset) != EZB_ERR_NONE)
-    return;
-  uint32_t offset = this->offset_.load();
-  if (stack_offset <= offset || stack_offset + block_len < this->file_size_)
-    return;
-  ESP_LOGW(TAG, "FileOffset %" PRIu32 " back to %" PRIu32, stack_offset, offset);
+  uint32_t offset = 0;
+  if (attr == EZB_INVALID_ZCL_ATTR_DESC || ezb_zcl_attr_desc_get_value(attr, &offset) != EZB_ERR_NONE)
+    return UINT32_MAX;
+  return offset;
+}
+
+void ZigbeeOta::set_file_offset_(uint32_t offset) {
   ezb_zcl_set_attr_value(this->endpoint_, EZB_ZCL_CLUSTER_ID_OTA_UPGRADE, EZB_ZCL_CLUSTER_CLIENT,
                          EZB_ZCL_ATTR_OTA_UPGRADE_FILE_OFFSET_ID, EZB_ZCL_STD_MANUF_CODE, &offset, false);
 }

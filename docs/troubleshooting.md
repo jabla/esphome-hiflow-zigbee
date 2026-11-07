@@ -116,8 +116,10 @@ Each point below cost at least one debugging session. Don't undo them casually.
   not supported, but builds a generated definition with all 31 values, their names and units,
   plus the power limit (`hiflow_power_limit_32`, 0-100 %), the on/off switch (`state_34`) and the
   uptime (`bridge_uptime_33`, in s); the chip temperature on endpoint 36 came later and is
-  not tested with z2m. It answers the time read on endpoint 35, and a switch command that
-  cannot reach the inverter goes back to on after two minutes, as with ZHA. Three quirks:
+  not tested with z2m. It answered the time read of older releases on endpoint 35; the time
+  now comes through ESPHome's Zigbee time platform on endpoint 1, not yet tested with z2m. A
+  switch command that cannot reach the inverter goes back to on after two minutes, as with ZHA.
+  Three quirks:
   - Reactive power has no unit. ESPHome's Zigbee unit table has kvar but not var, and ZHA
     shows the same.
   - Configuring the device fails with `TABLE_FULL` after 16 binds, because the ESP Zigbee

@@ -21,6 +21,9 @@
 #ifdef USE_ZIGBEE
 #include "esphome/components/zigbee/zigbee_esp32.h"
 #endif
+#ifdef USE_TIME
+#include "esphome/components/time/real_time_clock.h"
+#endif
 
 namespace esphome {
 namespace hiflow_ble {
@@ -112,16 +115,16 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
     this->slider_zb_ = zb;
     this->slider_endpoint_ = endpoint;
   }
-  /// The network time from the Time cluster on `endpoint` (see hiflow_zigbee_time.h).
-  void set_network_time(zigbee::ZigbeeComponent *zb, uint8_t endpoint) {
-    this->time_zb_ = zb;
-    this->time_endpoint_ = endpoint;
-  }
   /// The inverter's on/off switch on `endpoint` (see hiflow_inverter_switch.h).
   void set_inverter_switch(zigbee::ZigbeeComponent *zb, uint8_t endpoint) {
     this->switch_zb_ = zb;
     this->switch_endpoint_ = endpoint;
   }
+#endif
+#ifdef USE_TIME
+  /// The network time: every sync of `clock` (ESPHome's zigbee time platform)
+  /// goes to the session clock.
+  void set_network_time(time::RealTimeClock *clock) { this->network_time_ = clock; }
 #endif
 
   // --- for an on-board display (see boards/waveshare_c6_lcd147.yaml) ---
@@ -201,7 +204,9 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   void flush_prefs_();
   void poll_slider_(int64_t now);
   void poll_switch_(int64_t now);
-  void poll_network_time_(int64_t now);
+#ifdef USE_TIME
+  void on_network_time_();
+#endif
 
   // --- transport ---
   espbt::ESPBTUUID service_uuid_{};
@@ -272,13 +277,6 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   bool slider_publish_{false};   // slider_set_ still has to reach the attribute
   int64_t next_slider_poll_ms_{0};
 
-  // --- network time ---
-  zigbee::ZigbeeComponent *time_zb_{nullptr};
-  uint8_t time_endpoint_{0};
-  int64_t next_time_request_ms_{0};
-  int64_t time_joined_ms_{0};  // when is_joined() last became true, 0 = not joined
-  int last_time_status_{-1};
-
   // --- inverter on/off switch ---
   /// The state the inverter was last switched to (the inverter reports none).
   struct SwitchPref {
@@ -294,6 +292,10 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   int switch_seen_{-1};          // the value read last, for the quiet period
   int64_t switch_seen_ms_{0};
   int64_t next_switch_poll_ms_{0};
+#endif
+
+#ifdef USE_TIME
+  time::RealTimeClock *network_time_{nullptr};
 #endif
 };
 

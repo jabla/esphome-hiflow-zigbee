@@ -14,11 +14,11 @@ flat, ESPHome-loadable copies in this directory are produced by
 import os
 
 import esphome.codegen as cg
-from esphome.components import ble_client, esp32_ble_tracker
+from esphome.components import ble_client, esp32_ble_tracker, time as time_
 from esphome.components.esp32 import add_idf_sdkconfig_option
 from esphome.components.zigbee.const import ZigbeeComponent
 import esphome.config_validation as cv
-from esphome.const import CONF_ID, CONF_MAC_ADDRESS, CONF_UPDATE_INTERVAL
+from esphome.const import CONF_ID, CONF_MAC_ADDRESS, CONF_TIME_ID, CONF_UPDATE_INTERVAL
 from esphome.core import CORE, TimePeriod
 from esphome.coroutine import CoroPriority, coroutine_with_priority
 import esphome.final_validate as fv
@@ -52,8 +52,6 @@ CONF_BTU_TASK_STACK_SIZE = "btu_task_stack_size"
 POWER_LIMIT_ENDPOINT = 32
 # The inverter's on/off switch. 33 is the board's uptime sensor in hiflow-zb.yaml.
 INVERTER_SWITCH_ENDPOINT = 34
-# The Time cluster that reads the network time from the coordinator.
-TIME_ENDPOINT = 35
 
 # GATT layout of the HiFlow Pro (see test/ref/hiflow_ble/const.py).
 SERVICE_UUID = "0000e0ff-3c17-d293-8e48-14fe2e4da212"
@@ -118,11 +116,16 @@ CONFIG_SCHEMA = cv.Schema(
         # A switch that turns the inverter's output on and off, as a Zigbee
         # On/Off cluster on endpoint 34. On by default with Zigbee.
         cv.Optional(CONF_INVERTER_CONTROL): cv.boolean,
-        # Read the time from the coordinator (ZHA and Zigbee2MQTT answer from
-        # the host's clock) through a Time client cluster on endpoint 35, so
-        # the clock is right even after a power cut at night. On by default
-        # with Zigbee.
-        cv.Optional(CONF_NETWORK_TIME): cv.boolean,
+        # The network time: every sync of this time component sets the
+        # bridge's clock, so it is right even after a power cut at night.
+        # hiflow-zb.yaml points it at ESPHome's zigbee time platform, which
+        # reads the coordinator's clock (ZHA and Zigbee2MQTT answer from the
+        # host's clock).
+        cv.Optional(CONF_TIME_ID): cv.use_id(time_.RealTimeClock),
+        cv.Optional(CONF_NETWORK_TIME): cv.invalid(
+            "network_time was replaced by time_id: add a `time:` entry with "
+            "`platform: zigbee` and point time_id at it (see hiflow-zb.yaml)"
+        ),
         # For testing the display at night: fills today's day log with a made-up
         # sunny day at boot, never saved to flash. Not for production.
         cv.Optional(CONF_DEMO_DAY, default=False): cv.boolean,
@@ -141,7 +144,6 @@ def _reserve_control_endpoints(config):
     # has no endpoint to put them on. Set explicitly, they still need Zigbee.
     config.setdefault(CONF_POWER_LIMIT, CONF_ZIGBEE_ID in config)
     config.setdefault(CONF_INVERTER_CONTROL, CONF_ZIGBEE_ID in config)
-    config.setdefault(CONF_NETWORK_TIME, CONF_ZIGBEE_ID in config)
     # Registered with ESPHome's Zigbee component like a sensor endpoint, so the
     # number is taken and the endpoint (basic and identify cluster) is created
     # by its codegen. The control's own cluster is added in to_code.
@@ -151,7 +153,6 @@ def _reserve_control_endpoints(config):
     for option, endpoint in (
         (CONF_POWER_LIMIT, POWER_LIMIT_ENDPOINT),
         (CONF_INVERTER_CONTROL, INVERTER_SWITCH_ENDPOINT),
-        (CONF_NETWORK_TIME, TIME_ENDPOINT),
     ):
         if not config[option]:
             continue
@@ -309,10 +310,9 @@ async def to_code(config):
     if CONF_BTU_TASK_STACK_SIZE in config:
         CORE.add_job(_set_btu_task_stack_size, config[CONF_BTU_TASK_STACK_SIZE])
 
-    if config[CONF_NETWORK_TIME]:
-        zb = await cg.get_variable(config[CONF_ZIGBEE_ID])
-        cg.add(var.set_network_time(zb, TIME_ENDPOINT))
-        CORE.add_job(_add_time_cluster, zb)
+    if CONF_TIME_ID in config:
+        clock = await cg.get_variable(config[CONF_TIME_ID])
+        cg.add(var.set_network_time(clock))
 
 
 # The clusters go onto the endpoints that the Zigbee codegen creates, so they have
@@ -326,11 +326,6 @@ async def _add_power_limit_cluster(zb):
 @coroutine_with_priority(CoroPriority.LATE)
 async def _add_inverter_switch_cluster(zb):
     cg.add(hiflow_ble_ns.add_inverter_switch_cluster(zb, INVERTER_SWITCH_ENDPOINT))
-
-
-@coroutine_with_priority(CoroPriority.LATE)
-async def _add_time_cluster(zb):
-    cg.add(hiflow_ble_ns.add_time_cluster(zb, TIME_ENDPOINT))
 
 
 # After esp32_ble_tracker's to_code, which sets its own value.

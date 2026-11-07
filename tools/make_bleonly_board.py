@@ -13,12 +13,14 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parent.parent / "hiflow-zb.yaml"
 DST = SRC.with_name("hiflow-zb-bleonly.yaml")
 
-ZIGBEE_BLOCKS = ("zigbee:", "zigbee_ota:", "zigbee_power:")
+# The bridge's time: block only holds the zigbee time platform.
+ZIGBEE_BLOCKS = ("zigbee:", "zigbee_ota:", "zigbee_power:", "time:")
 # Blocks a board file may add to as well (the Waveshare BOOT button lives in
 # zigbee_power): left as `!remove`, which also drops what a package brings in.
 REMOVED_BLOCKS = ("zigbee_power:",)
-# Sensor options that are only valid while the zigbee component is loaded.
-ZIGBEE_ONLY_OPTIONS = ("report:", "endpoint:")
+# Options that are only valid while the zigbee component is loaded: the
+# sensors' report and endpoint, hiflow_ble's network time.
+ZIGBEE_ONLY_OPTIONS = ("report:", "endpoint:", "time_id:")
 # A list entry that reads zigbee_power goes with it.
 ZIGBEE_POWER_REF = "id(zb_power)"
 

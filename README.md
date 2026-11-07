@@ -124,14 +124,14 @@ into the folder that `zha: custom_quirks_path:` points to and restart Home Assis
 
 ## Network time
 
-The bridge asks the Zigbee coordinator for the time, through a Time client cluster on endpoint 35:
-once after joining, then twice a day. It keeps the bridge's clock (display, day curve) right even
-after a power cut at night and takes back what that clock gains in light sleep (tens of seconds a
-day). A time more than five minutes off the bridge's clock is taken only when the inverter's
-time agrees: a coordinator whose host lost its own clock cannot set the bridge back by hours.
-Without a network time the inverter's time sets the bridge's clock. The inverter keeps its own
-clock and drops the link on a login about a minute off it, so every request carries the
-inverter's own time.
+The bridge asks the Zigbee coordinator for the time through ESPHome's Zigbee time platform (Time
+cluster on endpoint 1): right after joining and 30 s later, then every 15 minutes. It keeps the
+bridge's clock (display, day curve) right even after a power cut at night and takes back what that
+clock gains in light sleep (tens of seconds a day). A time more than five minutes off the bridge's
+clock is taken only when the inverter's time agrees: a coordinator whose host lost its own clock
+cannot set the bridge back by hours. Without a network time the inverter's time sets the bridge's
+clock. The inverter keeps its own clock and drops the link on a login about a minute off it, so
+every request carries the inverter's own time.
 
 ## Low power
 

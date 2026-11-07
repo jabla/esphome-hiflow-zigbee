@@ -1,7 +1,6 @@
 #include "hiflow_ble.h"
 #include "hiflow_inverter_switch.h"
 #include "hiflow_power_limit.h"
-#include "hiflow_zigbee_time.h"
 
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
@@ -40,10 +39,6 @@ static const int64_t SLIDER_POLL_MS = 500;            // present_value is polled
 static const int64_t SLIDER_QUIET_MS = 5000;          // a new value must stand this long
 static const int64_t IDLE_TIME_SAVE_INTERVAL_MS = 1800000;  // the clock, while no link is up
 static const char *const DAYLOG_PREF_NAME = "hiflow_daylog_v2";
-static const int64_t TIME_REQUEST_INTERVAL_MS = 43200000;  // the network time, twice a day
-static const int64_t TIME_RETRY_MS = 600000;               // after a failed request
-static const int64_t TIME_BUSY_RETRY_MS = 5000;            // the Zigbee stack was busy
-static const int64_t TIME_JOIN_SETTLE_MS = 30000;           // after a (re)join, before the first request
 static const int64_t SWITCH_QUIET_MS = 1000;          // merges a quick off-on into one command
 static const int64_t SLOW_LINK_CHECK_MS = 10000;      // read the connection interval back after
 static const uint8_t SLOW_LINK_TRIES = 3;
@@ -108,6 +103,10 @@ void HiflowBle::setup() {
       this->switch_state_ = rec.on != 0;
     this->switch_publish_ = true;
   }
+#endif
+#ifdef USE_TIME
+  if (this->network_time_ != nullptr)
+    this->network_time_->add_on_time_sync_callback([this]() { this->on_network_time_(); });
 #endif
 }
 
@@ -236,7 +235,6 @@ void HiflowBle::loop() {
 #endif
   this->poll_slider_(now);
   this->poll_switch_(now);
-  this->poll_network_time_(now);
   if (now >= this->next_daylog_check_ms_) {
     this->next_daylog_check_ms_ = now + 1000;
     int facts = 0;
@@ -354,8 +352,10 @@ void HiflowBle::dump_config() {
     ESP_LOGCONFIG(TAG, "  Inverter switch: Zigbee endpoint %u, last state %s", this->switch_endpoint_,
                   this->switch_state_ ? "on" : "off");
   }
-  if (this->time_zb_ != nullptr) {
-    ESP_LOGCONFIG(TAG, "  Network time: Zigbee endpoint %u", this->time_endpoint_);
+#endif
+#ifdef USE_TIME
+  if (this->network_time_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "  Network time: from the time component");
   }
 #endif
 }
@@ -974,50 +974,15 @@ void HiflowBle::poll_switch_(int64_t now) {
 // network time
 // ---------------------------------------------------------------------------
 
-// Asks the network's time server once joined, then twice a day (every 10
-// minutes while it fails), and hands a received time to the session clock.
-void HiflowBle::poll_network_time_(int64_t now) {
-#ifdef USE_ZIGBEE
-  if (this->time_zb_ == nullptr)
-    return;
-  int status = -1;
-  int64_t network_time = take_network_time(&status);
-  // The session logs whether it took the time and by how much it moved the clock.
-  if (network_time > 0)
-    hiflow_session_observe_time(&this->session_, now, network_time);
-  if (status != this->last_time_status_) {
-    this->last_time_status_ = status;
-    if (status != NETWORK_TIME_OK && status != NETWORK_TIME_NONE) {
-      ESP_LOGW(TAG, "no network time (%s), asking again in 10 minutes", network_time_status_str(status));
-      this->next_time_request_ms_ = now + TIME_RETRY_MS;
-    }
-  }
-  // Right after a boot or join the network is not ready yet (the device
-  // announce is still pending, a new device is still being interviewed), so
-  // a request then only times out.
-  if (!this->time_zb_->is_joined()) {
-    this->time_joined_ms_ = 0;
-    return;
-  }
-  if (this->time_joined_ms_ == 0)
-    this->time_joined_ms_ = now;
-  if (now - this->time_joined_ms_ < TIME_JOIN_SETTLE_MS || now < this->next_time_request_ms_)
-    return;
-  switch (request_network_time(this->time_endpoint_)) {
-    case TIME_REQUEST_SENT:
-      ESP_LOGD(TAG, "asking the network for the time");
-      this->next_time_request_ms_ = now + TIME_REQUEST_INTERVAL_MS;
-      this->last_time_status_ = -1;
-      break;
-    case TIME_REQUEST_BUSY:
-      this->next_time_request_ms_ = now + TIME_BUSY_RETRY_MS;
-      break;
-    case TIME_REQUEST_FAILED:
-      this->next_time_request_ms_ = now + TIME_RETRY_MS;
-      break;
-  }
-#endif
+#ifdef USE_TIME
+// Every sync of the time component (ESPHome's zigbee time platform reads the
+// coordinator's clock) goes to the session clock, which decides whether to
+// take it and logs by how much it moved.
+void HiflowBle::on_network_time_() {
+  time_t now = this->network_time_->timestamp_now();
+  hiflow_session_observe_time(&this->session_, this->now_ms_(), static_cast<int64_t>(now));
 }
+#endif
 
 void HiflowBle::session_log(int level, const char *msg) {
   switch (level) {

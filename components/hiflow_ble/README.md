@@ -159,8 +159,8 @@ keeps the old value. A link lost while the inverter still feeds in, or after a
 boot before the first reading, changes nothing; so a dusk whose last reading
 was 1 W or more keeps that value until the morning.
 
-`power_limit`, `inverter_control` and `network_time` add Zigbee endpoints.
-All three default to `true` wherever the `zigbee` component is loaded
+`power_limit` and `inverter_control` add Zigbee endpoints.
+Both default to `true` wherever the `zigbee` component is loaded
 (`zigbee_id:` picks one if there are several), so the BLE-only build leaves
 them out. Set one to `false` to leave its endpoint out, e.g. when your own
 config already uses the number.
@@ -193,8 +193,12 @@ endpoint 34.
 * Off stops the feed-in within seconds and counts in the inverter's daily
   warning counter.
 
-`network_time` reads the time from the coordinator through a Time client
-cluster on endpoint 35, so the clock is right even after a power cut at night.
+`time_id` names a time component whose syncs set the bridge's clock, so it
+is right even after a power cut at night. `hiflow-zb.yaml` points it at
+ESPHome's Zigbee time platform (`time:` with `platform: zigbee`), which reads
+the coordinator's time right after joining and every 15 minutes (its
+`update_interval`); its `on_join` asks once more 30 s after the join. Older
+configs with `network_time:` have to switch to it.
 
 ### Power saving
 
@@ -252,11 +256,12 @@ handshake, and keeps it in RAM only.
 
 * **Time**: the session runs a synthetic clock (`hiflow_clock`: the build time
   or the last time saved in flash, plus the uptime). In light sleep the uptime
-  gains tens of seconds a day. With `network_time`, the coordinator's time is
-  offered once after the join and then twice a day (every 10 minutes while the
-  request fails). It sets the clock in either direction; a step of more than
-  five minutes needs the inverter's time to agree with it. Before there is
-  one, a step forward is taken too: after a power cut the clock restarts behind.
+  gains tens of seconds a day. With `time_id`, every sync of that time
+  component (the coordinator's time, right after the join, 30 s later and
+  every 15 minutes) is offered to the session. It sets the clock in either
+  direction; a step of more than five minutes needs the inverter's time to
+  agree with it. Before there is one, a step forward is taken too: after a
+  power cut the clock restarts behind.
   Without a network time in the last day, the inverter's time sets the clock:
   forward by any amount, back by at most five minutes. The clock counts as set
   (the display shows it, the day curve uses it) once a time arrived that set

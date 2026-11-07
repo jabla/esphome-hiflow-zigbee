@@ -42,7 +42,7 @@ class ZigbeeOta : public Component {
   void loop() override;
   void dump_config() override;
   // After ZigbeeComponent::setup(), which registers ESPHome's action handler:
-  // ours replaces it (the stack keeps one) and forwards nothing it needs.
+  // ours replaces it (the stack keeps one) and passes attribute writes on.
   float get_setup_priority() const override { return setup_priority::LATE; }
 
  protected:

@@ -19,6 +19,15 @@
 #include "esphome/core/log.h"
 
 namespace esphome {
+
+namespace zigbee {
+// Queues an attribute write for ZigbeeComponent::loop(), which hands it to the
+// entity behind the attribute (a number or a switch). ESPHome's own action
+// handler calls it; zigbee_esp32.cpp instantiates it for (message info,
+// attribute), and zigbee_esp32.h only names it as a friend.
+template<typename... Args> void enqueue_zb_event(Args... args);
+}  // namespace zigbee
+
 namespace zigbee_ota {
 
 static const char *const TAG = "zigbee_ota";
@@ -134,7 +143,8 @@ void ZigbeeOta::setup() {
     ESP_LOGW(TAG, "New image on %s, waiting for the OTA server before marking it valid", running->label);
   }
 
-  // The stack keeps a single action handler; ESPHome's only logs.
+  // The stack keeps a single action handler, so ours replaces ESPHome's and
+  // passes attribute writes on (see action_handler_).
   ezb_zcl_core_action_handler_register(ZigbeeOta::action_handler_);
 
   this->zb_->add_on_start_callback([this]() {
@@ -258,6 +268,14 @@ void ZigbeeOta::action_handler_(ezb_zcl_core_action_callback_id_t callback_id, v
     case EZB_ZCL_CORE_OTA_UPGRADE_QUERY_NEXT_IMAGE_RSP_CB_ID:
       global_ota->on_query_response_(message);
       break;
+    case EZB_ZCL_CORE_SET_ATTR_VALUE_CB_ID: {
+      // A write from the coordinator (Write Attributes, On/Off commands):
+      // queued for ESPHome's entities, as its own handler does.
+      auto *msg = static_cast<ezb_zcl_set_attr_value_message_t *>(message);
+      if (msg != nullptr && msg->info.status == EZB_ZCL_STATUS_SUCCESS)
+        zigbee::enqueue_zb_event(msg->info, msg->in.attribute);
+      break;
+    }
     default:
       break;
   }

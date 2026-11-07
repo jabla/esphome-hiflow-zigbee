@@ -100,10 +100,10 @@ Each point below cost at least one debugging session. Don't undo them casually.
   the number entity used its defaults. Reloading the ZHA integration once (Settings → Devices &
   services → ZHA → Reload) fixed it: 0-100 %, step 10, named "HiFlow Power Limit". The values
   on the device were right all along.
-- **Power limit: how writes happen.** ESPHome's Zigbee component on the ESP32 has no writable
-  entities, so the bridge builds the Analog Output cluster with the esp-zigbee-lib API and polls
-  its present value twice a second. A write from the coordinator is taken as a request once it
-  has stood for 5 s; it goes to the inverter between two data polls (command 0xA305, action 8)
+- **Power limit: how writes happen.** The slider is a number entity; ESPHome's Zigbee component
+  hands every write of the Analog Output's present value to it. A write from the coordinator is
+  taken as a request once it has stood for 5 s; it goes to the inverter between two data polls
+  (command 0xA305, action 8)
   and is read back with the config request (0xA309). The slider only ever shows the value read
   from the inverter. The session log shows each step (`power limit: writing 90 %`, `power limit
   is 90.0 %`) at INFO, and a write of 0 % at WARN.

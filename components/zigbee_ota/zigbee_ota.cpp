@@ -90,8 +90,8 @@ namespace zigbee {
 // ZigbeeComponent keeps its device descriptor protected and is final. The
 // public add_attr<T>() forwards to the member template add_attr_<T>(); an
 // explicit specialization of that member for our own tag type is a member
-// function and may use dev_desc_ (same trick as hiflow_ble's power limit). If
-// ESPHome changes the signature, this stops compiling instead of misbehaving.
+// function and may use dev_desc_. If ESPHome changes the signature, this stops
+// compiling instead of misbehaving.
 template<>
 void ZigbeeComponent::add_attr_<zigbee_ota::OtaClientCluster>(ZigbeeAttribute * /*attr*/, uint8_t endpoint_id,
                                                                uint16_t /*cluster_id*/, uint8_t /*role*/,

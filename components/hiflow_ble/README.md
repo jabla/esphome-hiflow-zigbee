@@ -159,9 +159,9 @@ keeps the old value. A link lost while the inverter still feeds in, or after a
 boot before the first reading, changes nothing; so a dusk whose last reading
 was 1 W or more keeps that value until the morning.
 
-`power_limit` and `inverter_control` add Zigbee endpoints.
-Both default to `true` wherever the `zigbee` component is loaded
-(`zigbee_id:` picks one if there are several), so the BLE-only build leaves
+`power_limit` and `inverter_control` add a number and a switch entity, which
+ESPHome's Zigbee component puts on endpoints of their own. Both default to
+`true` wherever the `zigbee` component is loaded, so the BLE-only build leaves
 them out. Set one to `false` to leave its endpoint out, e.g. when your own
 config already uses the number.
 
@@ -180,10 +180,11 @@ config already uses the number.
   the slider returns to the inverter's value, with or without a link (at
   night too). Before the first read since the boot that is the last value
   read, which the inverter keeps over the night, or empty if there is none
-  (Zigbee2MQTT then keeps showing the value it had).
+  (Zigbee2MQTT then keeps showing the value it had). A boot starts the slider
+  at that value as well.
 
 `inverter_control` is the on/off switch: a Zigbee On/Off cluster on
-endpoint 34.
+endpoint 34. ZHA shows it as a switch entity, Zigbee2MQTT as `state_34`.
 
 * The inverter reports no on/off state. The switch shows the state the
   inverter last acknowledged, and the bridge keeps it in flash across reboots.

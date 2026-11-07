@@ -1,6 +1,4 @@
 #include "hiflow_ble.h"
-#include "hiflow_inverter_switch.h"
-#include "hiflow_power_limit.h"
 
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
@@ -35,8 +33,7 @@ static const int64_t STATUS_REFRESH_MS = 300000;      // republish the status
 static const int64_t DARK_ZERO_RETRY_MS = 330000;     // longer than a 5-minute throttle
 static const uint8_t DARK_ZERO_TRIES = 3;             // see publish_dark_zeros_()
 static const int64_t LINK_UP_FALLBACK_MS = 3000;      // if no CCCD write is confirmed
-static const int64_t SLIDER_POLL_MS = 500;            // present_value is polled this often
-static const int64_t SLIDER_QUIET_MS = 5000;          // a new value must stand this long
+static const int64_t SLIDER_QUIET_MS = 5000;          // a new slider value must stand this long
 static const int64_t IDLE_TIME_SAVE_INTERVAL_MS = 1800000;  // the clock, while no link is up
 static const char *const DAYLOG_PREF_NAME = "hiflow_daylog_v2";
 static const int64_t SWITCH_QUIET_MS = 1000;          // merges a quick off-on into one command
@@ -93,15 +90,22 @@ void HiflowBle::setup() {
   LimitPref limit{};
   if (this->limit_pref_.load(&limit) && limit.magic == LIMIT_PREF_MAGIC && limit.tenths >= 0 && limit.tenths <= 1000)
     this->last_limit_tenths_ = limit.tenths;
-#ifdef USE_ZIGBEE
-  if (this->switch_zb_ != nullptr) {
+#ifdef USE_NUMBER
+  // The last limit read, which the inverter keeps over the night, or empty
+  // when none was ever read. A value the bridge publishes itself never comes
+  // back as a request.
+  if (this->power_limit_ != nullptr)
+    this->power_limit_->publish_state(this->last_power_limit_percent());
+#endif
+#ifdef USE_SWITCH
+  if (this->inverter_switch_ != nullptr) {
     // The switch shows the state the inverter was last switched to; nothing
     // is sent to the inverter for it.
     SwitchPref rec{};
     this->switch_pref_ = global_preferences->make_preference<SwitchPref>(fnv1_hash(SWITCH_PREF_NAME));
     if (this->switch_pref_.load(&rec) && rec.magic == SWITCH_PREF_MAGIC)
       this->switch_state_ = rec.on != 0;
-    this->switch_publish_ = true;
+    this->inverter_switch_->publish_state(this->switch_state_);
   }
 #endif
 #ifdef USE_TIME
@@ -168,9 +172,11 @@ void HiflowBle::start_session_() {
   cfg.std_offset = this->std_offset_;
   cfg.eu_dst = this->eu_dst_ ? 1 : 0;
   cfg.poll_interval_ms = this->poll_interval_ms_;
-#ifdef USE_ZIGBEE
-  cfg.power_limit = this->slider_zb_ != nullptr ? 1 : 0;
-  cfg.inverter_control = this->switch_zb_ != nullptr ? 1 : 0;
+#ifdef USE_NUMBER
+  cfg.power_limit = this->power_limit_ != nullptr ? 1 : 0;
+#endif
+#ifdef USE_SWITCH
+  cfg.inverter_control = this->inverter_switch_ != nullptr ? 1 : 0;
 #endif
 
   // No session key here (cfg.have_enc_rand stays 0): the inverter rotates it,
@@ -233,8 +239,6 @@ void HiflowBle::loop() {
 #ifdef USE_ZIGBEE_POWER
   this->zigbee_radio_tick_(now);
 #endif
-  this->poll_slider_(now);
-  this->poll_switch_(now);
   if (now >= this->next_daylog_check_ms_) {
     this->next_daylog_check_ms_ = now + 1000;
     int facts = 0;
@@ -344,13 +348,14 @@ void HiflowBle::dump_config() {
   if (this->night_test_) {
     ESP_LOGW(TAG, "  night_test: every lost link starts night mode (bench only)");
   }
-#ifdef USE_ZIGBEE
-  if (this->slider_zb_ != nullptr) {
-    ESP_LOGCONFIG(TAG, "  Power limit slider: Zigbee endpoint %u", this->slider_endpoint_);
+#ifdef USE_NUMBER
+  if (this->power_limit_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "  Power limit slider: on");
   }
-  if (this->switch_zb_ != nullptr) {
-    ESP_LOGCONFIG(TAG, "  Inverter switch: Zigbee endpoint %u, last state %s", this->switch_endpoint_,
-                  this->switch_state_ ? "on" : "off");
+#endif
+#ifdef USE_SWITCH
+  if (this->inverter_switch_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "  Inverter switch: last state %s", this->switch_state_ ? "on" : "off");
   }
 #endif
 #ifdef USE_TIME
@@ -803,17 +808,15 @@ void HiflowBle::session_on_power_limit(int32_t tenths) {
     this->last_limit_tenths_ = tenths;
     this->limit_save_due_ = true;
   }
-#ifdef USE_ZIGBEE
-  if (this->slider_zb_ == nullptr)
+#ifdef USE_NUMBER
+  if (this->power_limit_ == nullptr)
     return;
   // -1: a request was dropped before the limit was read since the boot. The
   // slider goes back to the last limit read, which the inverter keeps over the
-  // night, or to empty when none was ever read. A value the bridge sets itself
-  // is never taken as a request.
+  // night, or to empty when none was ever read.
   if (tenths < 0)
     tenths = this->last_limit_tenths_;
-  this->slider_set_ = tenths < 0 ? NAN : static_cast<float>(tenths) / 10.0f;
-  this->slider_publish_ = true;
+  this->power_limit_->publish_state(tenths < 0 ? NAN : static_cast<float>(tenths) / 10.0f);
 #endif
 }
 
@@ -821,49 +824,27 @@ void HiflowBle::session_on_power_limit(int32_t tenths) {
 // power limit slider
 // ---------------------------------------------------------------------------
 
-// A write from the coordinator lands in present_value without telling us, so
-// the attribute is polled. A value that differs from the one we set ourselves
-// is a user change; it goes to the session once it has stood for
-// SLIDER_QUIET_MS, so dragging the slider costs one write at most. Nothing is
-// ever requested on boot or on a (re)join: present_value starts as NaN and
-// only the session's readback fills it.
-void HiflowBle::poll_slider_(int64_t now) {
-#ifdef USE_ZIGBEE
-  if (this->slider_zb_ == nullptr || !this->slider_zb_->is_started() || now < this->next_slider_poll_ms_)
-    return;
-  this->next_slider_poll_ms_ = now + SLIDER_POLL_MS;
-
-  if (this->slider_publish_ && this->slider_zb_->is_joined()) {
-    if (write_power_limit_attr(this->slider_zb_, this->slider_endpoint_, this->slider_set_)) {
-      this->slider_publish_ = false;
-      this->slider_seen_ = this->slider_set_;
+#ifdef USE_NUMBER
+// A write from the coordinator, through ESPHome's Zigbee component. It goes to
+// the session once it has stood for SLIDER_QUIET_MS (a newer one restarts the
+// wait), so dragging the slider costs one write at most. The slider keeps the
+// value until the session answers: its readback, or the unchanged value when
+// nothing needs writing, replaces it. Nothing is ever requested on boot or on
+// a (re)join, only on a write.
+void HiflowBle::power_limit_control(float value) {
+  ESP_LOGD(TAG, "slider moved to %.1f %%", value);
+  this->set_timeout("power_limit", SLIDER_QUIET_MS, [this, value]() {
+    const int32_t percent =
+        this->session_started_ ? hiflow_session_request_power_limit(&this->session_, this->now_ms_(), value) : -1;
+    if (percent < 0) {
+      // Not taken, so no answer comes: back to the last limit read.
+      this->power_limit_->publish_state(this->last_power_limit_percent());
+      return;
     }
-    return;
-  }
-
-  float value = NAN;
-  if (!read_power_limit_attr(this->slider_endpoint_, &value) || std::isnan(value))
-    return;
-  if (value == this->slider_set_ || this->slider_publish_) {
-    this->slider_seen_ = value;
-    return;
-  }
-  if (value != this->slider_seen_) {
-    ESP_LOGD(TAG, "slider moved to %.1f %%", value);
-    this->slider_seen_ = value;
-    this->slider_seen_ms_ = now;
-    return;
-  }
-  if (now - this->slider_seen_ms_ < SLIDER_QUIET_MS)
-    return;
-
-  int32_t percent = hiflow_session_request_power_limit(&this->session_, now, value);
-  ESP_LOGI(TAG, "slider set to %.1f %%, requesting %d %%", value, static_cast<int>(percent));
-  // Until the session answers, the request counts as handled; the readback
-  // (or the unchanged value, if nothing is written) replaces it.
-  this->slider_set_ = value;
-#endif
+    ESP_LOGI(TAG, "slider set to %.1f %%, requesting %d %%", value, static_cast<int>(percent));
+  });
 }
+#endif
 
 // ---------------------------------------------------------------------------
 // display accessors
@@ -878,8 +859,8 @@ int HiflowBle::retry_in_s() const {
 }
 
 int HiflowBle::inverter_switch_state() const {
-#ifdef USE_ZIGBEE
-  if (this->switch_zb_ != nullptr)
+#ifdef USE_SWITCH
+  if (this->inverter_switch_ != nullptr)
     return this->switch_state_ ? 1 : 0;
 #endif
   return -1;
@@ -906,10 +887,10 @@ int64_t HiflowBle::local_time() const {
 // ---------------------------------------------------------------------------
 
 // The session reports every request's outcome. A confirmed state is kept and
-// saved; otherwise the switch goes back to the state it had.
+// saved; either way the switch shows the confirmed state again.
 void HiflowBle::session_on_inverter_power(bool on, bool confirmed) {
-#ifdef USE_ZIGBEE
-  if (this->switch_zb_ == nullptr)
+#ifdef USE_SWITCH
+  if (this->inverter_switch_ == nullptr)
     return;
   this->switch_pending_ = false;
   if (confirmed && on != this->switch_state_) {
@@ -923,52 +904,38 @@ void HiflowBle::session_on_inverter_power(bool on, bool confirmed) {
   if (!confirmed)
     ESP_LOGW(TAG, "the inverter was not switched %s, the switch goes back to %s", on ? "on" : "off",
              this->switch_state_ ? "on" : "off");
-  this->switch_publish_ = true;
+  this->inverter_switch_->publish_state(this->switch_state_);
 #endif
 }
 
-// Same scheme as the slider: the attribute is polled, a value that differs
-// from the confirmed state is a user change, and it goes to the session once
-// it has stood for SWITCH_QUIET_MS. Nothing is ever sent on boot or on a
-// (re)join: only a change of the attribute sends a command.
-void HiflowBle::poll_switch_(int64_t now) {
-#ifdef USE_ZIGBEE
-  if (this->switch_zb_ == nullptr || !this->switch_zb_->is_started() || now < this->next_switch_poll_ms_)
-    return;
-  this->next_switch_poll_ms_ = now + SLIDER_POLL_MS;
+#ifdef USE_SWITCH
+// On, Off or Toggle from the coordinator, through ESPHome's Zigbee component.
+// The switch shows the new state at once; publishing it is also what lets the
+// state go back later (the switch publishes a state only when it changes). The
+// request goes to the session once the state has stood for SWITCH_QUIET_MS.
+// Nothing is ever sent on boot or on a (re)join, only on a command.
+void HiflowBle::inverter_switch_control(bool on) {
+  ESP_LOGD(TAG, "switch set to %s", on ? "on" : "off");
+  this->inverter_switch_->publish_state(on);
+  this->set_timeout("inverter_switch", SWITCH_QUIET_MS, [this]() { this->request_inverter_power_(); });
+}
 
-  if (this->switch_publish_ && this->switch_zb_->is_joined()) {
-    if (write_inverter_switch_attr(this->switch_zb_, this->switch_endpoint_, this->switch_state_)) {
-      this->switch_publish_ = false;
-      this->switch_seen_ = this->switch_state_;
-    }
+void HiflowBle::request_inverter_power_() {
+  const bool on = this->inverter_switch_->state;
+  // While a request is out, its answer puts the confirmed state back.
+  if (this->switch_pending_ || !this->session_started_ || on == this->switch_state_) {
+    if (!this->switch_pending_)
+      this->inverter_switch_->publish_state(this->switch_state_);
     return;
   }
-
-  bool on = true;
-  if (this->switch_pending_ || !read_inverter_switch_attr(this->switch_endpoint_, &on))
-    return;
-  if (on == this->switch_state_ || this->switch_publish_) {
-    this->switch_seen_ = on;
-    return;
-  }
-  if (static_cast<int>(on) != this->switch_seen_) {
-    ESP_LOGD(TAG, "switch set to %s", on ? "on" : "off");
-    this->switch_seen_ = on;
-    this->switch_seen_ms_ = now;
-    return;
-  }
-  if (now - this->switch_seen_ms_ < SWITCH_QUIET_MS)
-    return;
-
-  if (hiflow_session_request_inverter_power(&this->session_, now, on ? 1 : 0) == 0) {
+  if (hiflow_session_request_inverter_power(&this->session_, this->now_ms_(), on ? 1 : 0) == 0) {
     ESP_LOGI(TAG, "switch set to %s, requesting it from the inverter", on ? "on" : "off");
     this->switch_pending_ = true;
   } else {
-    this->switch_publish_ = true;
+    this->inverter_switch_->publish_state(this->switch_state_);
   }
-#endif
 }
+#endif
 
 // ---------------------------------------------------------------------------
 // network time

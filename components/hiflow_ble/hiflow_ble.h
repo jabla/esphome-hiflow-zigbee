@@ -18,8 +18,11 @@
 #include "hiflow_daylog.h"
 #include "hiflow_session.h"
 
-#ifdef USE_ZIGBEE
-#include "esphome/components/zigbee/zigbee_esp32.h"
+#ifdef USE_NUMBER
+#include "esphome/components/number/number.h"
+#endif
+#ifdef USE_SWITCH
+#include "esphome/components/switch/switch.h"
 #endif
 #ifdef USE_TIME
 #include "esphome/components/time/real_time_clock.h"
@@ -29,6 +32,9 @@ namespace esphome {
 namespace hiflow_ble {
 
 namespace espbt = esphome::esp32_ble_tracker;
+
+class HiflowPowerLimit;
+class HiflowInverterSwitch;
 
 /// Which measurement a configured sensor entity maps to.
 /// Keep in sync with the SENSOR_TYPES table in sensor/__init__.py.
@@ -109,17 +115,17 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   void set_tx_uuid16(uint16_t uuid) { this->tx_uuid_ = espbt::ESPBTUUID::from_uint16(uuid); }
   void set_rx_uuid16(uint16_t uuid) { this->rx_uuid_ = espbt::ESPBTUUID::from_uint16(uuid); }
   void register_sensor(sensor::Sensor *sensor, uint8_t type);
-#ifdef USE_ZIGBEE
-  /// The power limit slider on `endpoint` (see hiflow_power_limit.h).
-  void set_power_limit_slider(zigbee::ZigbeeComponent *zb, uint8_t endpoint) {
-    this->slider_zb_ = zb;
-    this->slider_endpoint_ = endpoint;
-  }
-  /// The inverter's on/off switch on `endpoint` (see hiflow_inverter_switch.h).
-  void set_inverter_switch(zigbee::ZigbeeComponent *zb, uint8_t endpoint) {
-    this->switch_zb_ = zb;
-    this->switch_endpoint_ = endpoint;
-  }
+#ifdef USE_NUMBER
+  /// The power limit slider (see HiflowPowerLimit).
+  void set_power_limit(HiflowPowerLimit *limit) { this->power_limit_ = limit; }
+  /// A value the slider was set to.
+  void power_limit_control(float value);
+#endif
+#ifdef USE_SWITCH
+  /// The inverter's on/off switch (see HiflowInverterSwitch).
+  void set_inverter_switch(HiflowInverterSwitch *sw) { this->inverter_switch_ = sw; }
+  /// A state the switch was set to.
+  void inverter_switch_control(bool on);
 #endif
 #ifdef USE_TIME
   /// The network time: every sync of `clock` (ESPHome's zigbee time platform)
@@ -202,8 +208,9 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   void publish_status_(uint8_t status, bool refresh);
   void publish_dark_zeros_(int64_t now);
   void flush_prefs_();
-  void poll_slider_(int64_t now);
-  void poll_switch_(int64_t now);
+#ifdef USE_SWITCH
+  void request_inverter_power_();
+#endif
 #ifdef USE_TIME
   void on_network_time_();
 #endif
@@ -267,37 +274,49 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   ESPPreferenceObject daylog_pref_{};
   int64_t next_daylog_check_ms_{0};
 
-#ifdef USE_ZIGBEE
+#ifdef USE_NUMBER
   // --- power limit slider ---
-  zigbee::ZigbeeComponent *slider_zb_{nullptr};
-  uint8_t slider_endpoint_{0};
-  float slider_set_{NAN};        // the value we put there ourselves
-  float slider_seen_{NAN};       // the value read last, for the quiet period
-  int64_t slider_seen_ms_{0};
-  bool slider_publish_{false};   // slider_set_ still has to reach the attribute
-  int64_t next_slider_poll_ms_{0};
+  HiflowPowerLimit *power_limit_{nullptr};
+#endif
 
+#ifdef USE_SWITCH
   // --- inverter on/off switch ---
   /// The state the inverter was last switched to (the inverter reports none).
   struct SwitchPref {
     uint16_t magic;
     uint8_t on;
   };
-  zigbee::ZigbeeComponent *switch_zb_{nullptr};
-  uint8_t switch_endpoint_{0};
+  HiflowInverterSwitch *inverter_switch_{nullptr};
   ESPPreferenceObject switch_pref_{};
   bool switch_state_{true};      // confirmed, saved in flash
   bool switch_pending_{false};   // a request is with the session
-  bool switch_publish_{false};   // switch_state_ still has to reach the attribute
-  int switch_seen_{-1};          // the value read last, for the quiet period
-  int64_t switch_seen_ms_{0};
-  int64_t next_switch_poll_ms_{0};
 #endif
 
 #ifdef USE_TIME
   time::RealTimeClock *network_time_{nullptr};
 #endif
 };
+
+#ifdef USE_NUMBER
+/// The power limit slider in percent. ESPHome's Zigbee component puts it on an
+/// Analog Output cluster (0-100 %, resolution 10) and hands every write from
+/// the coordinator to control(). Only the session's readback is published, so
+/// the slider shows what the inverter holds.
+class HiflowPowerLimit : public number::Number, public Parented<HiflowBle> {
+ protected:
+  void control(float value) override { this->parent_->power_limit_control(value); }
+};
+#endif
+
+#ifdef USE_SWITCH
+/// The inverter's output on or off. ESPHome's Zigbee component puts it on an
+/// On/Off cluster and hands the coordinator's On, Off and Toggle to
+/// write_state().
+class HiflowInverterSwitch : public switch_::Switch, public Parented<HiflowBle> {
+ protected:
+  void write_state(bool state) override { this->parent_->inverter_switch_control(state); }
+};
+#endif
 
 }  // namespace hiflow_ble
 }  // namespace esphome

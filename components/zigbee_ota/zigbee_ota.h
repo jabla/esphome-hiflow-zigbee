@@ -6,7 +6,8 @@
 // Threads: the stack calls the progress handler on the Zigbee task. Flash
 // writes happen there (OTA_WITH_SEQUENTIAL_WRITES erases sector by sector, so
 // no single call blocks the stack for long); everything the main loop needs
-// goes through atomics.
+// goes through atomics. The main loop must not block, so it tries the stack's
+// lock for 10 ms at most and comes back later when it is taken.
 
 #include "esphome/core/defines.h"
 
@@ -46,6 +47,8 @@ class ZigbeeOta : public Component {
   float get_setup_priority() const override { return setup_priority::LATE; }
 
  protected:
+  /// Block size, block retry and TX power, once the stack runs (main loop).
+  void apply_stack_settings_();
   static void action_handler_(uint32_t callback_id, void *message);
   void on_progress_(void *message);
   void on_query_response_(void *message);

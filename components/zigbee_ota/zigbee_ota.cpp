@@ -78,6 +78,9 @@ static const uint8_t BLOCK_RETRIES = 3;
 // download open. A complete image that waits this long for APPLY (a server
 // that set a later upgrade time) stays ready; only the fast poll ends.
 static const uint32_t STALL_MS = 60000;
+// The main loop tries the stack's lock for 10 ms at most; a stack call that
+// finds it taken runs again this much later.
+static const uint32_t LOCK_RETRY_MS = 100;
 
 static ZigbeeOta *global_ota = nullptr;  // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 
@@ -154,19 +157,29 @@ void ZigbeeOta::setup() {
   // passes attribute writes on (see action_handler_).
   ezb_zcl_core_action_handler_register(ZigbeeOta::action_handler_);
 
-  this->zb_->add_on_start_callback([this]() {
-    esp_zigbee_lock_acquire(portMAX_DELAY);
-    ezb_zcl_ota_upgrade_set_download_block_size(this->endpoint_, this->block_size_);
-    ezb_zcl_ota_upgrade_set_download_retry(this->endpoint_, BLOCK_RETRIES, BLOCK_RETRY_MS);
-    int8_t before = 0;
-    ezb_get_tx_power(&before);
-    if (this->tx_power_ != 127)
-      ezb_set_tx_power(this->tx_power_);
-    int8_t after = 0;
-    ezb_get_tx_power(&after);
-    esp_zigbee_lock_release();
-    ESP_LOGW(TAG, "TX power %d dBm (stack default %d dBm)", after, before);
-  });
+  this->zb_->add_on_start_callback([this]() { this->apply_stack_settings_(); });
+}
+
+// From the start callback, in the main loop. The Zigbee task runs by then and
+// holds the lock while it works (BDB initialization right after the start,
+// flash writes during a download), so a taken lock is tried again later
+// instead of waited for. The first download needs a join, a query and an
+// offer, so the settings are in place long before it.
+void ZigbeeOta::apply_stack_settings_() {
+  if (!esp_zigbee_lock_acquire(10 / portTICK_PERIOD_MS)) {
+    this->set_timeout(LOCK_RETRY_MS, [this]() { this->apply_stack_settings_(); });
+    return;
+  }
+  ezb_zcl_ota_upgrade_set_download_block_size(this->endpoint_, this->block_size_);
+  ezb_zcl_ota_upgrade_set_download_retry(this->endpoint_, BLOCK_RETRIES, BLOCK_RETRY_MS);
+  int8_t before = 0;
+  ezb_get_tx_power(&before);
+  if (this->tx_power_ != 127)
+    ezb_set_tx_power(this->tx_power_);
+  int8_t after = 0;
+  ezb_get_tx_power(&after);
+  esp_zigbee_lock_release();
+  ESP_LOGW(TAG, "TX power %d dBm (stack default %d dBm)", after, before);
 }
 
 void ZigbeeOta::dump_config() {

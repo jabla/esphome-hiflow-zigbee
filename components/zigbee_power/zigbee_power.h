@@ -75,6 +75,11 @@ class ZigbeePower : public Component {
   void rejoin_if_pending_();
   void leave_to_rejoin_();
   void apply_keep_pins_();
+#ifdef USE_ZIGBEE_POWER_SLEEPY
+  friend void set_night(bool night);
+  /// Gives the stack the poll interval in force, now or from a timeout (main loop).
+  void apply_poll_interval_();
+#endif
 
   zigbee::ZigbeeComponent *zb_{nullptr};
   uint32_t poll_interval_ms_{0};

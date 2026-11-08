@@ -205,8 +205,9 @@ void set_night(bool night) {
 
 // Sets the poll interval in force, from the main loop. The main loop must not
 // block, so it tries the stack's lock for 10 ms and otherwise comes back from
-// a timeout. A late write is still right: every writer sets the interval in
-// force at its time. A newer call replaces a pending retry.
+// a timeout. A late write is still right: every writer, a retry included,
+// sets the interval in force when it runs. A newer call that finds the lock
+// taken too replaces the pending retry.
 void ZigbeePower::apply_poll_interval_() {
   if (!esp_zigbee_lock_acquire(10 / portTICK_PERIOD_MS)) {
     this->set_timeout(POLL_RETRY_ID, LOCK_RETRY_MS, [this]() { this->apply_poll_interval_(); });

@@ -47,6 +47,8 @@ class ZigbeeOta : public Component {
   float get_setup_priority() const override { return setup_priority::LATE; }
 
  protected:
+  /// Puts our action handler into the stack, from setup on (main loop).
+  void register_action_handler_();
   /// Block size, block retry and TX power, once the stack runs (main loop).
   void apply_stack_settings_();
   static void action_handler_(uint32_t callback_id, void *message);

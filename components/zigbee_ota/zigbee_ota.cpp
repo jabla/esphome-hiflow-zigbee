@@ -78,8 +78,9 @@ static const uint8_t BLOCK_RETRIES = 3;
 // download open. A complete image that waits this long for APPLY (a server
 // that set a later upgrade time) stays ready; only the fast poll ends.
 static const uint32_t STALL_MS = 60000;
-// The main loop tries the stack's lock for 10 ms at most; a stack call that
-// finds it taken runs again this much later.
+// The main loop tries the stack's lock for 10 ms at most. The one-time stack
+// calls (the action handler, the settings at the start) run again this much
+// later when it is taken; loop()'s own calls come back on their next turn.
 static const uint32_t LOCK_RETRY_MS = 100;
 
 static ZigbeeOta *global_ota = nullptr;  // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
@@ -153,18 +154,30 @@ void ZigbeeOta::setup() {
     ESP_LOGW(TAG, "New image on %s, waiting for the OTA server before marking it valid", running->label);
   }
 
-  // The stack keeps a single action handler, so ours replaces ESPHome's and
-  // passes attribute writes on (see action_handler_).
-  ezb_zcl_core_action_handler_register(ZigbeeOta::action_handler_);
-
+  this->register_action_handler_();
   this->zb_->add_on_start_callback([this]() { this->apply_stack_settings_(); });
+}
+
+// The stack keeps a single action handler, so ours replaces ESPHome's and
+// passes attribute writes on (see action_handler_). ZigbeeComponent::setup()
+// started the Zigbee task before this setup (LATE), so the call needs the
+// stack's lock, which setup must not wait for. The frames our handler is for
+// (writes, OTA answers) only come after the join, seconds later; a retry
+// comes every 100 ms.
+void ZigbeeOta::register_action_handler_() {
+  if (!esp_zigbee_lock_acquire(10 / portTICK_PERIOD_MS)) {
+    this->set_timeout(LOCK_RETRY_MS, [this]() { this->register_action_handler_(); });
+    return;
+  }
+  ezb_zcl_core_action_handler_register(ZigbeeOta::action_handler_);
+  esp_zigbee_lock_release();
 }
 
 // From the start callback, in the main loop. The Zigbee task runs by then and
 // holds the lock while it works (BDB initialization right after the start,
 // flash writes during a download), so a taken lock is tried again later
-// instead of waited for. The first download needs a join, a query and an
-// offer, so the settings are in place long before it.
+// instead of waited for. A download needs a join, a query and an offer first,
+// which take seconds; a retry comes every 100 ms.
 void ZigbeeOta::apply_stack_settings_() {
   if (!esp_zigbee_lock_acquire(10 / portTICK_PERIOD_MS)) {
     this->set_timeout(LOCK_RETRY_MS, [this]() { this->apply_stack_settings_(); });

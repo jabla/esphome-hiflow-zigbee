@@ -11,6 +11,7 @@ flat, ESPHome-loadable copies in this directory are produced by
 ``./sync_core.sh`` (see README.md).
 """
 
+import logging
 import os
 
 import esphome.codegen as cg
@@ -44,6 +45,8 @@ from esphome.coroutine import CoroPriority, coroutine_with_priority
 import esphome.final_validate as fv
 
 DEPENDENCIES = ["ble_client"]
+
+_LOGGER = logging.getLogger(__name__)
 
 hiflow_ble_ns = cg.esphome_ns.namespace("hiflow_ble")
 HiflowBle = hiflow_ble_ns.class_("HiflowBle", cg.Component, ble_client.BLEClientNode)
@@ -164,7 +167,8 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_TIME_ID): cv.use_id(time_.RealTimeClock),
         cv.Optional(CONF_NETWORK_TIME): cv.invalid(
             "network_time was replaced by time_id: add a `time:` entry with "
-            "`platform: zigbee` and point time_id at it (see hiflow-zb.yaml)"
+            "`platform: zigbee` and point time_id at it (see hiflow-zb.yaml); "
+            "to go without a network time, delete the line"
         ),
         # For testing the display at night: fills today's day log with a made-up
         # sunny day at boot, never saved to flash. Not for production.
@@ -223,6 +227,19 @@ def _control_entities(config):
     return config
 
 
+def _time_hint(config):
+    # Until the zigbee time platform, the bridge read the network time by
+    # itself whenever Zigbee was on. An own config from that time now builds
+    # without it and says nothing.
+    if CONF_ZIGBEE_ID in config and CONF_TIME_ID not in config:
+        _LOGGER.warning(
+            "hiflow_ble: no time_id, so no network time: the inverter's time sets "
+            "the bridge's clock. hiflow-zb.yaml adds a `time:` entry with "
+            "`platform: zigbee` and points time_id at it."
+        )
+    return config
+
+
 def _night_options(config):
     if config[CONF_NIGHT_TEST] and not (
         CONF_NIGHT_SCAN_INTERVAL in config or CONF_NIGHT_BLE_OFF in config
@@ -234,7 +251,11 @@ def _night_options(config):
 # night_ble_off relies on ESPHome settling the tracker and the client when BLE
 # goes off; the bridge is built and tested on 2026.10 and newer only.
 CONFIG_SCHEMA = cv.All(
-    CONFIG_SCHEMA, cv.require_esphome_version(2026, 10, 0), _night_options, _control_entities
+    CONFIG_SCHEMA,
+    cv.require_esphome_version(2026, 10, 0),
+    _night_options,
+    _control_entities,
+    _time_hint,
 )
 
 # The values of hiflow_secrets.example.yaml. A build that still carries one of
@@ -356,6 +377,7 @@ async def to_code(config):
         limit = await number.new_number(limit_config, min_value=0, max_value=100, step=10)
         cg.add(limit.set_parent(var))
         cg.add(var.set_power_limit(limit))
+        CORE.add_job(_add_power_limit_range, await cg.get_variable(config[CONF_ZIGBEE_ID]))
 
     if switch_config := config.get(CONF_INVERTER_CONTROL):
         inverter_switch = await switch.new_switch(switch_config)
@@ -376,6 +398,37 @@ async def to_code(config):
     if CONF_TIME_ID in config:
         clock = await cg.get_variable(config[CONF_TIME_ID])
         cg.add(var.set_network_time(clock))
+
+
+# ESPHome's Zigbee number on the ESP32 gives the Analog Output no range,
+# resolution or application type. Without them ZHA shows a slider from 0 to
+# 1023, and Zigbee2MQTT names the value differently. These go onto the
+# cluster that the zigbee codegen creates for endpoint 32, so after that code
+# in setup() and before App.setup() registers the device.
+POWER_LIMIT_ATTRIBUTES = (
+    (0x0041, cg.float_, 100.0),  # MaxPresentValue
+    (0x0045, cg.float_, 0.0),  # MinPresentValue
+    (0x006A, cg.float_, 10.0),  # Resolution
+    # ApplicationType: group Analog Output (0x01), type Percentage (0x04),
+    # index 0xFFFF (vendor defined)
+    (0x0100, cg.uint32, 0x0104FFFF),
+)
+
+
+@coroutine_with_priority(CoroPriority.LATE)
+async def _add_power_limit_range(zb):
+    for attr_id, c_type, value in POWER_LIMIT_ATTRIBUTES:
+        cg.add(
+            zb.add_attr(
+                cg.TemplateArguments(c_type),
+                POWER_LIMIT_ENDPOINT,
+                cg.RawExpression("::EZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT"),
+                cg.RawExpression("EZB_ZCL_CLUSTER_SERVER"),
+                attr_id,
+                0,
+                value,
+            )
+        )
 
 
 # After esp32_ble_tracker's to_code, which sets its own value.

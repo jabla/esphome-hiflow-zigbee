@@ -43,12 +43,19 @@ static const char *const TAG = "zigbee_ota";
 // app image comes in one of three sub-elements from the manufacturer tag range,
 // written by tools/make_zigbee_ota.py; other sub-elements are skipped.
 static const uint32_t OTA_FILE_IDENTIFIER = 0x0BEEF11E;
-static const uint16_t TAG_IMAGE_ZLIB = 0xF100;   // zlib stream (RFC 1950) of the app image
+// zlib stream (RFC 1950) of the app image. Its header names the window the
+// stream was compressed with, and the inflater gets a window of that size: 32 KB
+// for a C6, 4 KB for an ESP32-H2, whose heap has no room for 32 KB.
+static const uint16_t TAG_IMAGE_ZLIB = 0xF100;
 static const uint16_t TAG_IMAGE_DELTA = 0xF101;  // esp_delta_ota patch against the running image
-// The whole app image as a detools patch from nothing (heatshrink): no base,
-// and a few hundred bytes of decoder state where zlib needs a 32 KB window.
-// For a chip without that much free heap, the ESP32-H2.
+// The whole app image as a detools patch from nothing (heatshrink), about 85 %
+// of the image: the ESP32-H2's full image before the small zlib window, for
+// firmware up to v0.7.6 that lacks the 32 KB its inflater always asks for.
 static const uint16_t TAG_IMAGE_HEATSHRINK = 0xF102;
+// RFC 1950: compression method 8 (deflate) in the low nibble of the first byte,
+// log2(window) - 8 in the high one, at most 7 (32 KB).
+static const uint8_t ZLIB_METHOD_DEFLATE = 8;
+static const uint8_t ZLIB_MAX_WINDOW_BITS = 15;
 static const uint32_t DELTA_MAGIC = 0xFCCDDE10;
 static const uint8_t DELTA_HEADER_LEN = 64;      // magic, SHA-256 of the base, reserved
 static const uint8_t SUB_ELEMENT_HEADER_LEN = 6;
@@ -625,9 +632,9 @@ bool ZigbeeOta::begin_image_(uint16_t tag, uint32_t length) {
   this->release_decoders_();
   switch (tag) {
     case TAG_IMAGE_ZLIB:
+      // The window follows with the stream's first byte, which gives its size.
       this->inflator_ = calloc(1, sizeof(tinfl_decompressor));
-      this->window_ = static_cast<uint8_t *>(malloc(TINFL_LZ_DICT_SIZE));
-      if (this->inflator_ == nullptr || this->window_ == nullptr) {
+      if (this->inflator_ == nullptr) {
         ESP_LOGE(TAG, "No memory for the inflater");
         this->release_decoders_();
         return false;
@@ -719,11 +726,31 @@ bool ZigbeeOta::start_patch_() {
 }
 
 esp_err_t ZigbeeOta::inflate_(const uint8_t *data, uint32_t len, bool last) {
+  if (this->window_ == nullptr && len > 0) {
+    // The output goes round a window as large as the one the stream was
+    // compressed with: no back reference reaches further. tinfl takes any
+    // power of two and checks the header against it.
+    const uint8_t cmf = data[0];
+    const uint8_t bits = (cmf >> 4) + 8;
+    if ((cmf & 0x0F) != ZLIB_METHOD_DEFLATE || bits > ZLIB_MAX_WINDOW_BITS) {
+      ESP_LOGE(TAG, "Not a zlib stream (first byte 0x%02X)", cmf);
+      return ESP_ERR_INVALID_ARG;
+    }
+    this->window_size_ = size_t{1} << bits;
+    this->window_ = static_cast<uint8_t *>(malloc(this->window_size_));
+    if (this->window_ == nullptr) {
+      ESP_LOGE(TAG, "No memory for the inflater's %u byte window", static_cast<unsigned>(this->window_size_));
+      return ESP_ERR_NO_MEM;
+    }
+    ESP_LOGW(TAG, "zlib window %u bytes", static_cast<unsigned>(this->window_size_));
+  }
+  if (this->window_ == nullptr)  // no byte of the stream yet
+    return ESP_OK;
   auto *inflator = static_cast<tinfl_decompressor *>(this->inflator_);
   const int flags = TINFL_FLAG_PARSE_ZLIB_HEADER | (last ? 0 : TINFL_FLAG_HAS_MORE_INPUT);
   while (!this->inflate_done_) {
     size_t in_bytes = len;
-    size_t out_bytes = TINFL_LZ_DICT_SIZE - this->window_pos_;
+    size_t out_bytes = this->window_size_ - this->window_pos_;
     tinfl_status status = tinfl_decompress(inflator, data, &in_bytes, this->window_, this->window_ + this->window_pos_,
                                            &out_bytes, flags);
     data += in_bytes;
@@ -732,7 +759,7 @@ esp_err_t ZigbeeOta::inflate_(const uint8_t *data, uint32_t len, bool last) {
       esp_err_t err = this->write_output_(this->window_ + this->window_pos_, out_bytes);
       if (err != ESP_OK)
         return err;
-      this->window_pos_ = (this->window_pos_ + out_bytes) & (TINFL_LZ_DICT_SIZE - 1);
+      this->window_pos_ = (this->window_pos_ + out_bytes) & (this->window_size_ - 1);
     }
     if (status < TINFL_STATUS_DONE) {
       ESP_LOGE(TAG, "Inflate failed (%d)", status);
@@ -777,6 +804,7 @@ void ZigbeeOta::release_decoders_() {
   this->inflator_ = nullptr;
   free(this->window_);
   this->window_ = nullptr;
+  this->window_size_ = 0;
   this->window_pos_ = 0;
   this->inflate_done_ = false;
   if (this->delta_ != nullptr)

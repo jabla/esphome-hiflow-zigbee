@@ -38,9 +38,15 @@ What it does:
   [esp_delta_ota](https://github.com/espressif/idf-extra-components/tree/master/esp_delta_ota)
   patch against the running image (tag `0xF101`). A patch for any other image is refused
   before anything is written (SHA-256 in its header). `esp_ota_end()` checks the result.
-- On the ESP32-H2 a full image comes as a patch from nothing instead (tag `0xF102`,
-  heatshrink, about 85 % of the image): zlib's inflater needs a 32 KB window plus 11 KB of
-  state, more than the largest free block there. The patch engine needs a few hundred bytes.
+- The inflater gets a window as large as the one the zlib header names: 32 KB for a C6, 4 KB
+  for an ESP32-H2 (about 64 % of the image instead of 61 %). There 32 KB plus the inflater's
+  11 KB of state are more than the largest free block; 4 KB make 15 KB.
+- Firmware up to v0.7.6 always asks for 32 KB, 43 KB in one piece with the inflater's state.
+  An H2 on v0.7.3 to v0.7.6 (the smaller BLE stack) had that on the bench with the BLE session
+  up and took the image. Without that much free in one piece the old firmware refuses the image
+  at once. It then takes a delta, or a full image made with `--heatshrink`: a patch from
+  nothing (tag `0xF102`, heatshrink, about 85 % of the image) that needs a few hundred bytes.
+  This firmware takes that format too.
 - The bootloader's app rollback is turned on (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`), and
   ESPHome no longer marks the image valid at boot; this component does, after the OTA server
   answered a Query Next Image. An image that crashes before that is replaced by the previous

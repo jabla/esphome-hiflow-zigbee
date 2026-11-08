@@ -51,7 +51,7 @@ class ZigbeeOta : public Component {
   void on_query_response_(void *message);
   void send_query_();
   // The image inside the OTA file comes zlib-compressed, or as an
-  // esp_delta_ota patch against the running image.
+  // esp_delta_ota patch against the running image (or from nothing).
   enum class ImageFormat : uint8_t { NONE, ZLIB, DELTA };
   bool begin_image_(uint16_t tag, uint32_t length);
   esp_err_t write_image_(const uint8_t *data, uint32_t len, bool last);
@@ -93,9 +93,11 @@ class ZigbeeOta : public Component {
   uint8_t pending_[8];             // a sub-element header split across blocks
   uint8_t pending_len_{0};
   uint32_t image_written_{0};      // bytes of app image written to flash
-  // zlib: miniz's inflater (in ROM) and its 32 KB output window.
+  // zlib: miniz's inflater (in ROM) and its output window, as large as the
+  // stream's header asks for (32 KB at most).
   void *inflator_{nullptr};
   uint8_t *window_{nullptr};
+  size_t window_size_{0};
   size_t window_pos_{0};
   bool inflate_done_{false};
   // delta: esp_delta_ota patch header (magic + SHA-256 of the base image),

@@ -12,10 +12,14 @@ The image goes in as one sub-element:
          change. Only that image accepts it (SHA-256 in the patch header).
          Needs `detools` (pip install detools).
   zlib   otherwise (also without detools): the compressed image (tag
-         0xF100), about 60 %.
-  heatshrink  instead of zlib for an ESP32-H2: its heap has no room for
-         zlib's 32 KB window. The image as a detools patch from nothing (tag
-         0xF102), about 85 %. Needs `detools`.
+         0xF100), about 60 %. For an ESP32-H2 with a 4 KB window instead of
+         32 KB, about 64 %: its heap has no room for the large one, and the
+         firmware takes the window size from the stream's header.
+  heatshrink  with --heatshrink, for an ESP32-H2 on v0.7.6 or older that
+         refuses the zlib image: that firmware always asks for a 32 KB window,
+         43 KB in one piece with the inflater. The image as a detools patch
+         from nothing (tag 0xF102), about 85 %. Needs `detools`. A delta
+         (--from with the kept image) works there too.
 
 Every image this tool packs, and every image tools/flash_config.sh flashes, is
 kept as .esphome/zigbee_ota/<name>-<VERSION>.bin next to the config, and the
@@ -34,7 +38,7 @@ Next to the OTA files the tool keeps index.json, an index for zigpy's
 `zigpy_local` provider with a short note per image (date, build, label, git
 version) and the --notes text. It is optional: the image works without it.
 
-Usage: python3 tools/make_zigbee_ota.py <build dir> [--from 0x26100301 | --from old.bin] [--notes TEXT]
+Usage: python3 tools/make_zigbee_ota.py <build dir> [--from 0x26100301 | --from old.bin] [--heatshrink] [--notes TEXT]
   <build dir> is .esphome/build/<name>, next to the config.
 """
 import argparse
@@ -64,10 +68,13 @@ TAG_IMAGE_HEATSHRINK = 0xF102
 ESP_IMAGE_MAGIC = 0xE9
 DELTA_MAGIC = 0xFCCDDE10
 DELTA_HEADER_LEN = 64
-# Chip ids (offset 12 of the image header) that take a full image as
-# heatshrink instead of zlib: too little heap for the inflater.
+# zlib window (log2) of a full image: the largest, 32 KB, unless the chip
+# (offset 12 of the image header) has too little heap for it. The ESP32-H2
+# takes 4 KB: 15 KB for the inflater with its state, where 32 KB came to 43 KB,
+# more than the largest free block there.
+ZLIB_WINDOW_BITS = 15
 CHIP_ID_ESP32H2 = 16
-HEATSHRINK_CHIPS = {CHIP_ID_ESP32H2}
+SMALL_WINDOW_BITS = {CHIP_ID_ESP32H2: 12}
 # Image type of every image from before the date versions, on every board.
 LEGACY_IMAGE_TYPE = 0x4846
 INDEX_NAME = "index.json"
@@ -105,6 +112,16 @@ def detools_patch(base: bytes, new: bytes) -> bytes:
 
 def chip_id(image: bytes) -> int:
     return struct.unpack_from("<H", image, 12)[0]
+
+
+def zlib_image(image: bytes, window_bits: int) -> bytes:
+    """The image as a zlib stream whose header names the window, so the
+    firmware gives its inflater exactly that much."""
+    packer = zlib.compressobj(9, zlib.DEFLATED, window_bits, 9)
+    payload = packer.compress(image) + packer.flush()
+    if payload[0] >> 4 != window_bits - 8 or zlib.decompress(payload, window_bits) != image:
+        raise SystemExit("zlib stream does not reproduce the image")
+    return payload
 
 
 def delta_patch(base: bytes, new: bytes) -> bytes:
@@ -205,6 +222,8 @@ def main() -> int:
     ap.add_argument("build_dir", type=Path)
     ap.add_argument("-o", "--output", type=Path)
     ap.add_argument("--from", dest="base", help="installed version (0x...) or image file running on the device")
+    ap.add_argument("--heatshrink", action="store_true",
+                    help="full image as heatshrink, for an ESP32-H2 on v0.7.6 or older that refuses zlib (needs detools)")
     ap.add_argument("--notes", help="release notes for the update dialog (Markdown), optional")
     args = ap.parse_args()
 
@@ -237,11 +256,11 @@ def main() -> int:
     head_version, head_type, transition = header_for(version, image_type, installed)
     (keep / f"{name}-{version:08X}.bin").write_bytes(image)
 
-    heatshrink = chip_id(image) in HEATSHRINK_CHIPS
+    window_bits = SMALL_WINDOW_BITS.get(chip_id(image))
+    if args.heatshrink and window_bits is None:
+        print("--heatshrink is only for an ESP32-H2: other chips take zlib with every firmware", file=sys.stderr)
+        return 1
     if base_file is not None and importlib.util.find_spec("detools") is None:
-        if heatshrink:
-            print("this chip needs detools for every image: pip install detools", file=sys.stderr)
-            return 1
         print("detools is not installed (pip install detools), so a full image instead of a delta")
         base_file = None
     elif base_file is None and args.base is not None:
@@ -254,10 +273,11 @@ def main() -> int:
             print(f"{base_file.name} was built for another chip", file=sys.stderr)
             return 1
         fmt, tag, payload = "delta", TAG_IMAGE_DELTA, delta_patch(base, image)
-    elif heatshrink:
+    elif args.heatshrink:
         fmt, tag, payload = "heatshrink", TAG_IMAGE_HEATSHRINK, detools_patch(b"", image)
     else:
-        fmt, tag, payload = "zlib", TAG_IMAGE_ZLIB, zlib.compress(image, 9)
+        bits = window_bits or ZLIB_WINDOW_BITS
+        fmt, tag, payload = f"zlib ({(1 << bits) // 1024} KB window)", TAG_IMAGE_ZLIB, zlib_image(image, bits)
 
     out = args.output or keep / f"{name}-{version:08X}.ota"
     label = info.get("label") or name
@@ -266,6 +286,9 @@ def main() -> int:
     out.write_bytes(data)
     print(f"{out}: version 0x{version:08X} ({versions.describe(version)}), image {len(image)} bytes, "
           f"{fmt} {len(payload)} bytes ({len(payload) * 100 // len(image)} %), file {len(data)} bytes")
+    if tag == TAG_IMAGE_ZLIB and window_bits is not None:
+        print("An ESP32-H2 on v0.7.6 or older needs 43 KB in one piece for this file and refuses it at once "
+              "without: then give it a delta (--from with its kept image) or a file made with --heatshrink.")
     index = update_index(out.parent, out, data, manufacturer, image_type, version,
                          summary(info, version, False), args.notes)
 

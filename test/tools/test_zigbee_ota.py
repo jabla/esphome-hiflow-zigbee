@@ -116,21 +116,9 @@ def fake_image(size: int = 4096, seed: int = 0, chip: int = CHIP_C6, far: bool =
 
 
 def window_decode(stream: bytes, window_bits: int) -> bytes:
-    """Inflates the deflate data of a zlib stream the way the firmware does:
-    output in small pieces, so a back reference can only reach into a window of
-    2**window_bits bytes. zlib stops with "invalid distance too far back" at one
-    that reaches further. The header is left out (it would be refused for its
-    window size alone), and with it the check of the trailing Adler-32."""
-    inflater = zlib.decompressobj(-window_bits)
-    out = bytearray()
-    data = stream[2:]
-    while not inflater.eof:
-        piece = inflater.decompress(data, 256)
-        if not piece and not inflater.unconsumed_tail:
-            raise zlib.error("stream ended early")
-        out += piece
-        data = inflater.unconsumed_tail
-    return bytes(out)
+    """The packer's window check with output pieces of one byte: a back
+    reference can reach exactly the window, not a byte more."""
+    return packer.window_decode(stream, window_bits, piece=1)
 
 
 class PackTest(unittest.TestCase):
@@ -285,6 +273,45 @@ class PackTest(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"detools": None}), self.assertRaises(SystemExit):
             self.pack("--heatshrink")
         self.assertFalse((self.keep / "hiflow-zb-27031401.ota").exists())
+
+    def test_window_check_catches_a_reference_beyond_the_window(self):
+        image = fake_image(chip=CHIP_C6, far=True)
+        wide = zlib.compress(image, 9)  # 32 KB window, copies from 6 KB back
+        with self.assertRaisesRegex(zlib.error, "too far back"):
+            packer.window_decode(wide, 12)
+        self.assertEqual(packer.window_decode(wide, 15), image)
+
+    @unittest.skipUnless(importlib.util.find_spec("detools"), "detools not installed")
+    def test_an_h2_on_old_firmware_gets_heatshrink(self):
+        import detools
+        image = self.compile(0x27031401, image_type=0x4832, chip=CHIP_H2)
+        # installed before the small window, and no kept image of it here
+        self.assertEqual(self.pack("--from", "0x26100101"), 0)
+        tag, body = self.sub_element(self.keep / "hiflow-zb-27031401.ota")
+        self.assertEqual(tag, packer.TAG_IMAGE_HEATSHRINK)
+        out = io.BytesIO()
+        detools.apply_patch(io.BytesIO(b""), io.BytesIO(body), out)
+        self.assertEqual(out.getvalue(), image)
+
+    def test_an_h2_on_old_firmware_without_detools_is_refused(self):
+        self.compile(0x27031401, image_type=0x4832, chip=CHIP_H2)
+        with mock.patch.dict(sys.modules, {"detools": None}), self.assertRaises(SystemExit):
+            self.pack("--from", "0x26100101")
+        self.assertFalse((self.keep / "hiflow-zb-27031401.ota").exists())
+
+    def test_an_h2_on_new_firmware_gets_zlib(self):
+        self.compile(0x27031402, image_type=0x4832, chip=CHIP_H2)
+        with mock.patch.dict(sys.modules, {"detools": None}):
+            self.assertEqual(self.pack("--from", "0x27031401"), 0)
+        tag, body = self.sub_element(self.keep / "hiflow-zb-27031402.ota")
+        self.assertEqual(tag, packer.TAG_IMAGE_ZLIB)
+        self.assertEqual(body[0] >> 4, 12 - 8)
+
+    def test_old_inflater(self):
+        self.assertTrue(packer.old_inflater(0x26110109))  # v0.7.6
+        self.assertTrue(packer.old_inflater(LEGACY))
+        self.assertFalse(packer.old_inflater(packer.SMALL_WINDOW_FIRST_VERSION + 1))
+        self.assertFalse(packer.old_inflater(None))
 
     def test_heatshrink_for_a_c6_is_refused(self):
         self.compile(0x27031401)

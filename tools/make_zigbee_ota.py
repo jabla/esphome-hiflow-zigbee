@@ -15,11 +15,12 @@ The image goes in as one sub-element:
          0xF100), about 60 %. For an ESP32-H2 with a 4 KB window instead of
          32 KB, about 64 %: its heap has no room for the large one, and the
          firmware takes the window size from the stream's header.
-  heatshrink  with --heatshrink, for an ESP32-H2 on v0.7.6 or older that
-         refuses the zlib image: that firmware always asks for a 32 KB window,
-         43 KB in one piece with the inflater. The image as a detools patch
-         from nothing (tag 0xF102), about 85 %. Needs `detools`. A delta
-         (--from with the kept image) works there too.
+  heatshrink  for an ESP32-H2 that runs firmware from before the small
+         window (v0.7.6 or older): it always asks for a 32 KB window and
+         refuses the zlib image without a free block that large. The image as
+         a detools patch from nothing (tag 0xF102), about 85 %; old and new
+         firmware take it. Needs `detools`. The tool picks it when --from names
+         such a version and no delta can be made; --heatshrink forces it.
 
 Every image this tool packs, and every image tools/flash_config.sh flashes, is
 kept as .esphome/zigbee_ota/<name>-<VERSION>.bin next to the config, and the
@@ -70,11 +71,17 @@ DELTA_MAGIC = 0xFCCDDE10
 DELTA_HEADER_LEN = 64
 # zlib window (log2) of a full image: the largest, 32 KB, unless the chip
 # (offset 12 of the image header) has too little heap for it. The ESP32-H2
-# takes 4 KB: 15 KB for the inflater with its state, where 32 KB came to 43 KB,
-# more than the largest free block there.
+# takes 4 KB: 15 KB for the inflater with its state, where 32 KB came to 43 KB.
 ZLIB_WINDOW_BITS = 15
 CHIP_ID_ESP32H2 = 16
 SMALL_WINDOW_BITS = {CHIP_ID_ESP32H2: 12}
+# The first build whose inflater takes the window from the zlib header. Every
+# build before it (and every Unix-time version from before the date versions)
+# asks for 32 KB.
+SMALL_WINDOW_FIRST_VERSION = 0x26110800
+# Output piece of the window check: a back reference may reach the window plus
+# this much. zlib's own streams stay 262 bytes inside the window.
+WINDOW_CHECK_PIECE = 256
 # Image type of every image from before the date versions, on every board.
 LEGACY_IMAGE_TYPE = 0x4846
 INDEX_NAME = "index.json"
@@ -114,14 +121,46 @@ def chip_id(image: bytes) -> int:
     return struct.unpack_from("<H", image, 12)[0]
 
 
+def window_decode(stream: bytes, window_bits: int, piece: int = WINDOW_CHECK_PIECE) -> bytes:
+    """Inflates the deflate data of a zlib stream in output pieces of `piece`
+    bytes, so a back reference can only reach into the last 2**window_bits
+    bytes plus the piece; zlib stops with "invalid distance too far back" at
+    one that reaches further. The header is left out (zlib refuses a header
+    window above its own at once) and with it the check of the Adler-32."""
+    inflater = zlib.decompressobj(-window_bits)
+    out = bytearray()
+    data = stream[2:]
+    while not inflater.eof:
+        part = inflater.decompress(data, piece)
+        if not part and not inflater.unconsumed_tail:
+            raise zlib.error("stream ended early")
+        out += part
+        data = inflater.unconsumed_tail
+    return bytes(out)
+
+
 def zlib_image(image: bytes, window_bits: int) -> bytes:
     """The image as a zlib stream whose header names the window, so the
-    firmware gives its inflater exactly that much."""
+    firmware gives its inflater exactly that much, checked against that window
+    before it goes anywhere near a device."""
     packer = zlib.compressobj(9, zlib.DEFLATED, window_bits, 9)
     payload = packer.compress(image) + packer.flush()
-    if payload[0] >> 4 != window_bits - 8 or zlib.decompress(payload, window_bits) != image:
-        raise SystemExit("zlib stream does not reproduce the image")
+    try:
+        ok = (payload[0] >> 4 == window_bits - 8 and zlib.decompress(payload, window_bits) == image
+              and window_decode(payload, window_bits) == image)
+    except zlib.error:
+        ok = False
+    if not ok:
+        raise SystemExit(f"zlib stream does not reproduce the image within a {1 << window_bits} byte window")
     return payload
+
+
+def old_inflater(installed: int | None) -> bool:
+    """Whether the installed firmware is known to be from before the window
+    from the zlib header: it asks for 32 KB whatever the stream needs."""
+    if installed is None:
+        return False
+    return not versions.is_date_version(installed) or installed < SMALL_WINDOW_FIRST_VERSION
 
 
 def delta_patch(base: bytes, new: bytes) -> bytes:
@@ -223,7 +262,8 @@ def main() -> int:
     ap.add_argument("-o", "--output", type=Path)
     ap.add_argument("--from", dest="base", help="installed version (0x...) or image file running on the device")
     ap.add_argument("--heatshrink", action="store_true",
-                    help="full image as heatshrink, for an ESP32-H2 on v0.7.6 or older that refuses zlib (needs detools)")
+                    help="full image as heatshrink, for an ESP32-H2 on v0.7.6 or older (needs detools); "
+                         "picked by itself when --from names such a version")
     ap.add_argument("--notes", help="release notes for the update dialog (Markdown), optional")
     args = ap.parse_args()
 
@@ -265,6 +305,11 @@ def main() -> int:
         base_file = None
     elif base_file is None and args.base is not None:
         print(f"no kept image of 0x{installed:08X} here, so a full image instead of a delta")
+    heatshrink = args.heatshrink
+    if window_bits is not None and base_file is None and not heatshrink and old_inflater(installed):
+        print(f"0x{installed:08X} is firmware from before the small zlib window, which asks for 32 KB "
+              "whatever the stream needs: heatshrink instead of zlib")
+        heatshrink = True
     if base_file is not None:
         base = base_file.read_bytes()
         # The chip id in the image header (offset 12): a C6 image is no base
@@ -273,7 +318,7 @@ def main() -> int:
             print(f"{base_file.name} was built for another chip", file=sys.stderr)
             return 1
         fmt, tag, payload = "delta", TAG_IMAGE_DELTA, delta_patch(base, image)
-    elif args.heatshrink:
+    elif heatshrink:
         fmt, tag, payload = "heatshrink", TAG_IMAGE_HEATSHRINK, detools_patch(b"", image)
     else:
         bits = window_bits or ZLIB_WINDOW_BITS
@@ -286,9 +331,9 @@ def main() -> int:
     out.write_bytes(data)
     print(f"{out}: version 0x{version:08X} ({versions.describe(version)}), image {len(image)} bytes, "
           f"{fmt} {len(payload)} bytes ({len(payload) * 100 // len(image)} %), file {len(data)} bytes")
-    if tag == TAG_IMAGE_ZLIB and window_bits is not None:
-        print("An ESP32-H2 on v0.7.6 or older needs 43 KB in one piece for this file and refuses it at once "
-              "without: then give it a delta (--from with its kept image) or a file made with --heatshrink.")
+    if tag == TAG_IMAGE_ZLIB and window_bits is not None and installed is None:
+        print("An ESP32-H2 on v0.7.6 or older takes this file only with a free block of 32 KB (plus 11 KB) "
+              "and refuses it at once otherwise: --from with its installed version picks the format it takes.")
     index = update_index(out.parent, out, data, manufacturer, image_type, version,
                          summary(info, version, False), args.notes)
 

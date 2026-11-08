@@ -117,7 +117,9 @@ Each point below cost at least one debugging session. Don't undo them casually.
   plus the power limit (`hiflow_power_limit_32`, 0-100 %), the on/off switch (`state_34`) and the
   uptime (`bridge_uptime_33`, in s); the chip temperature on endpoint 36 came later and is
   not tested with z2m. It answered the time read of older releases on endpoint 35; the time
-  now comes through ESPHome's Zigbee time platform on endpoint 1, not yet tested with z2m. A
+  now comes through ESPHome's Zigbee time platform on endpoint 1, not yet tested with z2m. That
+  platform looks for the time server with a broadcast Match Descriptor request: the ConBee III
+  answers it itself, other sticks only if their firmware lists the Time cluster on endpoint 1. A
   switch command that cannot reach the inverter goes back to on after two minutes, as with ZHA.
   Three quirks:
   - Reactive power has no unit. ESPHome's Zigbee unit table has kvar but not var, and ZHA

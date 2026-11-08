@@ -4,7 +4,7 @@
 
 | Path | What |
 |---|---|
-| `hiflow-zb.yaml` | the device config: Zigbee + `ble_client` + the component, 20 sensors (board independent) |
+| `hiflow-zb.yaml` | the device config: Zigbee + `ble_client` + the component, 33 sensors (board independent) |
 | `boards/` | board specific hardware and the chip variant, pulled in by the `board` substitution: `boards/xiao_esp32c6.yaml` (RF switch), `boards/waveshare_c6_lcd147.yaml` (on-board LCD) and `boards/waveshare_h2_zero.yaml` (ESP32-H2) |
 | `hiflow_secrets.example.yaml` | template for your `hiflow_secrets.yaml` (also holds the `board` selection) |
 | `components/hiflow_ble/` | the ESPHome external component (with flat copies of the C core, see its README) |

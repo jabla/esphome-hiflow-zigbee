@@ -140,7 +140,8 @@ zigbee_power:
   sleepy: ${sleepy}
 
 # The network time: ESPHome's Zigbee time platform reads the time from the
-# coordinator (ZHA and Zigbee2MQTT answer from the host's clock). It keeps the
+# coordinator (ZHA answers from the host's clock; not yet tested with
+# Zigbee2MQTT). It keeps the
 # bridge's clock right after a power cut at night, when the inverter is dark,
 # and takes back what the clock gains in light sleep.
 time:

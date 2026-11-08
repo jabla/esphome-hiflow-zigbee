@@ -17,8 +17,10 @@ components/hiflow_ble/
 ├── sensor/                the sensor platform (`platform: hiflow_ble`)
 ├── sync_core.sh           flattens src/ into this directory (see below)
 ├── README.md
-└── <copied C core>        hiflow_frame/proto/session/clock .[ch], hiflow_crypto*.c,
-                           pb*.c/h, RealDataNew/CommCmdPB/APPInfomationData .pb.[ch]
+├── ble_smp_off.cpp        stubs for the two BLE pairing calls ESPHome makes (no SMP)
+└── <copied C core>        hiflow_frame/proto/session/clock/appinfo/daylog .[ch],
+                           hiflow_crypto*.c, pb*.c/h, RealDataNew/CommCmdPB/CommandPB/
+                           GetConfig/APPInfomationData .pb.[ch]
 ```
 
 ### Why the C core is copied, not referenced

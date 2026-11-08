@@ -213,9 +213,8 @@ bridge, the update is started by hand (see below).
    `--from` is the installed version from the update entity. The tool keeps every image it
    packs, and every image `tools/flash_config.sh` flashes, under
    `.esphome/zigbee_ota/`, and finds the running one there; without it, or without detools,
-   the file holds the compressed full image. An ESP32-H2-Zero on v0.7.6 or older that refuses
-   the full image (no memory for its inflater) takes the delta, or a full image made with
-   `--heatshrink` (needs detools too).
+   the file holds the compressed full image. For an ESP32-H2-Zero on v0.7.6 or older that
+   full image comes in a format its older firmware takes, which needs detools too.
    With `--from` the tool also stops when the new build is not newer than the installed one,
    because the coordinator would not offer it.
 3. **Install:** copy the `.ota` file from `.esphome/zigbee_ota/` into `/config/zigpy_ota`,

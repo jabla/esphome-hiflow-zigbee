@@ -162,8 +162,8 @@ CONFIG_SCHEMA = cv.Schema(
         # The network time: every sync of this time component sets the
         # bridge's clock, so it is right even after a power cut at night.
         # hiflow-zb.yaml points it at ESPHome's zigbee time platform, which
-        # reads the coordinator's clock (ZHA and Zigbee2MQTT answer from the
-        # host's clock).
+        # reads the coordinator's clock (ZHA answers from the host's clock;
+        # not yet tested with Zigbee2MQTT).
         cv.Optional(CONF_TIME_ID): cv.use_id(time_.RealTimeClock),
         cv.Optional(CONF_NETWORK_TIME): cv.invalid(
             "network_time was replaced by time_id: add a `time:` entry with "

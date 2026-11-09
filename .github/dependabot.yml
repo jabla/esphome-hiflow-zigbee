@@ -9,3 +9,15 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+
+  # The ESPHome pin in requirements-ci.txt. Its pull requests are a notice plus
+  # a CI run (board builds, linker-map checks for phy_guard and timer_guard).
+  # No auto-merge: each ESPHome bump needs a hardware test of the bridge and the
+  # ESPHome version line in README.md ("What you need") updated before merge.
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 1
+    commit-message:
+      prefix: "ci"

@@ -1,0 +1,3 @@
+# The ESPHome release the CI compiles with (.github/workflows/ci.yml). Dependabot
+# proposes newer ones; .github/dependabot.yml says what a bump needs before merge.
+esphome==2026.10.0

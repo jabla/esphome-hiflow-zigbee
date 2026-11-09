@@ -4,6 +4,8 @@ on:
   # Once per pull request; the ruleset checks it against the latest main, so
   # the merge adds nothing new. By hand from the Actions tab if needed.
   # Documentation-only changes need neither the tests nor a firmware build.
+  # Dependabot's pull requests run it too: it needs no secrets and no write
+  # token, so an ESPHome bump in requirements-ci.txt gets the map checks below.
   pull_request:
     paths-ignore: ['**.md', 'docs/**']
   workflow_dispatch:
@@ -27,6 +29,10 @@ jobs:
         run: |
           python3 tools/make_bleonly_board.py
           git diff --exit-code -- hiflow-zb-bleonly.yaml
+      - name: README names the minimum ESPHome the components require
+        run: |
+          python3 tools/sync_esphome_min.py
+          git diff --exit-code -- README.md
 
   esphome:
     runs-on: ubuntu-26.04
@@ -48,12 +54,12 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install ESPHome
-        run: pip install "esphome==2026.10.0"
+        run: pip install -r requirements-ci.txt
       - name: Cache the ESP-IDF toolchain
         uses: actions/cache@v6
         with:
           path: ~/.cache/esphome
-          key: esphome-idf-${{ runner.os }}-esphome-2026.10.0
+          key: esphome-idf-${{ runner.os }}-${{ hashFiles('requirements-ci.txt') }}
       - name: Compile with the example credentials
         # The component refuses the example values unless told otherwise.
         env:
@@ -97,3 +103,39 @@ jobs:
           fi
           awk '$1 == ".text.esp_timer_impl_advance" {if (NF == 1) getline; else $1 = $2; print $1}' "$map" \
             | grep -q '^0x408'
+
+  esphome-minimum:
+    # The oldest ESPHome the components accept (cv.require_esphome_version in
+    # components/*/__init__.py, also named in README.md). The three boards build with it, so
+    # "or newer" holds: when the code starts to need a newer ESPHome, this job fails until the
+    # minimum there is raised (then run tools/sync_esphome_min.py).
+    runs-on: ubuntu-26.04
+    strategy:
+      matrix:
+        include:
+          - sleepy: "false"
+          - board: waveshare_c6_lcd147
+          - board: waveshare_h2_zero
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Minimum ESPHome from the components
+        id: min
+        run: |
+          v=$(python3 tools/sync_esphome_min.py --version)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Install that ESPHome
+        run: pip install "esphome==${{ steps.min.outputs.version }}"
+      - name: Cache the ESP-IDF toolchain
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/esphome
+          key: esphome-idf-${{ runner.os }}-minimum-${{ steps.min.outputs.version }}
+      - name: Compile with the example credentials
+        env:
+          HIFLOW_ALLOW_EXAMPLE_SECRETS: "1"
+        run: |
+          cp hiflow_secrets.example.yaml hiflow_secrets.yaml
+          esphome ${{ matrix.board && format('-s board {0}', matrix.board) || '' }} ${{ matrix.sleepy && format('-s sleepy {0}', matrix.sleepy) || '' }} compile hiflow-zb.yaml

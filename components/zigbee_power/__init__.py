@@ -241,6 +241,9 @@ async def to_code(config):
         cg.add_define("USE_ZIGBEE_POWER_TIMER_GUARD")
         cg.add_build_flag("-Wl,--wrap=esp_timer_get_time")
         cg.add_build_flag("-Wl,--wrap=esp_timer_impl_get_time")
+        # ESP-IDF's own changes of esp_timer (light sleep), see timer_guard.h.
+        cg.add_build_flag("-Wl,--wrap=esp_timer_private_set")
+        cg.add_build_flag("-Wl,--wrap=esp_timer_private_advance")
         # A repair can run in an interrupt while the flash cache is off: keeps
         # esp_timer_private_advance() in IRAM (also esp_timer's own code).
         add_idf_sdkconfig_option("CONFIG_PM_SLP_IRAM_OPT", True)

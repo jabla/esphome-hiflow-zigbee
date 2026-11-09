@@ -86,18 +86,26 @@ jobs:
           map=$(ls "$(dirname '${{ matrix.config }}')"/.esphome/build/*/build/*.map)
           awk -v s=__wrap_ezb_app_signal_add_handler '$1 == s {f = 1; next} f && !/^ / {f = 0} f' "$map" \
             | grep -q 'zigbee_esp32\.cpp\.obj'
-      - name: timer_guard sits on every reading of the clock
-        # On the ESP32-C6 the component wraps esp_timer_get_time and esp_timer_impl_get_time
-        # (components/zigbee_power/timer_guard.h). From the linker map: esp-zigbee-lib's alarm
-        # and esp_timer's own dispatcher read through the wrappers, nothing but esp_timer and
-        # the FreeRTOS tick reads the SYSTIMER counter, and the repair sits in IRAM. A new
-        # matrix entry for another chip has to be left out here.
+      - name: timer_guard sits on every reading and change of the clock
+        # On the ESP32-C6 the component wraps esp_timer_get_time, esp_timer_impl_get_time,
+        # esp_timer_private_set and esp_timer_private_advance (components/zigbee_power/timer_guard.h).
+        # From the linker map: esp-zigbee-lib's alarm and esp_timer's own dispatcher read through
+        # the wrappers, light sleep sets esp_timer through its wrapper (sleepy builds), nothing
+        # calls esp_timer_impl_set/advance under those names, no other code reads the SYSTIMER
+        # counters through the HAL (timer_guard reads the tick's counter from the registers), and
+        # the repair sits in IRAM. A new matrix entry for another chip has to be left out here.
         if: matrix.board != 'waveshare_h2_zero'
         run: |
           map=$(ls "$(dirname '${{ matrix.config }}')"/.esphome/build/*/build/*.map)
           xref() { awk -v s="$1" '$1 == s {f = 1; next} f && !/^ / {f = 0} f' "$map"; }
           xref __wrap_esp_timer_get_time | grep -q 'esp_zigbee_plat_alarm'
           xref __wrap_esp_timer_impl_get_time | grep -q 'libesp_timer\.a(esp_timer\.c'
+          if [ '${{ matrix.sleepy }}' != false ]; then
+            xref __wrap_esp_timer_private_set | grep -q 'libesp_hw_support\.a(sleep_modes\.c'
+          fi
+          if xref esp_timer_impl_set | grep -q . || xref esp_timer_impl_advance | grep -q .; then
+            exit 1
+          fi
           if xref systimer_hal_get_counter_value | grep -v 'port_systick\.c\|esp_timer_impl_systimer\.c'; then
             exit 1
           fi

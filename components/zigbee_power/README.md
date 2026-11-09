@@ -110,15 +110,19 @@ Things to know:
   pass through unchanged; on the bench all of them came from a task, where waiting is fine.
 - On the ESP32-C6, with or without `sleepy`, the component works around a hardware fault
   (ESP-IDF issue 19036, seen on a XIAO ESP32C6 with chip revision v0.2; `dump_config` shows the
-  revision): the counter behind `esp_timer` loses bits and the clock jumps back by 4 s up to
-  hours. Everything timed by `esp_timer` stops until it catches up (ESPHome's scheduler, the
-  Zigbee poll), and a jump while the radio is on makes the PHY's switch-off wait with interrupts
-  off until the interrupt watchdog resets the chip. On the bench one XIAO hit it three times in
-  about 2 hours of Zigbee OTA downloads (two resets, one stalled download). `timer_guard.cpp`
-  checks every reading of the clock against the FreeRTOS tick (the fault leaves the tick alone)
-  and moves `esp_timer` forward before anyone sees it behind. It lives here because the Zigbee
-  poll and the PHY switch-off are where the fault bites; a C6 without this component gets no
-  guard. A repair logs a warning ("esp_timer jumped back ..."); nothing to do.
+  revision): the counter behind `esp_timer` loses bits and the clock jumps back, mostly by 4 s
+  up to hours, sometimes by less than a second. Everything timed by `esp_timer` stops until it
+  catches up (ESPHome's scheduler, the Zigbee poll), and a jump while the radio is on makes the
+  PHY's switch-off wait with interrupts off until the interrupt watchdog resets the chip. On the
+  bench one XIAO hit it three times in about 2 hours of Zigbee OTA downloads (two resets, one
+  stalled download). The FreeRTOS tick runs on a second counter of the same clock, so the
+  difference between the two stays fixed until ESP-IDF sets `esp_timer` after a light sleep.
+  `timer_guard.cpp` checks that difference on every reading of the clock and moves `esp_timer`
+  forward by exactly what it lost before anyone sees it behind. The tick's counter loses bits
+  too, so far tens of milliseconds at a time; that is logged, not repaired. It lives here
+  because the Zigbee poll and the PHY switch-off are where the fault bites; a C6 without this
+  component gets no guard. A loss logs a warning ("esp_timer lost ..." or "FreeRTOS tick lost
+  ..."); nothing to do.
 - A board that ran a sleepy image and then gets an image without this component, a rollback
   included, keeps its receiver off until it is paired again.
 - GPIO outputs float while the chip sleeps: ESP-IDF isolates every pad in light sleep. A pin
@@ -130,8 +134,9 @@ Things to know:
   one temperature sensor, so not both. With `sleepy: true`, `zigbee_power::phy_guard_stats()`
   counts what the PHY workaround above did, e.g. `deferred` (switch-offs that would have
   aborted) and `bt_nonblocking` (BLE controller calls where it could not wait; none seen). With
-  `timer_guard`, `zigbee_power::timer_guard_stats()` gives `repairs` and `total_ms` (C6 builds
-  only: wrap a lambda shared with the H2 in `#ifdef USE_ZIGBEE_POWER_TIMER_GUARD`).
+  `timer_guard`, `zigbee_power::timer_guard_stats()` gives `repairs`, `total_ms` and
+  `tick_losses` (C6 builds only: wrap a lambda shared with the H2 in
+  `#ifdef USE_ZIGBEE_POWER_TIMER_GUARD`).
 
 For debugging, the share of the last 5 minutes spent in light sleep as a Zigbee sensor (around
 98 % for a sleepy bridge by day, 0 % without `sleepy`; no value for the first 5 minutes after a

@@ -70,10 +70,12 @@ int shim_frame(void *p, const uint8_t *in, size_t len, uint8_t *out, int *kill) 
     *kill = fi->kill_link;
     return n;
 }
+/* Fills 10 ints (SHIM_COUNTS in fake_ble.py). */
 void shim_counts(void *p, int *c) {
     fake_inverter_t *fi = p;
     c[0] = fi->connections; c[1] = fi->logins_seen; c[2] = fi->v0_requests; c[3] = fi->data_requests;
     c[4] = fi->bad_key_frames; c[5] = fi->time_syncs;
+    c[6] = fi->limit_writes; c[7] = fi->limit_tenths; c[8] = fi->power_commands; c[9] = fi->output_on;
 }
 
 /* The recorded pages with only the power changed: the inverter's AC power

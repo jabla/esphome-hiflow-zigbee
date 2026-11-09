@@ -11,23 +11,51 @@ flat, ESPHome-loadable copies in this directory are produced by
 ``./sync_core.sh`` (see README.md).
 """
 
+import logging
 import os
 
 import esphome.codegen as cg
-from esphome.components import ble_client, esp32_ble_tracker
+from esphome.components import (
+    ble_client,
+    esp32_ble_tracker,
+    number,
+    switch,
+    time as time_,
+)
 from esphome.components.esp32 import add_idf_sdkconfig_option
-from esphome.components.zigbee.const import ZigbeeComponent
+from esphome.components.zigbee.const import (
+    CONF_CLUSTER,
+    CONF_ENDPOINT,
+    CONF_REPORT,
+    CONF_USE_DEVICE_TYPE,
+    ZigbeeComponent,
+)
 import esphome.config_validation as cv
-from esphome.const import CONF_ID, CONF_MAC_ADDRESS, CONF_UPDATE_INTERVAL
+from esphome.const import (
+    CONF_ID,
+    CONF_MAC_ADDRESS,
+    CONF_NAME,
+    CONF_RESTORE_MODE,
+    CONF_TIME_ID,
+    CONF_UPDATE_INTERVAL,
+    UNIT_PERCENT,
+)
 from esphome.core import CORE, TimePeriod
 from esphome.coroutine import CoroPriority, coroutine_with_priority
 import esphome.final_validate as fv
 
 DEPENDENCIES = ["ble_client"]
-AUTO_LOAD = ["sensor"]
+
+_LOGGER = logging.getLogger(__name__)
 
 hiflow_ble_ns = cg.esphome_ns.namespace("hiflow_ble")
 HiflowBle = hiflow_ble_ns.class_("HiflowBle", cg.Component, ble_client.BLEClientNode)
+HiflowPowerLimit = hiflow_ble_ns.class_(
+    "HiflowPowerLimit", number.Number, cg.Parented.template(HiflowBle)
+)
+HiflowInverterSwitch = hiflow_ble_ns.class_(
+    "HiflowInverterSwitch", switch.Switch, cg.Parented.template(HiflowBle)
+)
 
 CONF_HIFLOW_BLE_ID = "hiflow_ble_id"
 CONF_BLE_CLIENT_ID = "ble_client_id"
@@ -52,8 +80,19 @@ CONF_BTU_TASK_STACK_SIZE = "btu_task_stack_size"
 POWER_LIMIT_ENDPOINT = 32
 # The inverter's on/off switch. 33 is the board's uptime sensor in hiflow-zb.yaml.
 INVERTER_SWITCH_ENDPOINT = 34
-# The Time cluster that reads the network time from the coordinator.
-TIME_ENDPOINT = 35
+
+
+
+def AUTO_LOAD(config):
+    # number and switch only for the controls that are on (see
+    # _control_entities). A falsy config is ESPHome asking for the full set.
+    loads = ["sensor"]
+    if not config or config.get(CONF_POWER_LIMIT):
+        loads.append("number")
+    if not config or config.get(CONF_INVERTER_CONTROL):
+        loads.append("switch")
+    return loads
+
 
 # GATT layout of the HiFlow Pro (see test/ref/hiflow_ble/const.py).
 SERVICE_UUID = "0000e0ff-3c17-d293-8e48-14fe2e4da212"
@@ -111,18 +150,26 @@ CONFIG_SCHEMA = cv.Schema(
         # standby that a real dusk brings (a fake inverter switched off is
         # then a night).
         cv.Optional(CONF_NIGHT_TEST, default=False): cv.boolean,
-        # A slider for the inverter's power limit, as a Zigbee Analog Output on
-        # endpoint 32. The bridge only writes when the slider moves. On by
-        # default wherever the zigbee component is loaded (see below).
+        # A slider for the inverter's power limit: a number entity, which
+        # ESPHome's Zigbee component puts on an Analog Output on endpoint 32.
+        # The bridge only writes when the slider moves. On by default wherever
+        # the zigbee component is loaded (see below).
         cv.Optional(CONF_POWER_LIMIT): cv.boolean,
-        # A switch that turns the inverter's output on and off, as a Zigbee
-        # On/Off cluster on endpoint 34. On by default with Zigbee.
+        # A switch that turns the inverter's output on and off: a switch
+        # entity on a Zigbee On/Off cluster on endpoint 34. On by default with
+        # Zigbee.
         cv.Optional(CONF_INVERTER_CONTROL): cv.boolean,
-        # Read the time from the coordinator (ZHA and Zigbee2MQTT answer from
-        # the host's clock) through a Time client cluster on endpoint 35, so
-        # the clock is right even after a power cut at night. On by default
-        # with Zigbee.
-        cv.Optional(CONF_NETWORK_TIME): cv.boolean,
+        # The network time: every sync of this time component sets the
+        # bridge's clock, so it is right even after a power cut at night.
+        # hiflow-zb.yaml points it at ESPHome's zigbee time platform, which
+        # reads the coordinator's clock (ZHA answers from the host's clock;
+        # not yet tested with Zigbee2MQTT).
+        cv.Optional(CONF_TIME_ID): cv.use_id(time_.RealTimeClock),
+        cv.Optional(CONF_NETWORK_TIME): cv.invalid(
+            "network_time was replaced by time_id: add a `time:` entry with "
+            "`platform: zigbee` and point time_id at it (see hiflow-zb.yaml); "
+            "to go without a network time, delete the line"
+        ),
         # For testing the display at night: fills today's day log with a made-up
         # sunny day at boot, never saved to flash. Not for production.
         cv.Optional(CONF_DEMO_DAY, default=False): cv.boolean,
@@ -136,28 +183,60 @@ CONFIG_SCHEMA = cv.Schema(
 ).extend(cv.COMPONENT_SCHEMA)
 
 
-def _reserve_control_endpoints(config):
+# The controls are ordinary number and switch entities. ESPHome's Zigbee
+# component gives each its endpoint and cluster and hands every write from the
+# coordinator to the entity. Their names stay inside the firmware, except that
+# the slider's goes out as the Analog Output's description. `report: force`
+# sends each new value straight to the coordinator, like the sensors.
+POWER_LIMIT_SCHEMA = number.number_schema(HiflowPowerLimit, unit_of_measurement=UNIT_PERCENT)
+POWER_LIMIT_ENTITY = {
+    CONF_NAME: "HiFlow Power Limit",
+    CONF_ENDPOINT: POWER_LIMIT_ENDPOINT,
+    CONF_REPORT: "force",
+}
+INVERTER_SWITCH_SCHEMA = switch.switch_schema(HiflowInverterSwitch, block_inverted=True)
+INVERTER_SWITCH_ENTITY = {
+    CONF_NAME: "HiFlow Inverter",
+    CONF_ENDPOINT: INVERTER_SWITCH_ENDPOINT,
+    # On/Off, as before; ESPHome's default for a switch is a Binary Output.
+    CONF_CLUSTER: "on_off",
+    CONF_REPORT: "force",
+    # The endpoint keeps the device type it had before the entity (custom
+    # attributes): a new one would show up only after a new interview.
+    CONF_USE_DEVICE_TYPE: False,
+    # The bridge restores the last confirmed state itself (see hiflow_ble.cpp).
+    CONF_RESTORE_MODE: "DISABLED",
+}
+
+
+def _control_entities(config):
     # The controls default to on, but only with Zigbee: the BLE-only build
     # has no endpoint to put them on. Set explicitly, they still need Zigbee.
-    config.setdefault(CONF_POWER_LIMIT, CONF_ZIGBEE_ID in config)
-    config.setdefault(CONF_INVERTER_CONTROL, CONF_ZIGBEE_ID in config)
-    config.setdefault(CONF_NETWORK_TIME, CONF_ZIGBEE_ID in config)
-    # Registered with ESPHome's Zigbee component like a sensor endpoint, so the
-    # number is taken and the endpoint (basic and identify cluster) is created
-    # by its codegen. The control's own cluster is added in to_code.
-    from esphome.components.zigbee.const_esp32 import CONF_CLUSTERS, DEVICE_TYPE
-    from esphome.components.zigbee.zigbee_ep_esp32 import add_ep
-
-    for option, endpoint in (
-        (CONF_POWER_LIMIT, POWER_LIMIT_ENDPOINT),
-        (CONF_INVERTER_CONTROL, INVERTER_SWITCH_ENDPOINT),
-        (CONF_NETWORK_TIME, TIME_ENDPOINT),
+    # An enabled control becomes the validated entity config (validating it
+    # registers its endpoint with the Zigbee component); a disabled one goes.
+    for option, schema, entity in (
+        (CONF_POWER_LIMIT, POWER_LIMIT_SCHEMA, POWER_LIMIT_ENTITY),
+        (CONF_INVERTER_CONTROL, INVERTER_SWITCH_SCHEMA, INVERTER_SWITCH_ENTITY),
     ):
-        if not config[option]:
+        if not config.get(option, CONF_ZIGBEE_ID in config):
+            config.pop(option, None)
             continue
         if CONF_ZIGBEE_ID not in config:
             raise cv.Invalid(f"{option} needs the zigbee component")
-        add_ep({DEVICE_TYPE: "CUSTOM_ATTR", CONF_CLUSTERS: []}, endpoint, None)
+        config[option] = schema(dict(entity))
+    return config
+
+
+def _time_hint(config):
+    # Until the zigbee time platform, the bridge read the network time by
+    # itself whenever Zigbee was on. An own config from that time now builds
+    # without it and says nothing.
+    if CONF_ZIGBEE_ID in config and CONF_TIME_ID not in config:
+        _LOGGER.warning(
+            "hiflow_ble: no time_id, so no network time: the inverter's time sets "
+            "the bridge's clock. hiflow-zb.yaml adds a `time:` entry with "
+            "`platform: zigbee` and points time_id at it."
+        )
     return config
 
 
@@ -172,7 +251,11 @@ def _night_options(config):
 # night_ble_off relies on ESPHome settling the tracker and the client when BLE
 # goes off; the bridge is built and tested on 2026.10 and newer only.
 CONFIG_SCHEMA = cv.All(
-    CONFIG_SCHEMA, cv.require_esphome_version(2026, 10, 0), _night_options, _reserve_control_endpoints
+    CONFIG_SCHEMA,
+    cv.require_esphome_version(2026, 10, 0),
+    _night_options,
+    _control_entities,
+    _time_hint,
 )
 
 # The values of hiflow_secrets.example.yaml. A build that still carries one of
@@ -288,15 +371,18 @@ async def to_code(config):
     cg.add(var.set_tx_uuid16(TX_CHAR_UUID16))
     cg.add(var.set_rx_uuid16(RX_CHAR_UUID16))
 
-    if config[CONF_POWER_LIMIT]:
-        zb = await cg.get_variable(config[CONF_ZIGBEE_ID])
-        cg.add(var.set_power_limit_slider(zb, POWER_LIMIT_ENDPOINT))
-        CORE.add_job(_add_power_limit_cluster, zb)
+    if limit_config := config.get(CONF_POWER_LIMIT):
+        # The inverter takes 10 % steps only; ZHA takes the step from the
+        # Analog Output's resolution.
+        limit = await number.new_number(limit_config, min_value=0, max_value=100, step=10)
+        cg.add(limit.set_parent(var))
+        cg.add(var.set_power_limit(limit))
+        CORE.add_job(_add_power_limit_range, await cg.get_variable(config[CONF_ZIGBEE_ID]))
 
-    if config[CONF_INVERTER_CONTROL]:
-        zb = await cg.get_variable(config[CONF_ZIGBEE_ID])
-        cg.add(var.set_inverter_switch(zb, INVERTER_SWITCH_ENDPOINT))
-        CORE.add_job(_add_inverter_switch_cluster, zb)
+    if switch_config := config.get(CONF_INVERTER_CONTROL):
+        inverter_switch = await switch.new_switch(switch_config)
+        cg.add(inverter_switch.set_parent(var))
+        cg.add(var.set_inverter_switch(inverter_switch))
 
     if config[CONF_DEMO_DAY]:
         cg.add_define("HIFLOW_DEMO_DAY")
@@ -309,28 +395,40 @@ async def to_code(config):
     if CONF_BTU_TASK_STACK_SIZE in config:
         CORE.add_job(_set_btu_task_stack_size, config[CONF_BTU_TASK_STACK_SIZE])
 
-    if config[CONF_NETWORK_TIME]:
-        zb = await cg.get_variable(config[CONF_ZIGBEE_ID])
-        cg.add(var.set_network_time(zb, TIME_ENDPOINT))
-        CORE.add_job(_add_time_cluster, zb)
+    if CONF_TIME_ID in config:
+        clock = await cg.get_variable(config[CONF_TIME_ID])
+        cg.add(var.set_network_time(clock))
 
 
-# The clusters go onto the endpoints that the Zigbee codegen creates, so they have
-# to come after that code in setup(), and before App.setup() starts the Zigbee
-# task that registers the device.
+# ESPHome's Zigbee number on the ESP32 gives the Analog Output no range,
+# resolution or application type. Without them ZHA shows a slider from 0 to
+# 1023, and Zigbee2MQTT names the value differently. These go onto the
+# cluster that the zigbee codegen creates for endpoint 32, so after that code
+# in setup() and before App.setup() registers the device.
+POWER_LIMIT_ATTRIBUTES = (
+    (0x0041, cg.float_, 100.0),  # MaxPresentValue
+    (0x0045, cg.float_, 0.0),  # MinPresentValue
+    (0x006A, cg.float_, 10.0),  # Resolution
+    # ApplicationType: group Analog Output (0x01), type Percentage (0x04),
+    # index 0xFFFF (vendor defined)
+    (0x0100, cg.uint32, 0x0104FFFF),
+)
+
+
 @coroutine_with_priority(CoroPriority.LATE)
-async def _add_power_limit_cluster(zb):
-    cg.add(hiflow_ble_ns.add_power_limit_cluster(zb, POWER_LIMIT_ENDPOINT))
-
-
-@coroutine_with_priority(CoroPriority.LATE)
-async def _add_inverter_switch_cluster(zb):
-    cg.add(hiflow_ble_ns.add_inverter_switch_cluster(zb, INVERTER_SWITCH_ENDPOINT))
-
-
-@coroutine_with_priority(CoroPriority.LATE)
-async def _add_time_cluster(zb):
-    cg.add(hiflow_ble_ns.add_time_cluster(zb, TIME_ENDPOINT))
+async def _add_power_limit_range(zb):
+    for attr_id, c_type, value in POWER_LIMIT_ATTRIBUTES:
+        cg.add(
+            zb.add_attr(
+                cg.TemplateArguments(c_type),
+                POWER_LIMIT_ENDPOINT,
+                cg.RawExpression("::EZB_ZCL_CLUSTER_ID_ANALOG_OUTPUT"),
+                cg.RawExpression("EZB_ZCL_CLUSTER_SERVER"),
+                attr_id,
+                0,
+                value,
+            )
+        )
 
 
 # After esp32_ble_tracker's to_code, which sets its own value.

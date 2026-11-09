@@ -70,7 +70,7 @@ LAYOUT: dict[int, tuple[str, str]] = {
     31: ("port4_energy_daily", "Port 4 energy today"),
     # 32 is the power limit slider, a number entity
     33: ("uptime", "Bridge uptime"),
-    # 34 is the on/off switch, 35 the time client
+    # 34 is the on/off switch; 35 is unused (older releases had the time client there)
     36: ("chip_temperature", "Chip temperature"),
 }
 VISIBLE = "ac_power"  # the one entity --hide-extras leaves visible

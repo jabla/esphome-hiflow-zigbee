@@ -4,7 +4,7 @@
 
 | Path | What |
 |---|---|
-| `hiflow-zb.yaml` | the device config: Zigbee + `ble_client` + the component, 20 sensors (board independent) |
+| `hiflow-zb.yaml` | the device config: Zigbee + `ble_client` + the component, 33 sensors (board independent) |
 | `boards/` | board specific hardware and the chip variant, pulled in by the `board` substitution: `boards/xiao_esp32c6.yaml` (RF switch), `boards/waveshare_c6_lcd147.yaml` (on-board LCD) and `boards/waveshare_h2_zero.yaml` (ESP32-H2) |
 | `hiflow_secrets.example.yaml` | template for your `hiflow_secrets.yaml` (also holds the `board` selection) |
 | `components/hiflow_ble/` | the ESPHome external component (with flat copies of the C core, see its README) |
@@ -64,8 +64,9 @@ block once a minute, against the fake inverter in `tools/fake_inverter_ble/`), a
 `sleepy` had **30.5 kB** free with the session up and Zigbee joined, 26.1 kB at the lowest and
 27.6 kB as the largest block, steady over 12 minutes. That is an eighth of the C6's and enough
 for the session. A sleepy build had 19-20 kB free. A delta update over Zigbee took the low mark
-down to 23.2 kB (15.0 kB sleepy); a zlib full image cannot run there (32 KB window), so the
-H2 gets full images as heatshrink, see `components/zigbee_ota/README.md`.
+down to 23.2 kB (15.0 kB sleepy); a zlib full image with the usual 32 KB window cannot run
+there, so the H2 gets full images with a 4 KB window, 15 KB for the inflater, see
+`components/zigbee_ota/README.md`.
 
 At a real inverter the H2 had 7.8 kB free at the lowest by day and 2.3 kB while it reconnected at
 dusk. `hiflow-zb.yaml` therefore cuts the BLE stack down to one link without BLE 5 features: the
@@ -73,7 +74,9 @@ controller's code runs from flash, its buffers are smaller, Bluedroid has no sec
 its BTU task the ESP-IDF stack size. Without a display the component also leaves out the day
 curve. The sleepy H2 build then needs 108,576 B of static DRAM (42.1 %) instead of 137,120 B.
 At the inverter it then had about 48 kB free at the lowest, also while it took an update over
-Zigbee with the session up.
+Zigbee with the session up. On the bench, with the session up, a full image over Zigbee (750 kB
+with the 4 KB zlib window, about half an hour) took the low mark to 43.7 kB; the same image with
+the 32 KB window of the firmware up to v0.7.6 took it to 16.0 kB.
 The C6 boards do not need the RAM but run the same trimmed stack, so a test on one board holds
 for all: the XIAO needs 113,912 B (25.2 %) instead of 138,264 B, the C6-LCD 133,208 B (29.5 %)
 instead of 157,898 B.

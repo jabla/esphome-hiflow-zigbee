@@ -15,8 +15,9 @@ CONFIG_SCHEMA = output.FLOAT_OUTPUT_SCHEMA.extend(
         cv.Required(CONF_ID): cv.declare_id(BacklightOutput),
         cv.Required(CONF_PIN): pins.internal_gpio_output_pin_schema,
         # RC_FAST gives 9 bits of duty at 20 kHz on the C6, 8 bits on the H2.
+        # Switching off waits two periods in the main loop: 2 ms at 1 kHz.
         cv.Optional(CONF_FREQUENCY, default="20kHz"): cv.All(
-            cv.frequency, cv.float_range(min=100, max=100000)
+            cv.frequency, cv.float_range(min=1000, max=100000)
         ),
     }
 ).extend(cv.COMPONENT_SCHEMA)

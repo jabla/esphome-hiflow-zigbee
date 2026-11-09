@@ -38,6 +38,7 @@ lib.shim_frame.argtypes = [
     ctypes.c_void_p, ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.POINTER(ctypes.c_int),
 ]
 lib.shim_counts.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_int)]
+SHIM_COUNTS = 10  # ints that shim_counts() fills
 lib.shim_set_power.argtypes = [ctypes.c_void_p, ctypes.c_int32]
 lib.shim_reset_pages.argtypes = [ctypes.c_void_p]
 lib.shim_set_mode.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
@@ -154,9 +155,10 @@ def on_write(characteristic, value, **kwargs):
     apply_mode_file()
     lib.shim_set_time(fi, int(time.time()) + clock_offset)
     apply_power_file()
-    counts = (ctypes.c_int * 6)()
+    counts = (ctypes.c_int * SHIM_COUNTS)()
     lib.shim_counts(fi, counts)
     logins_before = counts[1]
+    limit_writes_before, power_commands_before = counts[6], counts[8]
     out = ctypes.create_string_buffer(2048)
     kill = ctypes.c_int(0)
     n = lib.shim_frame(fi, bytes(value), len(value), out, ctypes.byref(kill))
@@ -165,6 +167,10 @@ def on_write(characteristic, value, **kwargs):
     if counts[1] != logins_before:
         log(f"LOGIN #{counts[1]}: timestamp {lib.shim_last_login_lead(fi):+d} s vs device clock"
             f"{' -> killed' if kill.value else ''}")
+    if counts[6] != limit_writes_before:
+        log(f"LIMIT write #{counts[6]}: limit now {counts[7] / 10:g} %")
+    if counts[8] != power_commands_before:
+        log(f"POWER command #{counts[8]}: output now {'on' if counts[9] else 'off'}")
     if n:
         pending.append(out.raw[:n])
     if kill.value:
@@ -191,9 +197,9 @@ async def watch_link():
             lib.shim_link_up(fi)
             log("link up")
         elif was and not now:
-            c = (ctypes.c_int * 6)()
+            c = (ctypes.c_int * SHIM_COUNTS)()
             lib.shim_counts(fi, c)
-            log("link down; connections %d logins %d v0 %d data %d badkey %d timesync %d" % tuple(c))
+            log("link down; connections %d logins %d v0 %d data %d badkey %d timesync %d" % tuple(c[:6]))
         was = now
         await asyncio.sleep(0.2)
 

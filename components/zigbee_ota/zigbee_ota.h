@@ -6,7 +6,8 @@
 // Threads: the stack calls the progress handler on the Zigbee task. Flash
 // writes happen there (OTA_WITH_SEQUENTIAL_WRITES erases sector by sector, so
 // no single call blocks the stack for long); everything the main loop needs
-// goes through atomics.
+// goes through atomics. The main loop must not block, so it tries the stack's
+// lock for 10 ms at most and comes back later when it is taken.
 
 #include "esphome/core/defines.h"
 
@@ -42,16 +43,20 @@ class ZigbeeOta : public Component {
   void loop() override;
   void dump_config() override;
   // After ZigbeeComponent::setup(), which registers ESPHome's action handler:
-  // ours replaces it (the stack keeps one) and forwards nothing it needs.
+  // ours replaces it (the stack keeps one) and passes attribute writes on.
   float get_setup_priority() const override { return setup_priority::LATE; }
 
  protected:
+  /// Puts our action handler into the stack, from setup on (main loop).
+  void register_action_handler_();
+  /// Block size, block retry and TX power, once the stack runs (main loop).
+  void apply_stack_settings_();
   static void action_handler_(uint32_t callback_id, void *message);
   void on_progress_(void *message);
   void on_query_response_(void *message);
   void send_query_();
   // The image inside the OTA file comes zlib-compressed, or as an
-  // esp_delta_ota patch against the running image.
+  // esp_delta_ota patch against the running image (or from nothing).
   enum class ImageFormat : uint8_t { NONE, ZLIB, DELTA };
   bool begin_image_(uint16_t tag, uint32_t length);
   esp_err_t write_image_(const uint8_t *data, uint32_t len, bool last);
@@ -93,9 +98,11 @@ class ZigbeeOta : public Component {
   uint8_t pending_[8];             // a sub-element header split across blocks
   uint8_t pending_len_{0};
   uint32_t image_written_{0};      // bytes of app image written to flash
-  // zlib: miniz's inflater (in ROM) and its 32 KB output window.
+  // zlib: miniz's inflater (in ROM) and its output window, as large as the
+  // stream's header asks for (32 KB at most).
   void *inflator_{nullptr};
   uint8_t *window_{nullptr};
+  size_t window_size_{0};
   size_t window_pos_{0};
   bool inflate_done_{false};
   // delta: esp_delta_ota patch header (magic + SHA-256 of the base image),

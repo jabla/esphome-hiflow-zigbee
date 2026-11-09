@@ -10,6 +10,7 @@
 #include "driver/ledc.h"
 #include "esp_pm.h"
 #include "esphome/components/output/float_output.h"
+#include "esphome/core/application.h"
 #include "esphome/core/component.h"
 #include "esphome/core/hal.h"
 
@@ -57,6 +58,8 @@ class BacklightOutput : public output::FloatOutput, public Component {
 // MIPI DCS commands, the same on the ST7789 and its relatives.
 static constexpr uint8_t PANEL_SLPIN = 0x10;
 static constexpr uint8_t PANEL_SLPOUT = 0x11;
+// The ST7789 wants this long between SLPIN and SLPOUT.
+static constexpr uint32_t PANEL_SLEEP_GAP_MS = 120;
 
 namespace detail {
 // mipi_spi keeps write_command_() protected; a pointer to it, named through a
@@ -67,8 +70,16 @@ template<typename Display> struct PanelAccess : Display {
     (display->*write)(cmd);
   }
 };
-uint32_t &panel_last_change();
-bool &panel_asleep();
+// What set_panel_sleep() knows about the panel. Its address keys the timer.
+struct PanelState {
+  // millis_64(), the scheduler's clock, once the last SLPIN or SLPOUT had
+  // settled. On millis() (the tick count, which can fall behind in light
+  // sleep) the timer could find the gap a little short.
+  uint64_t last_change{0};
+  bool asleep{false};  // the mode the panel was put in then
+  bool wanted{false};  // the mode the last call asked for
+};
+PanelState &panel_state();
 }  // namespace detail
 
 /// Sets a single WS2812-type RGB LED (bytes sent in R, G, B order). The LED
@@ -80,18 +91,32 @@ void set_status_led(uint8_t gpio, uint8_t r, uint8_t g, uint8_t b);
 
 /// Puts the panel into its sleep mode (a few uA, the frame memory kept and
 /// still writable) or wakes it. The ST7789 wants 120 ms between the two
-/// commands and 5 ms after SLPOUT before the next one; both waits happen here.
-/// The state is kept once for the program, so this is for a single panel.
+/// commands. A change that comes sooner goes out from a timer once they have
+/// passed, so the main loop never waits for it; a waking panel stays dark
+/// until then, even with the backlight on. The 5 ms it wants after either
+/// command before the next one are waited here. The state is kept once for
+/// the program, so this is for a single panel.
 template<typename Display> void set_panel_sleep(Display *display, bool sleep) {
-  if (detail::panel_asleep() == sleep)
+  detail::PanelState &panel = detail::panel_state();
+  panel.wanted = sleep;
+  if (panel.asleep == sleep)
     return;
-  const uint32_t since = millis() - detail::panel_last_change();
-  if (since < 120)
-    delay(120 - since);
+  const uint64_t since = millis_64() - panel.last_change;
+  if (since < PANEL_SLEEP_GAP_MS) {
+    // One timer: a newer change within the 120 ms replaces it. When it runs it
+    // sends what was asked for last, or nothing if the panel is in that mode.
+    App.scheduler.set_timeout(&panel, static_cast<uint32_t>(PANEL_SLEEP_GAP_MS - since),
+                              [display]() { set_panel_sleep(display, detail::panel_state().wanted); });
+    // ESPHome 2026.10 sees a timer set from a component's loop(), such as a
+    // button's on_press, only at its next scheduler run: up to a loop interval
+    // later. The wake makes that the next pass. 2026.11 no longer needs it.
+    App.wake_loop_threadsafe();
+    return;
+  }
   detail::PanelAccess<Display>::command(display, sleep ? PANEL_SLPIN : PANEL_SLPOUT);
-  delay(5);
-  detail::panel_last_change() = millis();
-  detail::panel_asleep() = sleep;
+  delay(6);  // at least 5 ms: delay(5) ends on the 5th tick, 4 to 5 ms on
+  panel.last_change = millis_64();
+  panel.asleep = sleep;
 }
 
 }  // namespace lcd_power

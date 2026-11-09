@@ -9,7 +9,7 @@ output:
   - platform: lcd_power
     id: lcd_backlight
     pin: GPIO22
-    frequency: 20kHz   # 100 Hz to 100 kHz, 20 kHz by default
+    frequency: 20kHz   # 1 kHz to 100 kHz, 20 kHz by default
 ```
 
 - The backlight output keeps its PWM running while the chip light-sleeps. ESPHome's `ledc`
@@ -22,8 +22,9 @@ output:
 - `lcd_power::set_panel_sleep(id(display), true|false)`, from a lambda: sends SLPIN or SLPOUT
   to a panel driven by ESPHome's `mipi_spi` (ST7789 and other MIPI DCS controllers). In sleep
   the controller draws a few uA instead of a few mA; its frame memory stays and can still be
-  written. The waits the ST7789 needs (120 ms between the two, 5 ms after SLPOUT) happen in
-  the call.
+  written. The ST7789 wants 120 ms between the two commands: a change that comes sooner goes
+  out from a timer once they have passed, so the main loop does not wait. The 5 ms it wants
+  after each command happen in the call.
 - `lcd_power::set_status_led(gpio, r, g, b)`, from a lambda: sets a single WS2812-type RGB LED
   (bytes sent in R, G, B order, as this board's LED wants them; a genuine WS2812 takes G, R, B). The RMT channel is enabled only while the 24 bits go out; the LED
   keeps its colour without a signal. ESPHome's `esp32_rmt_led_strip` keeps its channel enabled,

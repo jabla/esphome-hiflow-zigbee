@@ -18,13 +18,11 @@ namespace lcd_power {
 static const char *const TAG = "lcd_power";
 
 namespace detail {
-uint32_t &panel_last_change() {
-  static uint32_t value = 0;
-  return value;
-}
-bool &panel_asleep() {
-  static bool value = false;
-  return value;
+PanelState &panel_state() {
+  // Seeded at the first call: mipi_spi's setup sent SLPOUT before that, so a
+  // first change right after boot waits the gap as well.
+  static PanelState state{millis_64(), false, false};
+  return state;
 }
 }  // namespace detail
 
@@ -65,8 +63,10 @@ void set_status_led(uint8_t gpio, uint8_t r, uint8_t g, uint8_t b) {
   rmt_transmit_config_t transmit = {};
   if (rmt_enable(channel) != ESP_OK)
     return;
+  // The 24 bits take about 30 us. The bound keeps a stuck transfer from
+  // holding the main loop.
   if (rmt_transmit(channel, encoder, frame, sizeof(frame), &transmit) == ESP_OK)
-    rmt_tx_wait_all_done(channel, 100);
+    rmt_tx_wait_all_done(channel, 5);
   rmt_disable(channel);
 }
 
@@ -134,6 +134,7 @@ void BacklightOutput::stop_() {
   // was, lit in as many stops as the duty share. The idle level is the
   // signal's, the pin's inversion applies on top of it.
   ledc_stop(SPEED_MODE, CHANNEL, 0);
+  // Two periods, 2 ms at most: the schema starts at 1 kHz.
   delayMicroseconds(2000000 / this->frequency_ + 1);
   ledc_timer_pause(SPEED_MODE, TIMER);
   ledc_timer_config_t timer = {};

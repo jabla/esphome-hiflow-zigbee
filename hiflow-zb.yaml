@@ -116,12 +116,19 @@ hiflow_ble:
   # At night (the inverter in standby, or not seen) BLE is off and only scans
   # 15 s every 2 minutes; the first link in the morning can take that long.
   night_ble_off: 2min
+  # The network time (see time: below) sets the bridge's clock.
+  time_id: network_time
 
 # No wifi:, no api:, no ota: a pure 802.15.4 node
 zigbee:
   id: zb
   model: HMS-2000-4WB Bridge
   power_source: MAINS_SINGLE_PHASE
+  # The time platform asks right at the join, when the network is often not
+  # ready yet (see time: below); ask again once it has settled.
+  on_join:
+    - delay: 30s
+    - component.update: network_time
 
 # Power saving on the Zigbee side, see components/zigbee_power/README.md.
 # `sleepy` (a substitution, "true" unless hiflow_secrets.yaml says otherwise)
@@ -131,6 +138,15 @@ zigbee:
 zigbee_power:
   id: zb_power
   sleepy: ${sleepy}
+
+# The network time: ESPHome's Zigbee time platform reads the time from the
+# coordinator (ZHA answers from the host's clock; not yet tested with
+# Zigbee2MQTT). It keeps the
+# bridge's clock right after a power cut at night, when the inverter is dark,
+# and takes back what the clock gains in light sleep.
+time:
+  - platform: zigbee
+    id: network_time
 
 # Firmware updates over Zigbee: the coordinator serves a file made by
 # tools/make_zigbee_ota.py (see "Firmware updates over Zigbee" in the README).
@@ -680,7 +696,7 @@ sensor:
   # the power saving takes effect. Read through zigbee_power rather than
   # ESPHome's internal_temperature, which would keep the peripherals powered in
   # light sleep (power_down_peripherals, see components/zigbee_power/README.md).
-  # On endpoint 36, after the on/off switch (34) and the time client (35).
+  # On endpoint 36, after the on/off switch (34); 35 is unused.
   - platform: template
     id: chip_temp
     name: "Bridge Chip Temperature"

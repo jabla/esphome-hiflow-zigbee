@@ -33,8 +33,8 @@ enum {
    17 s ahead passed on the real inverter; 6 h of age leave about 10 s. After a
    longer silence the link starts with a V0 pairing to read the time again. */
 #define DEVICE_TIME_MAX_AGE_MS (6LL * 3600 * 1000)
-/* The network time arrives twice a day. While it does, it alone sets our
-   clock; a day without one, the inverter's time takes over again. */
+/* The network time arrives several times an hour. While it does, it alone
+   sets our clock; a day without one, the inverter's time takes over again. */
 #define NETWORK_TIME_MAX_AGE_MS (24LL * 3600 * 1000)
 
 static void enter_backoff(hiflow_session_t *s, int64_t now_ms, uint32_t delay_ms);

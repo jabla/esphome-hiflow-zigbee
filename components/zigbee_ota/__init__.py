@@ -4,7 +4,7 @@ component on the ESP32-C6 and ESP32-H2.
 ESPHome's zigbee component has no OTA. This adds the OTA Upgrade client cluster
 (0x0019) of esp-zigbee-lib to one endpoint, writes the received image into the
 free app slot and boots it. The coordinator acts as the OTA server and serves
-a file made by tools/make_zigbee_ota.py (tested with ZHA; Zigbee2MQTT not yet).
+a file made by tools/make_zigbee_ota.py (tested with ZHA and Zigbee2MQTT).
 
 The file version is the date of the code generation and the build of that
 day, 0xYYMMDDNN (version.py), written together with manufacturer code, image

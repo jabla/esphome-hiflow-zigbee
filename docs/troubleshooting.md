@@ -100,10 +100,10 @@ Each point below cost at least one debugging session. Don't undo them casually.
   the number entity used its defaults. Reloading the ZHA integration once (Settings → Devices &
   services → ZHA → Reload) fixed it: 0-100 %, step 10, named "HiFlow Power Limit". The values
   on the device were right all along.
-- **Power limit: how writes happen.** ESPHome's Zigbee component on the ESP32 has no writable
-  entities, so the bridge builds the Analog Output cluster with the esp-zigbee-lib API and polls
-  its present value twice a second. A write from the coordinator is taken as a request once it
-  has stood for 5 s; it goes to the inverter between two data polls (command 0xA305, action 8)
+- **Power limit: how writes happen.** The slider is a number entity; ESPHome's Zigbee component
+  hands every write of the Analog Output's present value to it. A write from the coordinator is
+  taken as a request once it has stood for 5 s; it goes to the inverter between two data polls
+  (command 0xA305, action 8)
   and is read back with the config request (0xA309). The slider only ever shows the value read
   from the inverter. The session log shows each step (`power limit: writing 90 %`, `power limit
   is 90.0 %`) at INFO, and a write of 0 % at WARN.
@@ -116,8 +116,12 @@ Each point below cost at least one debugging session. Don't undo them casually.
   not supported, but builds a generated definition with all 31 values, their names and units,
   plus the power limit (`hiflow_power_limit_32`, 0-100 %), the on/off switch (`state_34`) and the
   uptime (`bridge_uptime_33`, in s); the chip temperature on endpoint 36 came later and is
-  not tested with z2m. It answers the time read on endpoint 35, and a switch command that
-  cannot reach the inverter goes back to on after two minutes, as with ZHA. Three quirks:
+  not tested with z2m. It answered the time read of older releases on endpoint 35; the time
+  now comes through ESPHome's Zigbee time platform on endpoint 1, not yet tested with z2m. That
+  platform looks for the time server with a broadcast Match Descriptor request: the ConBee III
+  answers it itself, other sticks only if their firmware lists the Time cluster on endpoint 1. A
+  switch command that cannot reach the inverter goes back to on after two minutes, as with ZHA.
+  Three quirks:
   - Reactive power has no unit. ESPHome's Zigbee unit table has kvar but not var, and ZHA
     shows the same.
   - Configuring the device fails with `TABLE_FULL` after 16 binds, because the ESP Zigbee

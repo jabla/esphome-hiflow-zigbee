@@ -11,6 +11,7 @@ zigbee_ota:
   manufacturer_code: 0x131B  # Espressif
   image_type: 0x4846         # one per board
   label: my-board            # names the build in the OTA file and the update notes
+  block_size: 223            # largest block the client asks for; the server may send less
   verify_timeout: 10min
   tx_power: 20               # dBm; unset keeps the stack default
 ```
@@ -38,9 +39,15 @@ What it does:
   [esp_delta_ota](https://github.com/espressif/idf-extra-components/tree/master/esp_delta_ota)
   patch against the running image (tag `0xF101`). A patch for any other image is refused
   before anything is written (SHA-256 in its header). `esp_ota_end()` checks the result.
-- On the ESP32-H2 a full image comes as a patch from nothing instead (tag `0xF102`,
-  heatshrink, about 85 % of the image): zlib's inflater needs a 32 KB window plus 11 KB of
-  state, more than the largest free block there. The patch engine needs a few hundred bytes.
+- The inflater gets a window as large as the one the zlib header names: 32 KB for a C6, 4 KB
+  for an ESP32-H2 (about 64 % of the image instead of 61 %). There 32 KB plus the inflater's
+  11 KB of state are more than the largest free block; 4 KB make 15 KB.
+- Firmware up to v0.7.6 always asks for 32 KB: it needs a free block of 32 KB and another of
+  11 KB, and refuses the image at once without them. An H2 on v0.7.3 to v0.7.6 (the smaller BLE
+  stack) had them on the bench with the BLE session up and took the image. For such an H2 the
+  packer makes a patch from nothing instead (tag `0xF102`, heatshrink, about 85 % of the image),
+  which needs a few hundred bytes: by itself when `--from` names a version from before the
+  small window and no delta can be made, or with `--heatshrink`. This firmware takes it too.
 - The bootloader's app rollback is turned on (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`), and
   ESPHome no longer marks the image valid at boot; this component does, after the OTA server
   answered a Query Next Image. An image that crashes before that is replaced by the previous

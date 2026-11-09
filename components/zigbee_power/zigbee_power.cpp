@@ -133,6 +133,11 @@ static esp_sleep_context_t s_sleep_ctx;
 // Requests as keepalive gets one per poll on top, while it lasts: a few
 // minutes per download, request_poll_window (10 s) per burst of requests.
 static const uint32_t FAST_POLL_MS = 50;
+// A new poll interval from the main loop that finds the stack's lock taken is
+// set from a timeout this much later.
+static const uint32_t LOCK_RETRY_MS = 100;
+// Scheduler ids of this component (its string ids never match them).
+static constexpr uint32_t POLL_RETRY_ID = 0;
 
 // The poll interval in force: a firmware update or a request first, then a
 // pending join with the other receiver mode (1 s, so the parent reaches us
@@ -192,13 +197,24 @@ void set_night(bool night) {
   if (s_power == nullptr || s_night.load() == night)
     return;
   s_night.store(night);
-  // Called from the main loop: the stack wants its lock.
-  esp_zigbee_lock_acquire(portMAX_DELAY);
-  ezb_nwk_set_keepalive_interval(current_poll_ms());
-  esp_zigbee_lock_release();
+  s_power->apply_poll_interval_();
   App.set_loop_interval(night ? s_power->night_loop_interval_ms() : s_power->loop_interval_ms());
   ESP_LOGI(TAG, "%s: poll every %u ms, main loop every %u ms", night ? "Night" : "Day",
            (unsigned) current_poll_ms(), (unsigned) App.get_loop_interval());
+}
+
+// Sets the poll interval in force, from the main loop. The main loop must not
+// block, so it tries the stack's lock for 10 ms and otherwise comes back from
+// a timeout. A late write is still right: every writer, a retry included,
+// sets the interval in force when it runs. A newer call that finds the lock
+// taken too replaces the pending retry.
+void ZigbeePower::apply_poll_interval_() {
+  if (!esp_zigbee_lock_acquire(10 / portTICK_PERIOD_MS)) {
+    this->set_timeout(POLL_RETRY_ID, LOCK_RETRY_MS, [this]() { this->apply_poll_interval_(); });
+    return;
+  }
+  ezb_nwk_set_keepalive_interval(current_poll_ms());
+  esp_zigbee_lock_release();
 }
 
 // ESP-IDF calls this after every attempt, also one the hardware rejected (a
@@ -283,9 +299,12 @@ void ZigbeePower::setup_button_() {
 }
 
 // The leave with rejoin ESPHome sends on a parent link failure, sent here only
-// for a lost parent, once.
+// for a lost parent, once. From loop(), which must not block: with the stack's
+// lock taken it returns. The next pass tries again; the loop stays on until
+// the leave went out.
 void ZigbeePower::leave_to_rejoin_() {
-  esp_zigbee_lock_acquire(portMAX_DELAY);
+  if (!esp_zigbee_lock_acquire(10 / portTICK_PERIOD_MS))
+    return;
   if (ezb_bdb_dev_joined()) {
     ESP_LOGW(TAG, "Parent lost: leaving to rejoin through another parent%s",
              s_ble_quiet.load() ? ", BLE is off" : "");
@@ -319,7 +338,10 @@ void ZigbeePower::rejoin_if_pending_() {
   if (esp_ota_get_state_partition(esp_ota_get_running_partition(), &state) == ESP_OK &&
       state == ESP_OTA_IMG_PENDING_VERIFY)
     return;
-  esp_zigbee_lock_acquire(portMAX_DELAY);
+  // From loop(), which must not block: with the stack's lock taken the next
+  // check, a second later, tries again.
+  if (!esp_zigbee_lock_acquire(10 / portTICK_PERIOD_MS))
+    return;
   // A download that started with the offer that made the image valid (see
   // zigbee_ota) goes first: the leave would restart the chip in the middle.
   if (s_updating.load()) {
@@ -491,7 +513,15 @@ uint32_t ZigbeePower::pd_blockers() const {
 void ZigbeePower::attach_to_stack() {
   if (s_power == nullptr || s_attached)
     return;
-  esp_zigbee_lock_acquire(portMAX_DELAY);
+  // ZigbeeComponent::setup() starts the Zigbee task only after this, so
+  // nothing else can hold the lock yet: the 10 ms try (setup must not block
+  // either) only fails if ESPHome ever starts the task first. No retry: ours
+  // must go in before ESPHome's handler, which follows in this same call.
+  if (!esp_zigbee_lock_acquire(10 / portTICK_PERIOD_MS)) {
+    ESP_LOGE(TAG, "Could not add the signal handler: the Zigbee stack's lock is taken");
+    s_power->mark_failed();
+    return;
+  }
   // esp-zigbee-lib (2.0.4, 2.0.5) keeps 3 signal handlers: its own, this one
   // and ESPHome's (which comes next and fails without a free slot).
   if (__real_ezb_app_signal_add_handler(ZigbeePower::signal_handler_) != EZB_ERR_NONE) {

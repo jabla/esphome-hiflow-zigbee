@@ -108,7 +108,7 @@ Next to the measurements, the bridge adds two controls.
 
 - **Power limit** (endpoint 32): a slider in percent of the rated power, in 10 % steps. The
   inverter keeps the limit in its own flash. It is meant for a limit you set now and then, not
-  for zero-export regulation. 0 % switches the output off.
+  for zero-export control. 0 % switches the output off.
 - **On/off** (endpoint 34): a switch for the inverter's output. The inverter does not report
   whether it is on, so the switch shows what the bridge last switched it to. A change made in
   the S-Miles app does not show.

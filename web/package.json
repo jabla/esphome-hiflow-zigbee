@@ -1,0 +1,9 @@
+{
+  "name": "hiflow-web-installer",
+  "private": true,
+  "description": "The ESP Web Tools release the web installer ships (.github/workflows/pages.yml copies its dist/web folder into the site). Dependabot watches the pin.",
+  "license": "MIT",
+  "dependencies": {
+    "esp-web-tools": "10.4.0"
+  }
+}

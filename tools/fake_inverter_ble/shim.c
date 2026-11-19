@@ -20,6 +20,8 @@ typedef struct {
 void *shim_new(const uint8_t *key, const char *sn, const char *pin, const char *page0, const char *page1) {
     shim_t *s = calloc(1, sizeof(*s));
     fake_init(&s->fi, key, sn, pin);
+    /* With a PIN the fake asks for it at the login, until it was sent once. */
+    s->fi.require_pin = pin != NULL && pin[0] != '\0';
     fake_set_pages(&s->fi, page0, page1 && page1[0] ? page1 : NULL);
     memcpy(s->recorded, s->fi.page, sizeof(s->recorded));
     memcpy(s->recorded_len, s->fi.page_len, sizeof(s->recorded_len));
@@ -42,6 +44,7 @@ void shim_set_mode(void *p, int refuse, int rotate, int max_lead, int max_lag) {
 }
 /* The last login's timestamp minus the device time back then. */
 int64_t shim_last_login_lead(void *p) { return ((fake_inverter_t *) p)->last_login_lead; }
+const char *shim_last_ble_id(void *p) { return ((fake_inverter_t *) p)->last_ble_id; }
 /* Returns the reply length (0 = silent); *kill is set when the device drops the link. */
 int shim_frame(void *p, const uint8_t *in, size_t len, uint8_t *out, int *kill) {
     shim_t *s = p;

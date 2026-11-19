@@ -13,6 +13,7 @@ test/host/test_session
 test/host/test_daylog
 test/host/test_daylog_nocurve
 test/host/test_ota_blocks
+test/host/test_setup
 test/host/vectors.h
 test/host/vectors_pb.h
 test/host/vectors_proto.h
@@ -23,3 +24,8 @@ __pycache__/
 tools/fake_inverter_ble/libfake.so
 tools/fake_inverter_ble/power
 tools/fake_inverter_ble/mode
+# web installer tried locally (docs/development.md, Releases)
+/dist/
+/site/
+/package/
+esp-web-tools-*.tgz

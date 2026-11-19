@@ -8,10 +8,11 @@
 | `boards/` | board specific hardware and the chip variant, pulled in by the `board` substitution: `boards/xiao_esp32c6.yaml` (RF switch), `boards/waveshare_c6_lcd147.yaml` (on-board LCD) and `boards/waveshare_h2_zero.yaml` (ESP32-H2) |
 | `hiflow_secrets.example.yaml` | template for your `hiflow_secrets.yaml` (also holds the `board` selection) |
 | `components/hiflow_ble/` | the ESPHome external component (with flat copies of the C core, see its README) |
-| `src/hiflow_core/` | C99 core: frames/crypto, payloads and paging, session state machine, clock |
+| `src/hiflow_core/` | C99 core: frames/crypto, payloads and paging, session state machine, clock, settings commands and inverter choice (`hiflow_setup`) |
 | `src/hiflow_pb/` | vendored nanopb 0.4.9.2 and the generated protobuf code (`regen.sh` reproduces it) |
 | `test/` | host test suites and the reference vectors |
-| `tools/` | bleId generator, HA entity naming, flashing, log capture, BLE-only variant generator, Zigbee OTA files, a fake inverter over BLE for the bench (`tools/fake_inverter_ble/`) |
+| `tools/` | bleId generator, HA entity naming, flashing, log capture, BLE-only variant generator, Zigbee OTA files, release files (`release.py`), a fake inverter over BLE for the bench (`tools/fake_inverter_ble/`) |
+| `web/` | the web installer page and the ESP Web Tools pin (`package.json`), see *Releases* |
 | `hiflow-zb-bleonly.yaml` | generated: the bridge without Zigbee, for diagnosing radio coexistence |
 | `docs/` | this file, troubleshooting, energy-dashboard template |
 
@@ -90,7 +91,7 @@ a vendor demo image.
 ## Build, test, flash
 
 ```bash
-make -C test/host test                  # host tests: frame/crypto, protobuf, clock, payloads, session
+make -C test/host test                  # host tests: frame/crypto, protobuf, clock, payloads, session, settings
 components/hiflow_ble/sync_core.sh      # after changing anything under src/
 python3 tools/make_bleonly_board.py     # after changing hiflow-zb.yaml
 tools/flash_config.sh hiflow-zb.yaml      # build + flash with esptool, erases on another partition table (ESP=/ESPTOOL=/DEV=)
@@ -122,6 +123,7 @@ against a simulated inverter.
 | Code | Meaning |
 |---|---|
 | 0 | waiting for a connection (also the normal state at night) |
+| 1 | no inverter yet: looking for one by its BLE name or waiting for `sn=` (*Settings over Zigbee* in the README) |
 | 2 / 3 / 4 / 5 | V0 pairing · login · PIN · time-sync |
 | 6 | ready, the session reads data every 30 s |
 | 9 | login refused: the link died during the handshake |
@@ -136,3 +138,36 @@ back by itself. During daylight it should stay at 6.
 
 The session also has a state 7 (a data request in flight). The bridge reports it as 6: it lasts
 for one request and would cost two Zigbee reports per poll. A request that hangs shows as 11.
+
+## Releases
+
+`.github/workflows/release.yml` adds the images to a published release (`tools/release.py`).
+Per board: a `factory.bin` (first USB install), the full OTA image, a delta from the previous
+release and the app image (base of the next delta). Plus one `index.json` for ZHA and
+Zigbee2MQTT. The build uses `hiflow_secrets.example.yaml` as it is, so the images hold no
+personal data.
+
+1. Tag the commit and publish the release as a **pre-release**. Users' configs point at
+   `releases/latest`, which keeps the previous release while the images build. The workflow
+   turns a release published as latest into a pre-release. A release that already has images
+   is not built again: publish a new one.
+2. Wait for the workflow (about 10 minutes). Then mark the release as latest
+   (`gh release edit <tag> --prerelease=false --latest`).
+
+Marking it latest also updates the web installer on GitHub Pages (`.github/workflows/pages.yml`,
+`tools/release.py site`): `web/index.html`, ESP Web Tools, the factory images and one manifest
+per board. The images sit on Pages because release downloads have no CORS header. After a page
+change or an ESP Web Tools bump, run the workflow from the *Actions* tab. Once: set Pages to the
+source *GitHub Actions* in the repository settings.
+
+To try the page with own builds (`release.py pack` output in `dist/`, ESP Web Tools from
+`npm pack esp-web-tools@<pin>`), serve it on localhost. Web Serial accepts that like HTTPS:
+```bash
+python3 tools/release.py site --out site --tag test --repo-url https://github.com/jabla/esphome-hiflow-zigbee \
+  --esp-web-tools package/dist/web dist/*.factory.bin
+python3 -m http.server -d site -b 127.0.0.1 8000
+```
+
+Image version: the build day plus the release number of that day, from 1
+(`ZIGBEE_OTA_FILE_VERSION`, `tools/release.py version`). A bridge on the previous release gets
+the delta. Any other gets the full image.

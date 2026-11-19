@@ -115,7 +115,7 @@ ble_client:
 hiflow_ble:
   id: hiflow
   ble_client_id: hiflow_client
-  sn: ${hiflow_sn}
+  sn: ${hiflow_sn}            # all three may stay empty, see below
   ble_id: ${hiflow_ble_id}
   pin: ${hiflow_ble_pin}
   offset: 3600
@@ -202,6 +202,30 @@ ESPHome's Zigbee time platform (`time:` with `platform: zigbee`), which reads
 the coordinator's time right after joining and every 15 minutes (its
 `update_interval`); its `on_join` asks once more 30 s after the join. Older
 configs with `network_time:` have to switch to it.
+
+### The inverter without a build value
+
+`sn`, `ble_id` and `pin` are optional. The `ble_client`'s `mac_address` may be
+`00:00:00:00:00:00` (then `sn` stays empty too). Empty values come from the
+bridge's settings in flash (`hiflow_setup.h`):
+
+* The inverter: the component scans actively until it has seen exactly one
+  `RMI-` device with a 12-character serial for 5 minutes. With `sn=` it takes
+  the named one. It keeps its address and serial (status 1 until then).
+* The login identity: made up once, 18 digits like the S-Miles app's.
+* The PIN and, with `antenna_select`, the antenna: over Zigbee.
+
+A build value wins and is copied into flash. An image built without it (a
+release image) keeps using it. With the `zigbee` component the settings arrive
+through the Basic cluster's LocationDescription on endpoint 1 (15 characters,
+no quirk needed): `pin=`, `sn=`, `forget`, `ant=ext` / `ant=int`. The bridge
+answers in the same attribute (*Settings over Zigbee* in the repository
+README). ESPHome sizes that attribute by `esphome: area:`. The area needs
+15 characters (`hiflow-zb.yaml` sets `HiFlow settings`). Otherwise the build
+stops with a hint.
+
+`boards/xiao_esp32c6.yaml` sets `antenna_select` (an output, GPIO14) and
+`external_antenna` (`true`, `false` or empty for `ant=`).
 
 ### Power saving
 

@@ -522,6 +522,18 @@ void ZigbeePower::attach_to_stack() {
     s_power->mark_failed();
     return;
   }
+  // A coordinator binds every endpoint it sets reporting up for (ZHA and
+  // Zigbee2MQTT alike), one entry in the binding table each. The stack keeps
+  // 16, so with more endpoints the rest of the binds fail with TABLE_FULL.
+  // The stack is set up but not started yet, so the table still loads its
+  // entries from flash afterwards. A size of 16 changes nothing.
+  if (s_power->binding_table_size_ > 0) {
+    ezb_mem_config_t mem = {};
+    mem.aps_bind_table_src_size = s_power->binding_table_size_;
+    mem.aps_bind_table_dst_size = s_power->binding_table_size_;
+    if (ezb_config_memory(&mem) != EZB_ERR_NONE)
+      ESP_LOGE(TAG, "Could not resize the binding table to %u entries", (unsigned) s_power->binding_table_size_);
+  }
   // esp-zigbee-lib (2.0.4, 2.0.5) keeps 3 signal handlers: its own, this one
   // and ESPHome's (which comes next and fails without a free slot).
   if (__real_ezb_app_signal_add_handler(ZigbeePower::signal_handler_) != EZB_ERR_NONE) {
@@ -587,9 +599,17 @@ void ZigbeePower::setup() {
   if (err != ESP_OK) {
     ESP_LOGE(TAG, "Light-sleep callback: %s", esp_err_to_name(err));
   }
-  // Awake for a while after a start on USB: it stays up for logs and a
-  // flash. On a battery (no USB host) the chip sleeps at once.
-  if (this->awake_after_boot_ms_ > 0 && usb_serial_jtag_is_connected()) {
+  // On a USB host (a computer, not a charger) the chip stays awake for logs
+  // and a flash over USB: for good with awake_on_usb, else for
+  // awake_after_boot. Decided at the start, not by the host's frames as they
+  // come and go: a suspended laptop sends none, the chip stays awake anyway.
+  // On a charger or a battery it sleeps at once.
+  const bool usb_host = usb_serial_jtag_is_connected();
+  if (usb_host && this->awake_on_usb_) {
+    static esp_pm_lock_handle_t usb_awake = nullptr;
+    if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "awake_on_usb", &usb_awake) == ESP_OK)
+      esp_pm_lock_acquire(usb_awake);
+  } else if (usb_host && this->awake_after_boot_ms_ > 0) {
     static esp_pm_lock_handle_t awake = nullptr;
     if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "awake_after_boot", &awake) == ESP_OK) {
       esp_pm_lock_acquire(awake);
@@ -670,12 +690,11 @@ bool ZigbeePower::signal_handler_(const ezb_app_signal_t *app_signal) {
       // poll or frame did not reach the parent, which BLE causes often enough
       // by taking the radio. The stack retries by itself and raises
       // EZB_ZDO_SIGNAL_PARENT_LOST once the parent stayed silent for a whole end
-      // device timeout. ESPHome's handler, written for 2.0.4, answers every
-      // failure with a leave and a rejoin. While BLE holds the radio that rejoin
-      // cannot finish, so about 25 s later the stack leaves for good and drops
-      // the network data; ESPHome then resets the node to factory new (bench
-      // test; the bridge in production lost its network that way). So the
-      // failure stops here.
+      // device timeout. ESPHome's handler sends a leave with rejoin once the
+      // failures span four polls and 6 s. While BLE holds the radio that rejoin
+      // may not finish. About 25 s later the stack then leaves for good and
+      // drops the network data (bench test, esp-zigbee-sdk#939). So the failure
+      // stops here. The bridge rejoins only for a lost parent, with BLE off.
       if (static_cast<const ezb_nwk_signal_network_status_params_t *>(ezb_app_signal_get_params(app_signal))->status ==
           EZB_NWK_NETWORK_STATUS_PARENT_LINK_FAILURE) {
         ESP_LOGD(TAG, "Parent link failure, the stack retries");
@@ -702,14 +721,22 @@ bool ZigbeePower::signal_handler_(const ezb_app_signal_t *app_signal) {
 }
 
 void ZigbeePower::dump_config() {
-  ESP_LOGCONFIG(TAG, "Zigbee power:");
+  ESP_LOGCONFIG(TAG,
+                "Zigbee power:\n"
+                "  Binding table: %u entries",
+                (unsigned) (this->binding_table_size_ > 0 ? this->binding_table_size_ : 16));
 #ifdef USE_ZIGBEE_POWER_SLEEPY
   ESP_LOGCONFIG(TAG,
                 "  Sleepy end device, poll every %u ms\n"
-                "  Light sleep at %d MHz, awake for %u s after boot\n"
+                "  Light sleep at %d MHz\n"
                 "  Main loop every %u ms",
                 (unsigned) this->poll_interval_ms_, CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
-                (unsigned) (this->awake_after_boot_ms_ / 1000), (unsigned) App.get_loop_interval());
+                (unsigned) App.get_loop_interval());
+  if (this->awake_on_usb_) {
+    ESP_LOGCONFIG(TAG, "  Awake on a USB host");
+  } else {
+    ESP_LOGCONFIG(TAG, "  Awake for %u s after boot on a USB host", (unsigned) (this->awake_after_boot_ms_ / 1000));
+  }
   if (this->request_poll_window_ms_ > 0) {
     ESP_LOGCONFIG(TAG, "  Poll every %u ms for %u ms after a request", (unsigned) FAST_POLL_MS,
                   (unsigned) this->request_poll_window_ms_);

@@ -5,9 +5,10 @@
 # measured only -94 dBm where a USB dongle at the same spot saw -78 dBm.
 #   GPIO3  LOW  = RF switch powered
 #   GPIO14 LOW  = internal ceramic antenna, HIGH = external U.FL antenna
-# gpio outputs start "off"; `external_antenna: "true"` inverts GPIO14 so "off"
-# means HIGH. The IO setup (priority HARDWARE) runs before the BLE init, so the
-# path is right before the first radio command goes out. An external antenna
+# gpio outputs start "off" (LOW, the internal antenna). hiflow_ble sets GPIO14
+# once its settings are loaded: `external_antenna` from hiflow_secrets.yaml, or,
+# left empty there, ant=ext / ant=int from the settings field over Zigbee. That
+# is before the BLE scan and the Zigbee network start. An external antenna
 # gained about 19 dB at the reference site.
 
 esp32:
@@ -33,5 +34,8 @@ output:
     pin:
       number: GPIO14
       mode: {output: true}
-      inverted: ${external_antenna}
     id: rf_ant_select
+
+hiflow_ble:
+  antenna_select: rf_ant_select
+  external_antenna: ${external_antenna}

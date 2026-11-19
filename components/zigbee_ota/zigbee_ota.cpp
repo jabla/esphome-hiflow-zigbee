@@ -32,8 +32,8 @@ namespace zigbee_ota {
 
 static const char *const TAG = "zigbee_ota";
 
-// 2.0.4 panics when the client finishes an upgrade (see __init__.py, which
-// raises ESPHome's request to 2.0.5).
+// 2.0.4 panics when the client finishes an upgrade. ESPHome 2026.11, the
+// components' minimum, asks for 2.0.5.
 #if ESP_ZIGBEE_VER_MAJOR * 10000 + ESP_ZIGBEE_VER_MINOR * 100 + ESP_ZIGBEE_VER_PATCH < 20005
 #error "zigbee_ota needs esp-zigbee-lib 2.0.5 or newer"
 #endif

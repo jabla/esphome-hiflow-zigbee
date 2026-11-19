@@ -1215,6 +1215,21 @@ void hiflow_session_retry_now(hiflow_session_t *s, int64_t now_ms)
         s->deadline_ms = now_ms;
 }
 
+void hiflow_session_set_pin(hiflow_session_t *s, int64_t now_ms, const char *pin)
+{
+    size_t len;
+
+    if (s == NULL || pin == NULL)
+        return;
+    len = strlen(pin);
+    if (len >= sizeof(s->cfg.pin))
+        return;
+    memcpy(s->cfg.pin, pin, len + 1);
+    if (s->state == HIFLOW_STATE_BACKOFF && s->timer == HT_BACKOFF_END &&
+        s->fail_reason == HIFLOW_FAIL_PIN && s->deadline_ms > now_ms)
+        s->deadline_ms = now_ms;
+}
+
 int32_t hiflow_session_retry_in_s(const hiflow_session_t *s, int64_t now_ms)
 {
     if (s == NULL || s->state != HIFLOW_STATE_BACKOFF || s->timer != HT_BACKOFF_END)

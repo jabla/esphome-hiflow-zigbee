@@ -75,7 +75,8 @@ esp32_ble:
 # names "Zigbee end device + BLE scan" as the fragile combination. A continuously
 # scanning tracker next to Zigbee reproducibly starved the login. A 30 ms window
 # every 1280 ms (2 % duty) is enough because the MAC is known; the name (only in
-# the scan response) is not needed, hence passive scanning.
+# the scan response) is not needed, hence passive scanning. A bridge still
+# looking for its inverter by name scans actively until it finds it.
 esp32_ble_tracker:
   scan_parameters:
     interval: 1280ms

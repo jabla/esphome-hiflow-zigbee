@@ -6,6 +6,9 @@
 #include "esphome/components/ble_client/ble_client.h"
 #include "esphome/components/esp32_ble_tracker/esp32_ble_tracker.h"
 #include "esphome/components/sensor/sensor.h"
+#ifdef USE_OUTPUT
+#include "esphome/components/output/binary_output.h"
+#endif
 
 #include <string>
 
@@ -17,6 +20,7 @@
 // ./sync_core.sh; the originals live under src/hiflow_core and src/hiflow_pb.
 #include "hiflow_daylog.h"
 #include "hiflow_session.h"
+#include "hiflow_setup.h"
 
 #ifdef USE_NUMBER
 #include "esphome/components/number/number.h"
@@ -26,6 +30,9 @@
 #endif
 #ifdef USE_TIME
 #include "esphome/components/time/real_time_clock.h"
+#endif
+#ifdef USE_ZIGBEE
+#include "esphome/components/zigbee/zigbee_esp32.h"
 #endif
 
 namespace esphome {
@@ -85,7 +92,13 @@ enum HiflowSensorType : uint8_t {
 /// GATT events in, frames out, values published, the clock kept in flash. The
 /// session key is never configured or stored: the session fetches it with a V0
 /// pairing on the first connection after boot and whenever a handshake fails.
-class HiflowBle : public Component, public ble_client::BLEClientNode {
+///
+/// The inverter, the login identity and the BLE PIN come from the build
+/// (hiflow_secrets.yaml) or, left empty there, from the bridge's own settings
+/// in flash: it finds the inverter by its BLE name, makes up an identity and
+/// takes the rest through the Zigbee settings field (see hiflow_setup.h). A
+/// release image is built that way and carries no personal data.
+class HiflowBle : public Component, public ble_client::BLEClientNode, public espbt::ESPBTDeviceListener {
  public:
   void setup() override;
   void loop() override;
@@ -93,6 +106,8 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   float get_setup_priority() const override { return setup_priority::AFTER_BLUETOOTH; }
   void gattc_event_handler(esp_gattc_cb_event_t event, esp_gatt_if_t gattc_if,
                            esp_ble_gattc_cb_param_t *param) override;
+  /// Every advertisement while the bridge looks for its inverter (see hiflow_setup.h).
+  bool parse_device(const espbt::ESPBTDevice &device) override;
 
   // --- codegen setters ---
   void set_sn(const std::string &v) { this->sn_ = v; }
@@ -131,6 +146,17 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   /// The network time: every sync of `clock` (ESPHome's zigbee time platform)
   /// goes to the session clock.
   void set_network_time(time::RealTimeClock *clock) { this->network_time_ = clock; }
+#endif
+#ifdef USE_OUTPUT
+  /// The XIAO ESP32-C6's antenna select (GPIO14: off = internal, on = external).
+  void set_antenna_select(output::BinaryOutput *out) { this->antenna_select_ = out; }
+#endif
+  /// The antenna as the build fixes it: 0 internal, 1 external, -1 left to the
+  /// settings field (ant=).
+  void set_build_antenna(int8_t external) { this->build_antenna_ = external; }
+#ifdef USE_ZIGBEE
+  /// The settings field in the Basic cluster of endpoint 1 (see hiflow_setup_field.h).
+  void set_setup_field(zigbee::ZigbeeComponent *zb) { this->setup_zb_ = zb; }
 #endif
 
   // --- for an on-board display (see boards/waveshare_c6_lcd147.yaml) ---
@@ -199,7 +225,12 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   bool night_mode_() const { return this->night_scan_interval_ != 0 || this->night_ble_off_ms_ != 0; }
   void set_night_(bool night, const char *why);
   void check_night_(int64_t now);
-  void apply_rescan_();
+  /// New scan parameters wait for a scan start (see apply_rescan_).
+  void request_rescan_() {
+    this->rescan_pending_ = true;
+    this->rescan_idle_since_ms_ = -1;
+  }
+  void apply_rescan_(int64_t now);
   void night_ble_tick_(int64_t now);
   void zigbee_radio_tick_(int64_t now);
   void publish_(uint8_t type, float value);
@@ -215,6 +246,20 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   void on_network_time_();
 #endif
 
+  // --- the bridge's own settings (see hiflow_setup.h) ---
+  void load_setup_();
+  void save_setup_();
+  void apply_antenna_();
+  bool inverter_known_();
+  void start_search_(const char *want);
+  void search_tick_(int64_t now);
+  std::string setup_status_text_();
+#ifdef USE_ZIGBEE
+  void poll_setup_field_(int64_t now);
+  void handle_setup_command_(const std::string &text, int64_t now);
+  void set_setup_text_(const std::string &text);
+#endif
+
   // --- transport ---
   espbt::ESPBTUUID service_uuid_{};
   espbt::ESPBTUUID tx_uuid_{};  // ffe1
@@ -228,6 +273,7 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   bool night_{false};          // scanning at the night interval
   bool ever_linked_{false};    // a link came up since boot
   bool rescan_pending_{false}; // new scan parameters wait for a scanner restart
+  int64_t rescan_idle_since_ms_{-1};  // the scanner idle since then, while they wait
   int64_t quiet_since_ms_{0};  // no sign of the inverter since then (0 = it is around)
   bool night_burst_{false};    // BLE on for a scan at night
   bool night_test_{false};     // bench: any lost link starts night mode
@@ -269,10 +315,52 @@ class HiflowBle : public Component, public ble_client::BLEClientNode {
   uint8_t dark_zero_tries_{0};      // zeros sent since the last reading
   int64_t next_dark_zeros_ms_{0};   // the next ones from then on
 
+  // --- the bridge's own settings, kept in flash ---
+  /// What the bridge knows about its inverter beyond the build. A value the
+  /// build sets wins and is copied in here, so a release image installed
+  /// later carries on with it.
+  struct SetupPref {
+    uint16_t magic;
+    uint8_t version;
+    uint8_t antenna;                    // 0 not set, 1 internal, 2 external
+    uint64_t mac;                       // 0: no inverter chosen
+    char sn[HIFLOW_SN_LEN + 1];
+    char want[HIFLOW_SN_LEN + 1];       // given with sn=, not found yet
+    char ble_id[HIFLOW_BLE_ID_LEN];
+    char pin[HIFLOW_PIN_LEN];
+  };
+  ESPPreferenceObject setup_pref_{};
+  SetupPref setup_{};
+  bool build_inverter_{false};  // MAC and serial from hiflow_secrets.yaml
+  bool build_ble_id_{false};
+  bool build_pin_{false};
+  int8_t build_antenna_{-1};
+  bool searching_{false};       // no inverter yet: looking by BLE name
+  bool search_scan_due_{false}; // the scan still has to turn active for it
+  hiflow_discovery_t discovery_{};
+  hiflow_discovery_result_t search_result_{HIFLOW_DISCOVERY_WAIT};
+  int search_seen_{0};          // inverters in range, as last reported
+  int64_t next_search_check_ms_{0};
+#ifdef USE_OUTPUT
+  output::BinaryOutput *antenna_select_{nullptr};
+#endif
+
   // --- day log (for a display) ---
   hiflow_daylog_t daylog_{};
   ESPPreferenceObject daylog_pref_{};
   int64_t next_daylog_check_ms_{0};
+
+#ifdef USE_ZIGBEE
+  // --- settings field ---
+  zigbee::ZigbeeComponent *setup_zb_{nullptr};
+  std::string setup_text_;      // what the field shows: our last answer
+  bool setup_text_due_{false};  // setup_text_ still has to reach the attribute
+  std::string setup_written_;   // the text in the attribute as we wrote it
+  std::string setup_handled_;   // the command handled last, until its answer is in
+  bool setup_handled_set_{false};
+  int64_t setup_reply_until_ms_{0};  // a command's answer stays until then
+  int64_t next_setup_poll_ms_{0};
+#endif
 
 #ifdef USE_NUMBER
   // --- power limit slider ---

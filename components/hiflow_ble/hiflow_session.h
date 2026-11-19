@@ -55,6 +55,9 @@ extern "C" {
 /* ---------- status codes (kept compatible with the ZHA status sensor) ------- */
 
 #define HIFLOW_STATUS_WAIT_LINK 0 /* no connection (also normal at night) */
+/* Never from the session: the bridge has no inverter yet and looks for one
+   by its BLE name (hiflow_setup.h). */
+#define HIFLOW_STATUS_NO_INVERTER 1
 #define HIFLOW_STATUS_PAIRING   2
 #define HIFLOW_STATUS_LOGIN     3
 #define HIFLOW_STATUS_PIN       4
@@ -269,6 +272,11 @@ int32_t  hiflow_session_retry_in_s(const hiflow_session_t *s, int64_t now_ms);
    able to connect). A PIN, login or key failure keeps its wait. No-op in any
    other state. */
 void hiflow_session_retry_now(hiflow_session_t *s, int64_t now_ms);
+/* A new BLE PIN from the owner ("" for none), sent the next time the inverter
+   asks for one. A wait after a missing or refused PIN ends now: the owner has
+   just answered it. Each new PIN gets one try. Longer than the
+   configuration holds: ignored. */
+void hiflow_session_set_pin(hiflow_session_t *s, int64_t now_ms, const char *pin);
 /* A trusted time from elsewhere, e.g. the Zigbee network's time server. It
    marks the clock as synced and sets it to that time in either direction (in
    light sleep the clock gains time that nothing else takes back). A step of

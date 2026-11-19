@@ -1,0 +1,203 @@
+<!doctype html>
+<!--
+  The web installer. `tools/release.py site` fills in the release tag and the
+  repository URL. It puts the page next to ESP Web Tools, the factory images and
+  one manifest per board, for GitHub Pages (.github/workflows/pages.yml).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HiFlow bridge installer</title>
+<meta name="description" content="Install the HiFlow Pro to Zigbee bridge firmware on an ESP32-C6 or ESP32-H2 board from the browser.">
+<script type="module" src="esp-web-tools/install-button.js"></script>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --text: #1d232b;
+    --muted: #5b6573;
+    --line: #dde2e8;
+    --accent: #0b6bcb;
+    --accent-text: #ffffff;
+    --note: #fff6dc;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12161b;
+      --card: #1b2128;
+      --text: #e6e9ed;
+      --muted: #9aa5b1;
+      --line: #2c343d;
+      --accent: #4c9ef0;
+      --accent-text: #0b1520;
+      --note: #2e2a1c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 960px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 1.8rem; line-height: 1.2; margin: 0 0 8px; }
+  h2 { font-size: 1.2rem; margin: 36px 0 8px; }
+  a { color: var(--accent); }
+  code { font-size: 0.9em; }
+  .lead { color: var(--muted); margin: 0 0 24px; max-width: 46em; }
+  .steps { padding-left: 1.4em; max-width: 46em; }
+  .steps li { margin: 6px 0; }
+  .boards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 16px;
+    margin: 24px 0 12px;
+  }
+  .board {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+  }
+  .board img {
+    height: 150px;
+    max-width: 100%;
+    object-fit: contain;
+    border-radius: 8px;
+    background: #fff;
+  }
+  .board h3 { font-size: 1.05rem; margin: 12px 0 2px; }
+  .board p { color: var(--muted); font-size: 0.9rem; margin: 0 0 14px; }
+  .board esp-web-install-button { margin-top: auto; }
+  .install {
+    font: inherit;
+    font-weight: 600;
+    padding: 9px 28px;
+    border: 0;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--accent-text);
+    cursor: pointer;
+  }
+  .install:hover { filter: brightness(1.1); }
+  .unsupported { color: var(--muted); font-size: 0.9rem; }
+  .note {
+    background: var(--note);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 0.95rem;
+    max-width: 46em;
+  }
+  ul { padding-left: 1.2em; max-width: 46em; }
+  li { margin: 6px 0; }
+  footer {
+    margin-top: 40px;
+    padding-top: 16px;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>HiFlow Pro to Zigbee bridge</h1>
+  <p class="lead">
+    Installs release <a href="@REPO_URL@/releases/tag/@TAG@">@TAG@</a> of the bridge firmware
+    from the browser. The images hold no personal data: the bridge finds the inverter by its BLE
+    name and takes the rest over Zigbee.
+  </p>
+
+  <ol class="steps">
+    <li><strong>Open pairing</strong> and leave it open: <em>Add device</em> in ZHA,
+      <em>Permit join</em> in Zigbee2MQTT.</li>
+    <li><strong>Connect the board</strong> by USB and press <em>Install</em> below it. Pick the
+      port named <em>USB JTAG/serial debug unit</em>.</li>
+    <li><strong>Tick <em>Erase device</em></strong> on the first install. Unticked, a bridge
+      keeps its settings and its pairing.</li>
+    <li><strong>Close the dialog</strong> after <em>Installation complete!</em> Its
+      <em>Next</em> only leads back to the menu.</li>
+  </ol>
+
+  <section class="boards">
+    <article class="board">
+      <img src="img/board-c6-lcd.jpg" alt="Waveshare ESP32-C6-LCD-1.47">
+      <h3>ESP32-C6-LCD-1.47</h3>
+      <p>Waveshare, shows the values on its display</p>
+      <esp-web-install-button manifest="manifest-waveshare_c6_lcd147.json">
+        <button slot="activate" class="install">Install</button>
+        <span slot="unsupported" class="unsupported">Needs Chrome, Edge or Firefox 151+ on a computer</span>
+        <span slot="not-allowed" class="unsupported">Needs HTTPS</span>
+      </esp-web-install-button>
+    </article>
+    <article class="board">
+      <img src="img/board-xiao.jpg" alt="Seeed Studio XIAO ESP32-C6">
+      <h3>XIAO ESP32-C6</h3>
+      <p>Seeed Studio, takes an external antenna</p>
+      <esp-web-install-button manifest="manifest-xiao_esp32c6.json">
+        <button slot="activate" class="install">Install</button>
+        <span slot="unsupported" class="unsupported">Needs Chrome, Edge or Firefox 151+ on a computer</span>
+        <span slot="not-allowed" class="unsupported">Needs HTTPS</span>
+      </esp-web-install-button>
+    </article>
+    <article class="board">
+      <img src="img/board-h2-zero.jpg" alt="Waveshare ESP32-H2-Zero">
+      <h3>ESP32-H2-Zero</h3>
+      <p>Waveshare, the cheapest</p>
+      <esp-web-install-button manifest="manifest-waveshare_h2_zero.json">
+        <button slot="activate" class="install">Install</button>
+        <span slot="unsupported" class="unsupported">Needs Chrome, Edge or Firefox 151+ on a computer</span>
+        <span slot="not-allowed" class="unsupported">Needs HTTPS</span>
+      </esp-web-install-button>
+    </article>
+  </section>
+  <p class="note">
+    The installer cannot tell the ESP32-C6-LCD-1.47 and the XIAO apart (same chip). Pick the
+    board you have: a bridge only takes updates for its own board.
+  </p>
+
+  <h2>After the install</h2>
+  <ol class="steps">
+    <li><strong>Check that it joined:</strong> it shows up as <code>HMS-2000-4WB Bridge</code>
+      (the ESP32-H2-Zero about a minute later). If not, open pairing again and press RESET (or
+      plug the board in again).</li>
+    <li><strong>Put the board at the inverter</strong> on a USB charger. It keeps its pairing.
+      With one inverter in range it takes it after 5 minutes. With more, name yours over Zigbee.
+      A Bluetooth PIN from the S-Miles app goes the same way:
+      <a href="@REPO_URL@#settings-over-zigbee">Settings over Zigbee</a>.</li>
+    <li><strong>Check the values:</strong> they arrive once the bridge has logged in to the
+      inverter. Until then its settings field shows what it is doing.</li>
+    <li>Updates then come over Zigbee: <a href="@REPO_URL@#from-the-releases">Firmware updates
+      from the releases</a>.</li>
+  </ol>
+
+  <h2>If it does not work</h2>
+  <ul>
+    <li>The installer needs a browser with Web Serial: Chrome, Edge or Firefox 151+ on a computer.</li>
+    <li>On Linux the browser needs access to the port: add your user to the group
+      <code>uucp</code> (Arch) or <code>dialout</code> (Debian, Ubuntu) and log in again.</li>
+    <li>Close other programs that use the port, such as an ESPHome log or a serial monitor.</li>
+    <li><em>Failed to initialize</em> on a board with an older bridge: it sleeps, so its USB port
+      does not answer. Close the dialog, press RESET and click <em>Install</em> within
+      3 minutes.</li>
+    <li>Still no connection: hold BOOT while you plug the board in, then press <em>Install</em>
+      again. Afterwards press RESET or plug the board in again: otherwise it stays in the boot
+      loader.</li>
+    <li>Without a browser: esptool, see
+      <a href="@REPO_URL@#quick-start-with-a-release-image">Quick start with a release
+      image</a>.</li>
+  </ul>
+
+  <footer>
+    <a href="@REPO_URL@">Source, documentation and releases on GitHub</a>. MIT license.
+  </footer>
+</main>
+</body>
+</html>

@@ -112,24 +112,25 @@ Each point below cost at least one debugging session. Don't undo them casually.
   That is what the config read with the reference library's timestamp (60 s in the past) did.
 - **Energy dashboard:** ZHA analog inputs are always `measurement`. Use the template sensor from
   `docs/ha-energy-template.yaml`, which is `total_increasing` and ignores missing values.
-- **Zigbee2MQTT.** Tested with z2m 2.14.1 on a ConBee III (0x26550900). z2m logs the model as
-  not supported, but builds a generated definition with all 31 values, their names and units,
-  plus the power limit (`hiflow_power_limit_32`, 0-100 %), the on/off switch (`state_34`) and the
-  uptime (`bridge_uptime_33`, in s); the chip temperature on endpoint 36 came later and is
-  not tested with z2m. It answered the time read of older releases on endpoint 35; the time
-  now comes through ESPHome's Zigbee time platform on endpoint 1, not yet tested with z2m. That
-  platform looks for the time server with a broadcast Match Descriptor request: the ConBee III
-  answers it itself, other sticks only if their firmware lists the Time cluster on endpoint 1. A
-  switch command that cannot reach the inverter goes back to on after two minutes, as with ZHA.
-  Three quirks:
-  - Reactive power has no unit. ESPHome's Zigbee unit table has kvar but not var, and ZHA
-    shows the same.
-  - Configuring the device fails with `TABLE_FULL` after 16 binds, because the ESP Zigbee
-    binding table holds 16 entries. No data is lost: every sensor reports with `force`
-    straight to the coordinator, bound or not.
-  - On the bound endpoints (z2m binds from 31 downwards), every value that moved by 1 or more
-    arrives twice within a second: the forced report plus the one from z2m's reporting
-    configuration.
+- **Zigbee2MQTT.** Tested with z2m 2.14.1 and 2.14.3 on a ConBee III (0x26550900). z2m logs
+  the model as not supported, but builds a generated definition: all 31 values with units, the
+  power limit (0-100 %), the on/off switch (`state_34`), the uptime and the chip temperature.
+  2.14.1 names the values after their descriptions (`hiflow_power_limit_32`,
+  `bridge_uptime_33`). 2.14.3 names them by kind (`analog_in_power_1`,
+  `analog_out_percentage_32`, `analog_in_duration_33`) with the descriptions as labels.
+  z2m answers the time read of ESPHome's Zigbee time platform. That platform looks for the time
+  server with a broadcast Match Descriptor request: the ConBee III answers it itself, other
+  sticks only if their firmware lists the Time cluster on endpoint 1. A switch command that
+  cannot reach the inverter goes back to on after two minutes, as with ZHA. Reactive power has
+  no unit: ESPHome's Zigbee unit table has kvar but not var. ZHA shows the same.
+- **Bindings and reporting.** ZHA and z2m bind all 35 endpoints to the coordinator and set up
+  reporting on each. The binding table has room for them (`binding_table_size` in
+  [`components/zigbee_power/README.md`](../components/zigbee_power/README.md)). With the stack's
+  16 entries the other binds failed with `TABLE_FULL`.
+  On a bound endpoint the stack reports too, next to the bridge's own report (`report: force`).
+  A value that moved by 1 or more arrives twice: within a second with z2m, within 30 s with ZHA.
+  ZHA's setup adds one report per endpoint every 15 minutes, even without a change. The stack's
+  reports ask the coordinator for a default response.
 
 ## Firmware updates over Zigbee
 

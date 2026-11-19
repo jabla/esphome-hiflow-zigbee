@@ -31,8 +31,8 @@ welcome.
 
 - One of the boards in the table below.
 - A Zigbee coordinator in ZHA or Zigbee2MQTT (2.8.0 or newer).
-- ESPHome **2026.10.0** or newer (native Zigbee on the ESP32-C6 / ESP32-H2), plus Python 3
-  for the helper scripts.
+- ESPHome **2026.11.0** or newer for an own build (native Zigbee on the ESP32-C6 / ESP32-H2),
+  plus Python 3 for the helper scripts. A release image needs only a browser or `esptool`.
 - The inverter within BLE range of the board.
 - **Nothing else connected to the inverter over BLE.** It serves exactly one BLE central, so end
   every other BLE connection to it (e.g. the S-Miles app).
@@ -48,20 +48,50 @@ welcome.
 | Good | shows the values on the board itself | external antenna when the Zigbee router/coordinator is far away | cheapest |
 | Downsides | no external antenna | no display | less RAM, slower full updates, no display, no external antenna |
 
-## Quick start
+## Quick start with a release image
 
-1. **Credentials.** Copy `hiflow_secrets.example.yaml` to `hiflow_secrets.yaml` and fill it in.
-   The comments in the file say where each value comes from:
-   - set `board` to `xiao_esp32c6`, `waveshare_c6_lcd147` or `waveshare_h2_zero`;
+Each [release](https://github.com/jabla/esphome-hiflow-zigbee/releases) has ready images for the
+three boards. They hold no personal data: the bridge finds the inverter by its BLE name and
+takes the rest over Zigbee (*Settings over Zigbee* below).
+
+1. **Open pairing.** ZHA: *Add device*. Zigbee2MQTT: *Permit join*. Leave it open.
+2. **Flash** over USB, either
+   - **with the [web installer](https://jabla.github.io/esphome-hiflow-zigbee/)** (Chrome, Edge
+     or Firefox 151+ on a computer): press *Install* below your board. Tick *Erase device* on
+     the first install. Or
+   - **with esptool** (`pip install esptool`): download
+     `hiflow-zb-<board>-<version>.factory.bin` from the latest release (`<board>` is
+     `xiao_esp32c6`, `waveshare_c6_lcd147` or `waveshare_h2_zero`), then run:
+     ```bash
+     esptool --port /dev/ttyACM0 erase_flash
+     esptool --port /dev/ttyACM0 write_flash 0x0 hiflow-zb-<board>-<version>.factory.bin
+     ```
+     The board shows up as *Espressif USB JTAG* in `ls /dev/serial/by-id/`. Do not pick the
+     Zigbee stick.
+
+   The board joins as `HMS-2000-4WB Bridge`.
+3. **The inverter.** Put the board at the inverter. If it sees only one inverter for 5 minutes,
+   it takes it: the status sensor goes from 1 to 6. With more than one in range, name yours
+   with `sn=` (below).
+4. **The PIN**, only if you set a Bluetooth PIN in the S-Miles app: `pin=<PIN>`. Until then the
+   status shows 13.
+5. **Updates:** add the release index (*From the releases* below). Steps 5 and 6 of the next
+   section (entity names, energy dashboard) apply too.
+
+Release images use CET with European summer time. For another time zone, build your own.
+
+## Quick start with your own build
+
+1. **Credentials.** Copy `hiflow_secrets.example.yaml` to `hiflow_secrets.yaml`. Set `board` to
+   `xiao_esp32c6`, `waveshare_c6_lcd147` or `waveshare_h2_zero`. The inverter values may stay
+   empty: then the bridge finds the inverter and takes the PIN over Zigbee, like a release
+   image. Filled-in values win. The comments in the file say where each value comes from:
    - the serial tail comes from the inverter's BLE name `RMI-XXXXXXXXXXXX`, the MAC address from
-     a BLE scanner app or Home Assistant's Bluetooth panel (the two differ);
-   - get a `ble_id` from `python3 tools/gen_ble_id.py`, or reuse the one from ha-hiflow-ble;
+     a BLE scanner app or Home Assistant's Bluetooth panel (the two differ). Set both or neither;
+   - a `ble_id` from ha-hiflow-ble keeps the inverter from asking for the PIN again;
    - the PIN is the Bluetooth PIN from the S-Miles app;
    - set whether an external antenna is used (XIAO only);
    - `sleepy` stays `"true"` for the low-power mode (see *Low power* below).
-
-   The build stops with an error while the MAC, the serial or the `ble_id` still hold the
-   example values: a bridge built with them would never find the inverter.
 2. **Time zone.** Check `offset` and `eu_dst` under `hiflow_ble:` in `hiflow-zb.yaml` (default:
    CET with European summer time). They set the local time of the display and the day curve.
    The time-sync at every login also hands them to the inverter.
@@ -86,8 +116,9 @@ welcome.
 
    The board joins as `HMS-2000-4WB Bridge`. If it missed the pairing window, open pairing again
    and reset the board (RESET button or re-plug).
-5. **Optional, ZHA: name the entities.** ZHA names analog inputs generically. This command gives
-   them the ids `sensor.inverter_zb_*` and English names by endpoint:
+5. **Optional, ZHA: name the entities.** ZHA names them by device class only: five times
+   *Power*, five times *Current*. This command gives them the ids `sensor.inverter_zb_*` and
+   English names by endpoint:
    ```bash
    python3 -m venv .venv && .venv/bin/pip install websockets
    HASS_URL=http://homeassistant.local:8123 HASS_TOKEN=<long-lived token> \
@@ -101,6 +132,41 @@ welcome.
 
 Put the board at the inverter and power it from a USB charger. The deployed image logs at
 `WARN`, which matters on a charger (see `docs/troubleshooting.md`).
+
+## Settings over Zigbee
+
+The bridge keeps the inverter, its login identity, the PIN and the antenna in its own flash.
+Values in an own build's `hiflow_secrets.yaml` win and are copied there. Empty ones come from
+these settings.
+
+The settings go through one text field of 15 characters: the Basic cluster's
+LocationDescription (0x0010) on endpoint 1. ZHA and Zigbee2MQTT write it without a quirk or
+converter. ESPHome sizes the field by `area:`, so `hiflow-zb.yaml` sets the area to
+`HiFlow settings` (15 characters). The field still starts empty. An own config needs a
+15-character area too.
+
+- **ZHA:** the bridge's device page, the *⋮* next to *Reconfigure*, *Manage Zigbee device*,
+  cluster *Basic* (endpoint 1), attribute `location_desc`, enter the command as the value,
+  *Write attribute*. *Read attribute* shows the answer.
+
+  <img src="docs/img/zha-settings-field.webp" alt="ZHA: the menu next to Reconfigure, Manage Zigbee device, cluster Basic on endpoint 1, attribute location_desc, Write attribute, Read attribute">
+
+- **Zigbee2MQTT:** the device's *Dev console*, endpoint 1, cluster `genBasic`, attribute
+  `locationDesc`, *Write*, then *Read* for the answer.
+
+| Command | Does | Answer |
+|---|---|---|
+| `pin=123456` | the Bluetooth PIN from the S-Miles app, tried at once | `pin saved` |
+| `pin=` | no PIN | `pin removed` |
+| `sn=ABCDEF123456` | the inverter with that serial (its BLE name is `RMI-ABCDEF123456`) | `searching`, then `sn ABCDEF123456` (`sn ok, reboot` when it had chosen another one) |
+| `forget` | drops the inverter and looks for one again | `forgot, reboot` (while it searches: the state) |
+| `ant=ext` / `ant=int` | external or internal antenna (XIAO only) | `ant ext` / `ant int` |
+
+Without a command the field shows the state: `sn ABCDEF123456` (the chosen inverter),
+`searching`, `1 found, 240s` (takes it in 240 s) or `2 found, sn=?` (more than one, waits for
+`sn=`). An answer stays for 30 seconds. A value fixed in an own build answers `... in build`.
+The PIN is never shown or logged. Send `pin=` only once the field shows your inverter's serial:
+the bridge logs in to the inverter it chose.
 
 ## Controls
 
@@ -140,6 +206,8 @@ chip light-sleeps in between (the C6-LCD by day too, its backlight keeps running
 cooler, and it is a first step towards running the bridge on a battery. A command such as the
 power limit still reaches it within a few seconds. With `sleepy: "false"` in
 `hiflow_secrets.yaml` the receiver stays on all the time.
+
+On a computer's USB port the chip stays awake, so logs and a flash over USB work at any time.
 
 Switching it either way makes the bridge leave the network and join again, also when an update
 brings the new setting to a bridge that ran the other one: open pairing (ZHA: *Add device*)
@@ -191,6 +259,31 @@ keeps running while the image downloads, then reboots into it. A new image stays
 reached the coordinator again; one that crashes, or cannot reach the coordinator within 10
 minutes, falls back to the previous image by itself. Zigbee2MQTT has no update entity for the
 bridge, the update is started by hand (see below).
+
+### From the releases
+
+Each release has an `index.json` with a full image per board and a small delta from the
+previous release.
+
+- **ZHA:** add it to `configuration.yaml` and restart Home Assistant:
+  ```yaml
+  zha:
+    zigpy_config:
+      ota:
+        extra_providers:
+          - type: z2m
+            url: https://github.com/jabla/esphome-hiflow-zigbee/releases/latest/download/index.json
+  ```
+  ZHA checks the index once a day. Reloading ZHA checks at once.
+- **Zigbee2MQTT:** publish to `zigbee2mqtt/bridge/request/device/ota_update/update`:
+  ```json
+  {"id": "<device>", "url": "https://github.com/jabla/esphome-hiflow-zigbee/releases/latest/download/index.json"}
+  ```
+
+**From an own build:** flash an own build of this version once. It copies your
+`hiflow_secrets.yaml` values into the bridge, where release images find them.
+
+### From your own build
 
 1. **Once, in ZHA:** give it a folder for update files, in `configuration.yaml`:
    ```yaml

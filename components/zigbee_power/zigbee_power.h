@@ -25,10 +25,12 @@ class ZigbeePower : public Component {
   void set_zigbee(zigbee::ZigbeeComponent *zb) { this->zb_ = zb; }
   void set_poll_interval(uint32_t ms) { this->poll_interval_ms_ = ms; }
   void set_awake_after_boot(uint32_t ms) { this->awake_after_boot_ms_ = ms; }
+  void set_awake_on_usb(bool awake) { this->awake_on_usb_ = awake; }
   void set_loop_interval(uint32_t ms) { this->loop_interval_ms_ = ms; }
   void set_night_poll_interval(uint32_t ms) { this->night_poll_interval_ms_ = ms; }
   void set_night_loop_interval(uint32_t ms) { this->night_loop_interval_ms_ = ms; }
   void set_request_poll_window(uint32_t ms) { this->request_poll_window_ms_ = ms; }
+  void set_binding_table_size(uint8_t size) { this->binding_table_size_ = size; }
   void set_wake_button(InternalGPIOPin *pin) { this->button_pin_ = pin; }
   void add_keep_pin(uint8_t pin) { this->keep_pins_.push_back(pin); }
   void add_on_press_callback(std::function<void()> &&callback) { this->press_callback_.add(std::move(callback)); }
@@ -86,10 +88,12 @@ class ZigbeePower : public Component {
   temperature_sensor_handle_t tsens_{nullptr};
   bool tsens_failed_{false};
   uint32_t awake_after_boot_ms_{0};
+  bool awake_on_usb_{false};
   uint32_t loop_interval_ms_{0};  // 0 = ESPHome's own
   uint32_t night_poll_interval_ms_{0};
   uint32_t night_loop_interval_ms_{0};
   uint32_t request_poll_window_ms_{0};  // 0 = no fast poll after a request
+  uint8_t binding_table_size_{0};       // 0 = the stack's own (16)
 
   // The wake button: a level interrupt that waits for the other level each
   // time, so it fires once per change, also right after a wakeup; the presses

@@ -3,4 +3,4 @@
 # .github/dependabot.yml says what a bump needs before merge.
 esphome==2026.11.0
 # Deltas of the release workflow (tools/make_zigbee_ota.py, tools/release.py).
-detools==0.53.0
+detools==0.53.1

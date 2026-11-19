@@ -10,6 +10,11 @@
 esphome:
   name: hiflow-zb
   friendly_name: hiflow-zb
+  # Not a room: ESPHome makes this the Basic cluster's LocationDescription,
+  # the bridge's settings field (pin=, sn=, forget, ant=, see
+  # components/hiflow_ble). The stack keeps the length of this first text, so
+  # it has 15 characters, the most ESPHome passes on. The field starts empty.
+  area: "HiFlow settings"
 
 # The chip variant (esp32c6, esp32h2) and its clock come from boards/<board>.yaml.
 esp32:
@@ -73,7 +78,8 @@ esp32_ble:
 # names "Zigbee end device + BLE scan" as the fragile combination. A continuously
 # scanning tracker next to Zigbee reproducibly starved the login. A 30 ms window
 # every 1280 ms (2 % duty) is enough because the MAC is known; the name (only in
-# the scan response) is not needed, hence passive scanning.
+# the scan response) is not needed, hence passive scanning. A bridge still
+# looking for its inverter by name scans actively until it finds it.
 esp32_ble_tracker:
   scan_parameters:
     interval: 1280ms

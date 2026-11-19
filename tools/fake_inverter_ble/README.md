@@ -19,11 +19,21 @@ Run it (one instance per adapter: two GATT servers on one adapter break the conn
 
     cd tools/fake_inverter_ble && uv run --with 'bless==0.3.*' python fake_ble.py
 
-Environment: `SN` (default `0000000000AA`), `PIN` (default none), `KEY` (the session key the V0
-pairing hands out, 32 hex digits) and `CHUNK` (notification size, default 20 bytes; at most
-the MTU minus 3).
+Stop it with Ctrl+C: the adapter then gets its own name back.
 
-Point a bridge at it with a secrets file of its own, e.g. a copy of
+It runs on the first adapter (`bluetoothctl list`) or on `ADAPTER` (e.g. `ADAPTER=hci1`). It
+refuses an adapter with paired or connected devices: while a bridge holds its link, the
+controller may refuse new connections to them. Use a USB Bluetooth dongle of its own.
+`SHARED=1` runs it on a shared adapter anyway. A kill (`mode` below) drops only the bridge that
+wrote.
+
+Environment: `SN` (default `0000000000AA`), `PIN` (default none, else asked at login until sent
+once), `KEY` (the session key the V0 pairing hands out, 32 hex digits), `CHUNK` (notification
+size, default 20 bytes; at most the MTU minus 3) and `NAME` (advertised name, default `RMI-`
+plus the serial).
+
+A bridge on the example secrets finds it by that name: after 5 minutes alone in range or at once
+after `sn=0000000000AA`. Or point it at the fake with a secrets file of its own, e.g. a copy of
 `hiflow_secrets.example.yaml` with:
 
 - `hiflow_mac`: the laptop adapter's address (`bluetoothctl list`),

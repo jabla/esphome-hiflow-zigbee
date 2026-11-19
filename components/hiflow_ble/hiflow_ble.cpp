@@ -1,4 +1,5 @@
 #include "hiflow_ble.h"
+#include "hiflow_setup_field.h"
 
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
@@ -17,6 +18,7 @@
 
 #include <esp_gap_ble_api.h>
 #include <esp_gattc_api.h>
+#include <esp_random.h>
 #include <esp_timer.h>
 
 namespace esphome {
@@ -48,6 +50,14 @@ static const uint16_t SWITCH_PREF_MAGIC = 0x4853;     // 'HS'
 static const char *const SWITCH_PREF_NAME = "hiflow_switch_v1";
 static const uint16_t LIMIT_PREF_MAGIC = 0x484C;      // 'HL'
 static const char *const LIMIT_PREF_NAME = "hiflow_limit_v1";
+static const uint16_t SETUP_PREF_MAGIC = 0x4843;      // 'HC'
+static const uint8_t SETUP_PREF_VERSION = 1;
+static const char *const SETUP_PREF_NAME = "hiflow_setup_v1";
+static const int64_t SEARCH_CHECK_MS = 1000;          // how often the search is looked at
+static const int64_t RESCAN_IDLE_MS = 5000;           // an idle scanner the tracker leaves alone
+static const int64_t SETUP_POLL_MS = 1000;            // the settings field is polled this often
+static const uint32_t SETUP_REBOOT_MS = 3000;         // after a new inverter: time for the answer (next poll)
+static const int64_t SETUP_REPLY_KEEP_MS = 30000;     // a command's answer stays this long
 
 // ---------------------------------------------------------------------------
 // trampolines: the session core is C and calls back through a context pointer
@@ -112,6 +122,7 @@ void HiflowBle::setup() {
   if (this->network_time_ != nullptr)
     this->network_time_->add_on_time_sync_callback([this]() { this->on_network_time_(); });
 #endif
+  this->load_setup_();
 }
 
 #ifdef HIFLOW_DEMO_DAY
@@ -220,10 +231,23 @@ void HiflowBle::start_session_() {
 void HiflowBle::loop() {
   int64_t now = this->now_ms_();
 
+#ifdef USE_ZIGBEE
+  if (this->setup_zb_ != nullptr)
+    this->poll_setup_field_(now);
+#endif
+
   // Started from loop() and not from setup(): the session enables the BLE
   // client right away, and ble_client only knows its own enabled flag once its
-  // setup() has run.
+  // setup() has run. Without an inverter there is no session yet: the bridge
+  // looks for one first.
   if (!this->session_started_) {
+    if (this->searching_) {
+#ifdef USE_ZIGBEE_POWER
+      this->zigbee_radio_tick_(now);
+#endif
+      this->search_tick_(now);
+      return;
+    }
     this->start_session_();
     return;
   }
@@ -259,7 +283,7 @@ void HiflowBle::loop() {
   if (this->night_mode_() && !this->night_)
     this->check_night_(now);
   if (this->rescan_pending_)
-    this->apply_rescan_();
+    this->apply_rescan_(now);
   if (this->night_ && this->night_ble_off_ms_ != 0)
     this->night_ble_tick_(now);
 
@@ -329,9 +353,24 @@ void HiflowBle::dump_config() {
     ESP_LOGCONFIG(TAG, "  MAC address: %s", this->parent()->address_str());
   }
   ESP_LOGCONFIG(TAG, "  GATT service: 0000e0ff-3c17-d293-8e48-14fe2e4da212 (ffe1 write / ffe2 notify)");
-  ESP_LOGCONFIG(TAG, "  Device serial: configured (%zu chars)", this->sn_.size());
-  ESP_LOGCONFIG(TAG, "  BLE id: configured (%zu chars)", this->ble_id_.size());
-  ESP_LOGCONFIG(TAG, "  BLE PIN: %s", this->pin_.empty() ? "not set" : "configured");
+  if (this->searching_) {
+    ESP_LOGCONFIG(TAG, "  Inverter: none yet, looking for %s",
+                  this->setup_.want[0] != '\0' ? this->setup_.want : "one by its BLE name");
+  } else {
+    ESP_LOGCONFIG(TAG, "  Inverter: RMI-%s (%s)", this->sn_.c_str(),
+                  this->build_inverter_ ? "from the build" : "kept in flash");
+  }
+  ESP_LOGCONFIG(TAG, "  BLE id: %zu digits (%s)", this->ble_id_.size(),
+                this->build_ble_id_ ? "from the build" : "kept in flash");
+  ESP_LOGCONFIG(TAG, "  BLE PIN: %s", this->pin_.empty()  ? "not set"
+                                      : this->build_pin_ ? "from the build"
+                                                         : "kept in flash");
+#ifdef USE_OUTPUT
+  if (this->antenna_select_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "  Antenna: %s (%s)", this->setup_.antenna == 2 ? "external" : "internal",
+                  this->build_antenna_ >= 0 ? "from the build" : "settings field");
+  }
+#endif
   ESP_LOGCONFIG(TAG, "  Time offset: %d s%s", static_cast<int>(this->std_offset_),
                 this->eu_dst_ ? " + European summer time" : "");
   ESP_LOGCONFIG(TAG, "  Poll interval: %u ms", static_cast<unsigned>(this->poll_interval_ms_));
@@ -348,6 +387,11 @@ void HiflowBle::dump_config() {
   if (this->night_test_) {
     ESP_LOGW(TAG, "  night_test: every lost link starts night mode (bench only)");
   }
+#ifdef USE_ZIGBEE
+  if (this->setup_zb_ != nullptr) {
+    ESP_LOGCONFIG(TAG, "  Settings field: Zigbee endpoint %u, Basic LocationDescription", SETUP_FIELD_ENDPOINT);
+  }
+#endif
 #ifdef USE_NUMBER
   if (this->power_limit_ != nullptr) {
     ESP_LOGCONFIG(TAG, "  Power limit slider: on");
@@ -442,7 +486,7 @@ void HiflowBle::set_night_(bool night, const char *why) {
     tracker->set_scan_interval(night ? this->night_scan_interval_ : this->day_scan_interval_);
     tracker->set_scan_window(this->scan_window_);
     // A running scan keeps its parameters until it starts again.
-    this->rescan_pending_ = !this->link_ready_;
+    this->request_rescan_();
   }
   ESP_LOGI(TAG, "%s mode (%s)%s", night ? "night" : "day", why,
            this->night_ble_off_ms_ == 0 ? "" : (night ? ", BLE off" : ", BLE on"));
@@ -560,28 +604,46 @@ void HiflowBle::zigbee_radio_tick_(int64_t now) {
 }
 #endif
 
-// A running scan keeps its parameters: stop it, the tracker starts it again
-// with the new ones. Waits while the client is busy (a link going down, an
-// attempt), so a change is never dropped.
-void HiflowBle::apply_rescan_() {
+// New scan parameters reach the controller only with a scan start. A scan
+// that started before the change is stopped, and the tracker starts it again
+// with them. An idle scanner is left to the tracker: right after BLE came up
+// it starts the first scan itself, without checking its state, so a start of
+// ours just before logs "Unexpected state". Only a scanner that stays idle
+// (continuous scanning was off) gets a start from here. Waits while the client
+// is busy (a link going down, an attempt), so a change is never dropped.
+void HiflowBle::apply_rescan_(int64_t now) {
   auto *tracker = esp32_ble_tracker::global_esp32_ble_tracker;
   if (tracker == nullptr || this->link_ready_) {
     this->rescan_pending_ = false;
+    this->rescan_idle_since_ms_ = -1;
     return;
   }
   if (this->node_state != espbt::ClientState::IDLE)
     return;
-  auto state = tracker->get_scanner_state();
-  if (state == esp32_ble_tracker::ScannerState::RUNNING) {
-    tracker->stop_scan();
-    // stop_scan() also ends continuous scanning, which is what restarts it.
-    tracker->set_scan_continuous(true);
-    this->rescan_pending_ = false;
-  } else if (state == esp32_ble_tracker::ScannerState::IDLE) {
-    tracker->set_scan_continuous(true);
-    tracker->start_scan();
-    this->rescan_pending_ = false;
+  switch (tracker->get_scanner_state()) {
+    case esp32_ble_tracker::ScannerState::RUNNING:
+      // Seen idle since the change: this scan started with the new parameters.
+      if (this->rescan_idle_since_ms_ < 0) {
+        tracker->stop_scan();
+        // stop_scan() also ends continuous scanning, which is what restarts it.
+        tracker->set_scan_continuous(true);
+      }
+      break;
+    case esp32_ble_tracker::ScannerState::IDLE:
+      tracker->set_scan_continuous(true);
+      if (this->rescan_idle_since_ms_ < 0) {
+        this->rescan_idle_since_ms_ = now;
+        return;
+      }
+      if (now - this->rescan_idle_since_ms_ < RESCAN_IDLE_MS)
+        return;
+      tracker->start_scan_if_idle();
+      break;
+    default:  // starting, stopping or failed: the tracker is at it
+      return;
   }
+  this->rescan_pending_ = false;
+  this->rescan_idle_since_ms_ = -1;
 }
 
 void HiflowBle::report_link_down_(int reason) {
@@ -1041,6 +1103,374 @@ void HiflowBle::publish_status_(uint8_t status, bool refresh) {
   this->next_status_refresh_ms_ = this->now_ms_() + STATUS_REFRESH_MS;
   this->publish_(HIFLOW_STATUS, static_cast<float>(status));
 }
+
+// ---------------------------------------------------------------------------
+// the bridge's own settings (see hiflow_setup.h)
+// ---------------------------------------------------------------------------
+
+// Copies a C string into a fixed field of a flash record, cut to fit.
+template<size_t N> static void copy_text(char (&dst)[N], const char *src) {
+  const size_t len = strnlen(src, N - 1);
+  std::memcpy(dst, src, len);
+  dst[len] = '\0';
+}
+
+// A value from the build wins and goes into flash, so a release image
+// installed later carries on with it; an empty one is taken from flash. The
+// login identity is made up once when neither has one.
+void HiflowBle::load_setup_() {
+  SetupPref rec{};
+  this->setup_pref_ = global_preferences->make_preference<SetupPref>(fnv1_hash(SETUP_PREF_NAME));
+  if (!this->setup_pref_.load(&rec) || rec.magic != SETUP_PREF_MAGIC || rec.version != SETUP_PREF_VERSION)
+    rec = SetupPref{};
+  rec.sn[sizeof(rec.sn) - 1] = '\0';
+  rec.want[sizeof(rec.want) - 1] = '\0';
+  rec.ble_id[sizeof(rec.ble_id) - 1] = '\0';
+  rec.pin[sizeof(rec.pin) - 1] = '\0';
+  bool changed = rec.magic != SETUP_PREF_MAGIC;
+  rec.magic = SETUP_PREF_MAGIC;
+  rec.version = SETUP_PREF_VERSION;
+
+  // The inverter: MAC and serial come together (the schema checks the build).
+  const uint64_t build_mac = this->parent() != nullptr ? this->parent()->get_address() : 0;
+  this->build_inverter_ = build_mac != 0;
+  if (this->build_inverter_) {
+    if (rec.mac != build_mac || this->sn_ != rec.sn || rec.want[0] != '\0') {
+      rec.mac = build_mac;
+      copy_text(rec.sn, this->sn_.c_str());
+      rec.want[0] = '\0';
+      changed = true;
+    }
+  } else if (rec.mac != 0 && std::strlen(rec.sn) == HIFLOW_SN_LEN) {
+    this->sn_ = rec.sn;
+    if (this->parent() != nullptr)
+      this->parent()->set_address(rec.mac);
+    this->set_address(rec.mac);
+  } else if (rec.mac != 0 || rec.sn[0] != '\0') {
+    rec.mac = 0;
+    rec.sn[0] = '\0';
+    changed = true;
+  }
+
+  this->build_ble_id_ = !this->ble_id_.empty();
+  if (this->build_ble_id_) {
+    if (this->ble_id_ != rec.ble_id) {
+      copy_text(rec.ble_id, this->ble_id_.c_str());
+      changed = true;
+    }
+  } else if (hiflow_setup_ble_id_valid(rec.ble_id)) {
+    this->ble_id_ = rec.ble_id;
+  } else {
+    uint8_t random[HIFLOW_SETUP_BLE_ID_DIGITS];
+    char id[HIFLOW_SETUP_BLE_ID_DIGITS + 1];
+    esp_fill_random(random, sizeof(random));
+    hiflow_setup_make_ble_id(random, id);
+    this->ble_id_ = id;
+    copy_text(rec.ble_id, this->ble_id_.c_str());
+    changed = true;
+    ESP_LOGI(TAG, "made up a login identity for this bridge (kept in flash)");
+  }
+
+  this->build_pin_ = !this->pin_.empty();
+  if (this->build_pin_) {
+    if (this->pin_ != rec.pin) {
+      copy_text(rec.pin, this->pin_.c_str());
+      changed = true;
+    }
+  } else {
+    this->pin_ = rec.pin;
+  }
+
+  if (this->build_antenna_ >= 0) {
+    const uint8_t antenna = this->build_antenna_ ? 2 : 1;
+    if (rec.antenna != antenna) {
+      rec.antenna = antenna;
+      changed = true;
+    }
+  }
+
+  this->setup_ = rec;
+  if (changed)
+    this->save_setup_();
+  this->apply_antenna_();
+  if (!this->inverter_known_()) {
+    this->start_search_(rec.want);
+  } else {
+#ifdef USE_ZIGBEE
+    this->set_setup_text_(this->setup_status_text_());
+#endif
+  }
+}
+
+void HiflowBle::save_setup_() {
+  // A user's action, rare: written at once, whatever the link is doing.
+  if (!this->setup_pref_.save(&this->setup_) || !global_preferences->sync())
+    ESP_LOGW(TAG, "settings not saved to flash");
+}
+
+void HiflowBle::apply_antenna_() {
+#ifdef USE_OUTPUT
+  if (this->antenna_select_ == nullptr)
+    return;
+  if (this->setup_.antenna == 2) {
+    this->antenna_select_->turn_on();
+  } else {
+    this->antenna_select_->turn_off();
+  }
+#endif
+}
+
+bool HiflowBle::inverter_known_() {
+  return this->parent() != nullptr && this->parent()->get_address() != 0 && this->sn_.size() == HIFLOW_SN_LEN;
+}
+
+// Looking for the inverter needs its name, which comes in the scan response:
+// the scan turns active until it is found (the tracker restarts the scan with
+// the new mode).
+void HiflowBle::start_search_(const char *want) {
+  hiflow_discovery_start(&this->discovery_, want);
+  this->searching_ = true;
+  this->search_result_ = HIFLOW_DISCOVERY_WAIT;
+  this->search_seen_ = 0;
+  this->next_search_check_ms_ = 0;
+  this->search_scan_due_ = true;  // search_tick_() turns the scan active
+  if (want != nullptr && want[0] != '\0') {
+    ESP_LOGI(TAG, "no inverter yet: looking for RMI-%s", want);
+  } else {
+    ESP_LOGI(TAG, "no inverter yet: looking for one by its BLE name (RMI-...)");
+  }
+  this->publish_status_(HIFLOW_STATUS_NO_INVERTER, false);
+#ifdef USE_ZIGBEE
+  this->set_setup_text_(this->setup_status_text_());
+#endif
+}
+
+bool HiflowBle::parse_device(const espbt::ESPBTDevice &device) {
+  if (!this->searching_)
+    return false;
+  const auto name = device.get_name();
+  const int before = this->discovery_.count + this->discovery_.more;
+  if (hiflow_discovery_seen(&this->discovery_, this->now_ms_(), device.address_uint64(), name.c_str(),
+                            name.size()) &&
+      this->discovery_.count + this->discovery_.more != before) {
+    char addr[MAC_ADDRESS_PRETTY_BUFFER_SIZE];
+    ESP_LOGI(TAG, "inverter in range: %.*s (%s)", static_cast<int>(name.size()), name.c_str(),
+             device.address_str_to(addr));
+  }
+  return false;
+}
+
+void HiflowBle::search_tick_(int64_t now) {
+  // The scan turns active from the loop, once BLE runs: switched from setup(),
+  // before that, the search at boot saw no inverter (bench test) until it was
+  // started again.
+  auto *ble = esp32_ble::global_ble;
+  if (this->search_scan_due_ && ble != nullptr && ble->is_active() && !this->zigbee_quiet_) {
+    if (auto *tracker = esp32_ble_tracker::global_esp32_ble_tracker) {
+      tracker->set_scan_active(true);
+      this->request_rescan_();
+    }
+    this->search_scan_due_ = false;
+  }
+  if (this->rescan_pending_)
+    this->apply_rescan_(now);
+  if (now < this->next_search_check_ms_)
+    return;
+  this->next_search_check_ms_ = now + SEARCH_CHECK_MS;
+  if (now >= this->next_status_refresh_ms_)
+    this->publish_status_(HIFLOW_STATUS_NO_INVERTER, true);
+
+  uint64_t mac = 0;
+  char sn[HIFLOW_SN_LEN + 1];
+  const hiflow_discovery_result_t result = hiflow_discovery_check(&this->discovery_, now, &mac, sn);
+  const int seen = this->discovery_.count + this->discovery_.more;
+  if (result == HIFLOW_DISCOVERY_FOUND) {
+    this->searching_ = false;
+    this->sn_ = sn;
+    this->setup_.mac = mac;
+    copy_text(this->setup_.sn, sn);
+    this->setup_.want[0] = '\0';
+    this->save_setup_();
+    if (this->parent() != nullptr)
+      this->parent()->set_address(mac);
+    this->set_address(mac);
+    if (auto *tracker = esp32_ble_tracker::global_esp32_ble_tracker) {
+      tracker->set_scan_active(false);
+      this->request_rescan_();
+    }
+    ESP_LOGI(TAG, "inverter chosen: RMI-%s (%s), kept in flash", sn,
+             this->parent() != nullptr ? this->parent()->address_str() : "?");
+#ifdef USE_ZIGBEE
+    this->set_setup_text_(this->setup_status_text_());
+#endif
+    return;  // the next loop starts the session
+  }
+  if (result != this->search_result_ || seen != this->search_seen_) {
+    if (result == HIFLOW_DISCOVERY_SEVERAL)
+      ESP_LOGW(TAG, "%d inverters in range: name yours with sn= in the settings field", seen);
+    this->search_result_ = result;
+    this->search_seen_ = seen;
+  }
+}
+
+// What the settings field shows while nobody writes to it: at most 15
+// characters (HIFLOW_SETUP_TEXT_MAX), the field's size.
+std::string HiflowBle::setup_status_text_() {
+  char text[32];  // set_setup_text_() keeps the first 15
+  if (!this->searching_) {
+    std::snprintf(text, sizeof(text), "sn %s", this->sn_.c_str());
+  } else if (this->search_result_ == HIFLOW_DISCOVERY_SEVERAL) {
+    std::snprintf(text, sizeof(text), "%d%s found, sn=?", std::min(this->discovery_.count, HIFLOW_DISCOVERY_SLOTS),
+                  this->discovery_.more ? "+" : "");
+  } else if (this->discovery_.want[0] == '\0' && this->discovery_.count == 1) {
+    // One in range: taken when the window is over, unless a second one shows up.
+    const int64_t left_ms = HIFLOW_DISCOVERY_WINDOW_MS - (this->now_ms_() - this->discovery_.first_ms);
+    std::snprintf(text, sizeof(text), "1 found, %ds", static_cast<int>(std::max<int64_t>(left_ms, 0) / 1000));
+  } else {
+    std::snprintf(text, sizeof(text), "searching");
+  }
+  return text;
+}
+
+#ifdef USE_ZIGBEE
+void HiflowBle::set_setup_text_(const std::string &text) {
+  this->setup_text_ = text.substr(0, HIFLOW_SETUP_TEXT_MAX);
+  this->setup_text_due_ = true;
+}
+
+// Polled like the slider. Only once joined: a write can only come from the
+// coordinator. The stack also takes attribute values reliably only once it runs.
+void HiflowBle::poll_setup_field_(int64_t now) {
+  if (now < this->next_setup_poll_ms_ || !this->setup_zb_->is_joined())
+    return;
+  this->next_setup_poll_ms_ = now + SETUP_POLL_MS;
+  // Once a command's answer had its time, the field shows the state again and
+  // follows the search every second. Only the local attribute changes;
+  // nothing goes over the air until the coordinator reads it.
+  if (now >= this->setup_reply_until_ms_) {
+    const std::string status = this->setup_status_text_();
+    if (status != this->setup_text_)
+      this->set_setup_text_(status);
+  }
+  // Anything but our own text (the one written last, or the command handled
+  // last) came from the coordinator. Read and write share one hold of the
+  // stack's lock, so a new text goes in only over one of ours, never over a
+  // command that is still unread. A command is handled once. Its answer goes
+  // in at the next poll.
+  std::string text;
+  bool wrote = false;
+  if (!exchange_setup_field(SETUP_FIELD_ENDPOINT, &text, this->setup_written_,
+                            this->setup_handled_set_ ? &this->setup_handled_ : nullptr,
+                            this->setup_text_due_ ? &this->setup_text_ : nullptr, &wrote))
+    return;  // the stack is busy: the next poll tries again
+  if (wrote) {
+    this->setup_text_due_ = false;
+    this->setup_written_ = this->setup_text_;
+    this->setup_handled_set_ = false;
+  } else if (text != this->setup_written_ && !(this->setup_handled_set_ && text == this->setup_handled_)) {
+    this->setup_handled_ = text;
+    this->setup_handled_set_ = true;
+    this->handle_setup_command_(text, now);
+  }
+}
+
+void HiflowBle::handle_setup_command_(const std::string &text, int64_t now) {
+  hiflow_setup_cmd_t cmd;
+  hiflow_setup_parse(text.data(), text.size(), &cmd);
+  std::string reply;
+
+  switch (cmd.type) {
+    case HIFLOW_SETUP_CMD_NONE:
+      reply = this->setup_status_text_();
+      break;
+
+    case HIFLOW_SETUP_CMD_BAD:
+      // Never log the text itself: it may hold a PIN.
+      ESP_LOGW(TAG, "settings field: not understood (%s)", cmd.error);
+      reply = cmd.error;
+      break;
+
+    case HIFLOW_SETUP_CMD_PIN:
+      if (this->build_pin_) {
+        reply = "pin: in build";
+        break;
+      }
+      copy_text(this->setup_.pin, cmd.value);
+      this->save_setup_();
+      this->pin_ = cmd.value;
+      if (this->session_started_)
+        hiflow_session_set_pin(&this->session_, now, cmd.value);
+      ESP_LOGI(TAG, "BLE PIN %s over Zigbee", cmd.value[0] != '\0' ? "set" : "removed");
+      reply = cmd.value[0] != '\0' ? "pin saved" : "pin removed";
+      break;
+
+    case HIFLOW_SETUP_CMD_SN:
+      if (this->build_inverter_) {
+        reply = "sn: in build";
+        break;
+      }
+      if (!this->searching_ && hiflow_setup_same_serial(cmd.value, this->sn_.c_str())) {
+        reply = this->setup_status_text_();
+        break;
+      }
+      this->setup_.mac = 0;
+      this->setup_.sn[0] = '\0';
+      copy_text(this->setup_.want, cmd.value);
+      this->save_setup_();
+      if (!this->searching_) {
+        // An inverter is chosen: its address is with the BLE client, and its
+        // session may run already or start with the next loop. A clean start
+        // is simpler than taking that apart. Changing the inverter is rare.
+        ESP_LOGI(TAG, "inverter RMI-%s asked for, restarting", cmd.value);
+        reply = "sn ok, reboot";
+        this->set_timeout("setup_reboot", SETUP_REBOOT_MS, []() { App.safe_reboot(); });
+      } else {
+        this->start_search_(cmd.value);
+        reply = this->setup_status_text_();
+      }
+      break;
+
+    case HIFLOW_SETUP_CMD_FORGET:
+      if (this->build_inverter_) {
+        reply = "sn: in build";
+        break;
+      }
+      this->setup_.mac = 0;
+      this->setup_.sn[0] = '\0';
+      this->setup_.want[0] = '\0';
+      this->save_setup_();
+      if (!this->searching_) {  // an inverter is chosen, see sn= above
+        ESP_LOGI(TAG, "inverter forgotten, restarting");
+        reply = "forgot, reboot";
+        this->set_timeout("setup_reboot", SETUP_REBOOT_MS, []() { App.safe_reboot(); });
+      } else {
+        this->start_search_(nullptr);
+        reply = this->setup_status_text_();
+      }
+      break;
+
+    case HIFLOW_SETUP_CMD_ANTENNA:
+#ifdef USE_OUTPUT
+      if (this->antenna_select_ == nullptr) {
+        reply = "no ant switch";
+      } else if (this->build_antenna_ >= 0) {
+        reply = "ant: in build";
+      } else {
+        this->setup_.antenna = cmd.external ? 2 : 1;
+        this->save_setup_();
+        this->apply_antenna_();
+        ESP_LOGI(TAG, "antenna: %s", cmd.external ? "external" : "internal");
+        reply = cmd.external ? "ant ext" : "ant int";
+      }
+#else
+      reply = "no ant switch";
+#endif
+      break;
+  }
+  this->set_setup_text_(reply);
+  this->setup_reply_until_ms_ = now + SETUP_REPLY_KEEP_MS;
+}
+#endif  // USE_ZIGBEE
 
 }  // namespace hiflow_ble
 }  // namespace esphome

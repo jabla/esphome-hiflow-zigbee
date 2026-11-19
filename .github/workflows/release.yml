@@ -1,0 +1,180 @@
+name: Release images
+
+# Builds the images a release carries for updates over Zigbee, once the release
+# is published: one per board, from hiflow_secrets.example.yaml as it is (no
+# personal data, the bridge takes its settings over Zigbee), a delta against
+# the previous release and one index.json for ZHA and Zigbee2MQTT. See
+# "Release images" in the README and tools/release.py.
+#
+# Publish the release as a pre-release: releases/latest (the URL in ZHA's and
+# Zigbee2MQTT's configuration) keeps pointing at the previous release until the
+# images are attached. A release published as the latest one becomes a
+# pre-release here. Mark it latest once this workflow is through.
+#
+# A release that carries images already is not built again: a second build of
+# the same version differs in its bytes (build time), and a bridge on the
+# first one would refuse every delta made from the second.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build the images for
+        required: true
+
+# Only the jobs that change the release may write to it. The build job runs
+# ESPHome, its Python packages and ESP-IDF's components.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-images
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+
+defaults:
+  run:
+    shell: bash   # with -o pipefail, unlike the default shell
+
+jobs:
+  version:
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write   # gh release edit --prerelease
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      previous: ${{ steps.previous.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - name: This release has no images yet and is not the latest one
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          if grep -qx index.json <<< "$assets"; then
+            echo "::error::$TAG carries images already. Publish a new release instead."
+            exit 1
+          fi
+          prerelease=$(gh release view "$TAG" --json isPrerelease --jq .isPrerelease)
+          if [ "$prerelease" != true ]; then
+            gh release edit "$TAG" --prerelease
+          fi
+      - name: The release before this one that carries images
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          releases=$(gh release list --exclude-drafts --limit 50 --json tagName,isPrerelease,publishedAt \
+                       --jq 'sort_by(.publishedAt) | reverse | .[] | "\(.tagName) \(.isPrerelease)"')
+          # The newest full release with images is the base of the deltas. The
+          # indexes of all releases with images count for the version, so no two
+          # releases share one (also when an older one gets its images later).
+          previous=""
+          n=0
+          mkdir -p indexes
+          while read -r tag prerelease; do
+            [ -n "$tag" ] && [ "$tag" != "$TAG" ] || continue
+            assets=$(gh release view "$tag" --json assets --jq '.assets[].name')
+            grep -qx index.json <<< "$assets" || continue
+            n=$((n + 1))
+            gh release download "$tag" --pattern index.json --output "indexes/$n.json"
+            if [ "$prerelease" = false ] && [ -z "$previous" ]; then
+              previous="$tag"
+            fi
+          done <<< "$releases"
+          echo "tag=$previous" >> "$GITHUB_OUTPUT"
+      - name: Version of the images
+        id: version
+        run: |
+          shopt -s nullglob
+          args=()
+          for index in indexes/*.json; do
+            args+=(--index "$index")
+          done
+          version=$(python3 tools/release.py version "${args[@]}")
+          if ! [[ "$version" =~ ^0x[0-9A-F]{8}$ ]]; then
+            echo "::error::no version from tools/release.py: '$version'"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    runs-on: ubuntu-26.04
+    strategy:
+      matrix:
+        board: [xiao_esp32c6, waveshare_c6_lcd147, waveshare_h2_zero]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install ESPHome and detools
+        # The same pins as the CI (requirements-ci.txt, watched by Dependabot).
+        run: pip install -r requirements-ci.txt
+      - name: Cache the ESP-IDF toolchain
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/esphome
+          key: esphome-idf-${{ runner.os }}-${{ hashFiles('requirements-ci.txt') }}
+      - name: Compile with the example file (no personal data)
+        env:
+          ZIGBEE_OTA_FILE_VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          cp hiflow_secrets.example.yaml hiflow_secrets.yaml
+          esphome -s board ${{ matrix.board }} compile hiflow-zb.yaml
+      - name: The previous release's image of this board
+        if: needs.version.outputs.previous != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS: ${{ needs.version.outputs.previous }}
+        run: |
+          gh release download "$PREVIOUS" --pattern "hiflow-zb-${{ matrix.board }}-*.app.bin" --dir previous \
+            || echo "no image of this board in $PREVIOUS: full image only"
+      - name: Pack
+        run: |
+          args=()
+          [ -d previous ] && args=(--previous previous)
+          python3 tools/release.py pack ${{ matrix.board }} .esphome/build/hiflow-zb \
+            --url-base "https://github.com/${{ github.repository }}/releases/download/$TAG" \
+            --notes-url "https://github.com/${{ github.repository }}/releases/tag/$TAG" \
+            --out dist "${args[@]}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: images-${{ matrix.board }}
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write   # gh release upload
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TAG }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: images-*
+          path: dist
+          merge-multiple: true
+      - name: One index for all boards
+        run: python3 tools/release.py index --out dist/index.json dist/index-*.json
+      - name: Attach to the release
+        # The index last, once every file it names is there.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "$TAG" dist/*.bin dist/*.ota --clobber
+          gh release upload "$TAG" dist/index.json --clobber

@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Give the bridge's ZHA entities stable ids and names, by endpoint.
 
-ZHA names the analog-input entities of the bridge generically and binds them by
-unique id `<ieee>-<endpoint>-12-analog_input`. When a firmware adds a sensor, the
-endpoints shift and ZHA keeps the *old* entity ids, so ids and values no longer
-match. This script maps every endpoint to `sensor.<prefix>_<type>` and an English
-name, in the order of the sensor list in hiflow-zb.yaml. The renaming can be
-cyclic (every id moves one on), so it runs in two passes over temporary ids.
+ZHA names an analog input with a device class only by that class (five entities
+called *Power*, five *Current*) and binds each by unique id
+`<ieee>-<endpoint>-12-analog_input`. When an own config inserts a sensor in the
+middle of the list, the endpoints shift and ZHA keeps the *old* entity ids, so
+ids and values no longer match. This script maps every endpoint to
+`sensor.<prefix>_<type>` and an English name, in the order of the sensor list in
+hiflow-zb.yaml. The renaming can be cyclic (every id moves one on), so it runs
+in two passes over temporary ids.
 
 Credentials come from the environment (HASS_URL, HASS_TOKEN = a long-lived
 access token) or from --env-file. The bridge is found by its Zigbee model string

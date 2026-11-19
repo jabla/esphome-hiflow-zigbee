@@ -22,3 +22,16 @@ updates:
     open-pull-requests-limit: 1
     commit-message:
       prefix: "ci"
+
+  # ESP Web Tools for the web installer (web/package.json, copied into the
+  # GitHub Pages site by .github/workflows/pages.yml). A bump goes live with the
+  # next run of that workflow. The cooldown keeps out a release that is pulled
+  # again within its first two weeks.
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    commit-message:
+      prefix: "ci"

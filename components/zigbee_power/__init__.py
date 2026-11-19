@@ -24,14 +24,19 @@ paired again.
 GPIO outputs float while the chip sleeps (see to_code below); `keep_pins`
 keeps their level.
 
-In light sleep the USB port goes down, so a board on a laptop drops off it.
-For `awake_after_boot` after a start on USB the chip stays awake (logs, a USB
-flash after a press on RESET); without a USB host it sleeps at once. Updates
-without touching the board go over Zigbee OTA.
+In light sleep the USB port goes down. After a start with a USB host (a
+computer, not a charger) the chip therefore stays awake (`awake_on_usb`), so
+logs and a USB flash work at any time. With `awake_on_usb: false` it stays
+awake there only for `awake_after_boot`. Without a USB host it sleeps at once.
+Updates without touching the board go over Zigbee OTA.
 
 Two workarounds for faults below ESPHome: phy_guard (sleepy only, see
 phy_guard.h) and on the ESP32-C6 timer_guard (`timer_guard`, see
 timer_guard.h).
+
+The component also sizes the stack's binding table to the endpoints
+(`binding_table_size`): esp-zigbee-lib keeps 16 entries. A coordinator binds
+every endpoint it sets reporting up for.
 """
 
 import logging
@@ -46,9 +51,11 @@ from esphome.components.esp32 import (
     include_builtin_idf_component,
     only_on_variant,
 )
-from esphome.components.zigbee.const import ZigbeeComponent
+from esphome.components.zigbee.const import KEY_ZIGBEE, ZigbeeComponent
+from esphome.components.zigbee.const_esp32 import CONF_CLUSTERS, KEY_ZIGBEE_EP, ROLE
 import esphome.config_validation as cv
 from esphome.const import CONF_ID, CONF_ON_PRESS, CONF_PIN, CONF_TRIGGER_ID
+from esphome.core import CORE
 import esphome.final_validate as fv
 
 _LOGGER = logging.getLogger(__name__)
@@ -60,6 +67,7 @@ CONF_ZIGBEE_ID = "zigbee_id"
 CONF_SLEEPY = "sleepy"
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_AWAKE_AFTER_BOOT = "awake_after_boot"
+CONF_AWAKE_ON_USB = "awake_on_usb"
 CONF_LOOP_INTERVAL = "loop_interval"
 CONF_NIGHT_POLL_INTERVAL = "night_poll_interval"
 CONF_NIGHT_LOOP_INTERVAL = "night_loop_interval"
@@ -70,11 +78,20 @@ CONF_WAKE_BUTTON = "wake_button"
 CONF_KEEP_PINS = "keep_pins"
 CONF_REQUEST_POLL_WINDOW = "request_poll_window"
 CONF_TIMER_GUARD = "timer_guard"
+CONF_BINDING_TABLE_SIZE = "binding_table_size"
+
+# esp-zigbee-lib's binding table: 16 source and 16 destination entries unless
+# told otherwise.
+LIB_BINDING_TABLE_SIZE = 16
+# Room on top of one entry per server cluster: a binding of the user's own,
+# such as the on/off switch to a light.
+BINDING_TABLE_SPARE = 8
 
 # Options that only act on a sleepy end device, with their defaults.
 SLEEPY_DEFAULTS = {
     CONF_POLL_INTERVAL: "3s",
     CONF_AWAKE_AFTER_BOOT: "3min",
+    CONF_AWAKE_ON_USB: True,
     CONF_POWER_DOWN_PERIPHERALS: False,
     CONF_SLEEP_DEBUG: False,
     CONF_BLE_SLEEP_CLOCK: "xtal",
@@ -125,6 +142,7 @@ def _timer_guard_option(config):
 CONFIG_FIELDS = {
     CONF_POLL_INTERVAL: POLL_INTERVAL,
     CONF_AWAKE_AFTER_BOOT: cv.positive_time_period_milliseconds,
+    CONF_AWAKE_ON_USB: cv.boolean,
     # Power the digital peripherals down in light sleep (about 180 down to
     # 35 uA for the chip, datasheet). ESP-IDF only does it while every
     # peripheral in use can restore its state; otherwise it stays on.
@@ -184,12 +202,20 @@ CONFIG_SCHEMA = cv.All(
             # on the C6, whatever its revision: which ones have the fault is
             # not known.
             cv.Optional(CONF_TIMER_GUARD): cv.boolean,
+            # Entries of the stack's binding table (source and destination
+            # table each). A coordinator binds every endpoint it sets reporting
+            # up for, one entry each. esp-zigbee-lib keeps 16. By default one
+            # per server cluster of the endpoints plus a few spare.
+            # At least the stack's own 16: a smaller table would drop stored
+            # bindings for good.
+            cv.Optional(CONF_BINDING_TABLE_SIZE): cv.int_range(min=LIB_BINDING_TABLE_SIZE, max=255),
         }
     ).extend(cv.COMPONENT_SCHEMA),
     cv.only_on_esp32,
     # Hooks into the stack the way ZigbeeComponent sets it up since 2026.10
-    # (see attach_to_stack() in zigbee_power.cpp).
-    cv.require_esphome_version(2026, 10, 0),
+    # (see attach_to_stack() in zigbee_power.cpp); built and tested with the
+    # bridge's minimum, 2026.11.
+    cv.require_esphome_version(2026, 11, 0),
     only_on_variant(supported=[VARIANT_ESP32C6, VARIANT_ESP32H2], msg_prefix="zigbee_power"),
     _sleepy_options,
     _timer_guard_option,
@@ -214,6 +240,19 @@ def _final_validate(config):
 FINAL_VALIDATE_SCHEMA = _final_validate
 
 
+def _binding_table_size(config):
+    """The size from the config, or one entry per server cluster of the
+    endpoints (each a candidate for a coordinator's binding) plus the spare,
+    at least the stack's own size."""
+    if CONF_BINDING_TABLE_SIZE in config:
+        return config[CONF_BINDING_TABLE_SIZE]
+    endpoints = CORE.data.get(KEY_ZIGBEE, {}).get(KEY_ZIGBEE_EP, {})
+    servers = sum(
+        1 for ep in endpoints.values() for cluster in ep.get(CONF_CLUSTERS, []) if cluster.get(ROLE) == "SERVER"
+    )
+    return min(255, max(LIB_BINDING_TABLE_SIZE, servers + BINDING_TABLE_SPARE))
+
+
 async def to_code(config):
     zb = await cg.get_variable(config[CONF_ZIGBEE_ID])
     var = cg.new_Pvariable(config[CONF_ID])
@@ -225,6 +264,7 @@ async def to_code(config):
     # starts its task in one go. This component goes in on the way, when
     # ESPHome adds its signal handler; see attach_to_stack() in zigbee_power.cpp.
     cg.add_build_flag("-Wl,--wrap=ezb_app_signal_add_handler")
+    cg.add(var.set_binding_table_size(_binding_table_size(config)))
     if CONF_LOOP_INTERVAL in config:
         cg.add(var.set_loop_interval(config[CONF_LOOP_INTERVAL]))
     if button := config.get(CONF_WAKE_BUTTON):
@@ -250,6 +290,7 @@ async def to_code(config):
     if config[CONF_SLEEPY]:
         cg.add(var.set_poll_interval(config[CONF_POLL_INTERVAL]))
         cg.add(var.set_awake_after_boot(config[CONF_AWAKE_AFTER_BOOT]))
+        cg.add(var.set_awake_on_usb(config[CONF_AWAKE_ON_USB]))
         cg.add(var.set_night_poll_interval(config.get(CONF_NIGHT_POLL_INTERVAL, config[CONF_POLL_INTERVAL])))
         cg.add(var.set_night_loop_interval(config.get(CONF_NIGHT_LOOP_INTERVAL, config[CONF_LOOP_INTERVAL])))
         cg.add(var.set_request_poll_window(config[CONF_REQUEST_POLL_WINDOW]))

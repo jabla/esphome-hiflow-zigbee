@@ -60,10 +60,9 @@ jobs:
         with:
           path: ~/.cache/esphome
           key: esphome-idf-${{ runner.os }}-${{ hashFiles('requirements-ci.txt') }}
-      - name: Compile with the example credentials
-        # The component refuses the example values unless told otherwise.
-        env:
-          HIFLOW_ALLOW_EXAMPLE_SECRETS: "1"
+      - name: Compile with the example file
+        # As it is, the way the release images are built: no personal data, the
+        # bridge finds the inverter and takes its settings over Zigbee.
         run: |
           cp hiflow_secrets.example.yaml hiflow_secrets.yaml
           esphome ${{ matrix.board && format('-s board {0}', matrix.board) || '' }} ${{ matrix.sleepy && format('-s sleepy {0}', matrix.sleepy) || '' }} compile ${{ matrix.config }}
@@ -141,9 +140,7 @@ jobs:
         with:
           path: ~/.cache/esphome
           key: esphome-idf-${{ runner.os }}-minimum-${{ steps.min.outputs.version }}
-      - name: Compile with the example credentials
-        env:
-          HIFLOW_ALLOW_EXAMPLE_SECRETS: "1"
+      - name: Compile with the example file
         run: |
           cp hiflow_secrets.example.yaml hiflow_secrets.yaml
           esphome ${{ matrix.board && format('-s board {0}', matrix.board) || '' }} ${{ matrix.sleepy && format('-s sleepy {0}', matrix.sleepy) || '' }} compile hiflow-zb.yaml

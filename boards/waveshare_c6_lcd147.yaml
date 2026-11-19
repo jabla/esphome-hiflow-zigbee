@@ -363,6 +363,7 @@ display:
         const char *name = nullptr;
         status_color = RED;
         switch (st) {
+          case 1: name = "SEARCHING"; status_color = ORANGE; break;
           case 2: name = "PAIRING"; status_color = ORANGE; break;
           case 3: name = "LOGIN"; status_color = ORANGE; break;
           case 4: name = "PIN"; status_color = ORANGE; break;

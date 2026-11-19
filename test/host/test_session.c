@@ -738,6 +738,31 @@ static void test_missing_pin(void)
     expect_int(hiflow_session_status(&w.s), 13, "status 13: PIN missing");
     expect_int(w.fi.pin_frames, 0, "nothing was sent as a PIN");
     expect_int(w.data_count, 0, "no data");
+
+    /* The owner sends the PIN over Zigbee: the 30-minute wait ends at once,
+       and the next connection gets through. */
+    hiflow_session_set_pin(&w.s, w.now, TEST_PIN);
+    world_run(&w, 10000);
+    expect_int(w.fi.pin_frames, 1, "the new PIN went out on the next connection");
+    expect(strcmp(w.fi.last_pin, TEST_PIN) == 0, "the PIN set at run time was sent");
+    expect_int(w.fi.pin_ok, 1, "device whitelisted the identity");
+    expect(w.data_count >= 1, "data after the PIN");
+
+    /* A PIN that does not fit the configuration is ignored. */
+    hiflow_session_set_pin(&w.s, w.now, "12345678901234567890");
+    expect(strcmp(w.s.cfg.pin, TEST_PIN) == 0, "an over-long PIN leaves the old one");
+
+    /* Outside a PIN wait nothing else changes: a refused login keeps its wait. */
+    world_init(&w, 1, "");
+    world_single_page(&w);
+    w.fi.kill_link_on_login = 1;
+    world_run(&w, 3000);
+    {
+        int32_t before = hiflow_session_retry_in_s(&w.s, w.now);
+        hiflow_session_set_pin(&w.s, w.now, TEST_PIN);
+        expect(before > 0 && hiflow_session_retry_in_s(&w.s, w.now) == before,
+               "a wait after a refused login stays as it was");
+    }
 }
 
 static void test_radio_loss(void)

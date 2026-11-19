@@ -19,6 +19,7 @@ from esphome.components import (
     ble_client,
     esp32_ble_tracker,
     number,
+    output,
     switch,
     time as time_,
 )
@@ -49,7 +50,9 @@ DEPENDENCIES = ["ble_client"]
 _LOGGER = logging.getLogger(__name__)
 
 hiflow_ble_ns = cg.esphome_ns.namespace("hiflow_ble")
-HiflowBle = hiflow_ble_ns.class_("HiflowBle", cg.Component, ble_client.BLEClientNode)
+HiflowBle = hiflow_ble_ns.class_(
+    "HiflowBle", cg.Component, ble_client.BLEClientNode, esp32_ble_tracker.ESPBTDeviceListener
+)
 HiflowPowerLimit = hiflow_ble_ns.class_(
     "HiflowPowerLimit", number.Number, cg.Parented.template(HiflowBle)
 )
@@ -74,13 +77,19 @@ CONF_NIGHT_SCAN_INTERVAL = "night_scan_interval"
 CONF_NIGHT_BLE_OFF = "night_ble_off"
 CONF_NIGHT_TEST = "night_test"
 CONF_BTU_TASK_STACK_SIZE = "btu_task_stack_size"
+CONF_ANTENNA_SELECT = "antenna_select"
+CONF_EXTERNAL_ANTENNA = "external_antenna"
 
 # The power limit slider's Zigbee endpoint. Fixed, and well above the sensors
 # (1-31), so that adding it never renumbers an existing endpoint.
 POWER_LIMIT_ENDPOINT = 32
 # The inverter's on/off switch. 33 is the board's uptime sensor in hiflow-zb.yaml.
 INVERTER_SWITCH_ENDPOINT = 34
-
+# The settings field: the Basic cluster of the first sensor's endpoint.
+SETUP_FIELD_ENDPOINT = 1
+# Its length, HIFLOW_SETUP_TEXT_MAX in hiflow_setup.h: what ESPHome passes on
+# of the area text at most.
+SETUP_FIELD_CHARS = 15
 
 
 def AUTO_LOAD(config):
@@ -99,14 +108,56 @@ SERVICE_UUID = "0000e0ff-3c17-d293-8e48-14fe2e4da212"
 TX_CHAR_UUID16 = 0xFFE1  # app -> device (write)
 RX_CHAR_UUID16 = 0xFFE2  # device -> app (notify)
 
+# A MAC of all zeros in ble_client: the bridge finds the inverter itself, by its
+# BLE name (see hiflow_setup.h). So does an empty serial.
+RUNTIME_MAC = "00:00:00:00:00:00"
+
+
+def _serial(value):
+    """The 12 characters after RMI- in the inverter's BLE name, or empty."""
+    value = cv.string_strict(value)
+    if value and (len(value) != 12 or not value.isalnum() or not value.isascii()):
+        raise cv.Invalid("the serial is the 12 letters and digits after RMI- in the inverter's BLE name")
+    return value
+
+
+def _ble_id(value):
+    """Digits only, up to 23 (the session's buffer), or empty."""
+    value = cv.string_strict(value)
+    if value and (not value.isdigit() or not value.isascii() or len(value) > 23):
+        raise cv.Invalid("the BLE id is a string of up to 23 digits (tools/gen_ble_id.py makes one)")
+    return value
+
+
+def _pin(value):
+    value = cv.string_strict(value)
+    if len(value) > 15:
+        raise cv.Invalid("the BLE PIN has at most 15 characters")
+    return value
+
+
+def _antenna(value):
+    """true/false from the build, or empty: set over Zigbee (ant=)."""
+    if value is None or value == "":
+        return ""
+    return cv.boolean(value)
+
 
 CONFIG_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.declare_id(HiflowBle),
         cv.GenerateID(CONF_BLE_CLIENT_ID): cv.use_id(ble_client.BLEClient),
-        cv.Required(CONF_SN): cv.string_strict,
-        cv.Required(CONF_BLE_ID): cv.string_strict,
-        cv.Required(CONF_PIN): cv.string_strict,
+        # Each of these may stay empty: the bridge then finds the inverter by
+        # its BLE name, makes up its own identity and takes the PIN over
+        # Zigbee (the settings field, see hiflow_setup.h). Release images are
+        # built that way. A value set here wins.
+        cv.Optional(CONF_SN, default=""): _serial,
+        cv.Optional(CONF_BLE_ID, default=""): _ble_id,
+        cv.Optional(CONF_PIN, default=""): _pin,
+        # The XIAO ESP32-C6's antenna select (boards/xiao_esp32c6.yaml), and
+        # which antenna the build fixes; empty leaves it to ant= over Zigbee.
+        cv.Optional(CONF_ANTENNA_SELECT): cv.use_id(output.BinaryOutput),
+        cv.Optional(CONF_EXTERNAL_ANTENNA, default=""): _antenna,
         # Standard UTC offset (winter time) for the display and the day curve.
         # The handshake time-sync and the protobuf time fields carry it too;
         # the vendor app hard-codes 28800 for CST.
@@ -162,8 +213,8 @@ CONFIG_SCHEMA = cv.Schema(
         # The network time: every sync of this time component sets the
         # bridge's clock, so it is right even after a power cut at night.
         # hiflow-zb.yaml points it at ESPHome's zigbee time platform, which
-        # reads the coordinator's clock (ZHA answers from the host's clock;
-        # not yet tested with Zigbee2MQTT).
+        # reads the coordinator's clock (ZHA and Zigbee2MQTT answer from the
+        # host's clock).
         cv.Optional(CONF_TIME_ID): cv.use_id(time_.RealTimeClock),
         cv.Optional(CONF_NETWORK_TIME): cv.invalid(
             "network_time was replaced by time_id: add a `time:` entry with "
@@ -180,7 +231,7 @@ CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_BTU_TASK_STACK_SIZE): cv.int_range(min=3072, max=8192),
         cv.OnlyWith(CONF_ZIGBEE_ID, "zigbee"): cv.use_id(ZigbeeComponent),
     }
-).extend(cv.COMPONENT_SCHEMA)
+).extend(cv.COMPONENT_SCHEMA).extend(esp32_ble_tracker.ESP_BLE_DEVICE_SCHEMA)
 
 
 # The controls are ordinary number and switch entities. ESPHome's Zigbee
@@ -248,20 +299,21 @@ def _night_options(config):
     return config
 
 
-# night_ble_off relies on ESPHome settling the tracker and the client when BLE
-# goes off; the bridge is built and tested on 2026.10 and newer only.
+# The settings field takes over the Basic cluster's LocationDescription, which
+# ESPHome creates since 2026.11; the bridge is built and tested on 2026.11 and
+# newer only.
 CONFIG_SCHEMA = cv.All(
     CONFIG_SCHEMA,
-    cv.require_esphome_version(2026, 10, 0),
+    cv.require_esphome_version(2026, 11, 0),
     _night_options,
     _control_entities,
     _time_hint,
 )
 
-# The values of hiflow_secrets.example.yaml. A build that still carries one of
-# them runs, but never finds the inverter (the MAC) or never logs in (SN,
-# ble_id), and nothing on the device says why. CI compiles with the example
-# file on purpose and sets HIFLOW_ALLOW_EXAMPLE_SECRETS=1.
+# The placeholders of older copies of hiflow_secrets.example.yaml. A build
+# that still carries one of them runs, but never finds the inverter (the MAC)
+# or never logs in (SN, ble_id). Nothing on the device says why. The
+# example file now leaves the values empty instead (set over Zigbee).
 EXAMPLE_MAC = "AA:BB:CC:DD:EE:FF"
 EXAMPLE_SN = "XXXXXXXXXXXX"
 EXAMPLE_BLE_ID = "000000000000000000"
@@ -301,7 +353,20 @@ def _final_validate_night(config):
     return config
 
 
+def _client_mac(config):
+    for client in fv.full_config.get().get("ble_client", []):
+        if client[CONF_ID] == config[CONF_BLE_CLIENT_ID]:
+            return str(client[CONF_MAC_ADDRESS])
+    return None
+
+
 def _final_validate_secrets(config):
+    mac = _client_mac(config)
+    if (mac == RUNTIME_MAC) != (config[CONF_SN] == ""):
+        raise cv.Invalid(
+            "hiflow_mac and hiflow_sn go together: both from your inverter, or "
+            f"{RUNTIME_MAC} and an empty serial (the bridge finds the inverter by its BLE name)"
+        )
     if os.environ.get(ALLOW_EXAMPLE_ENV) == "1":
         return config
     left = []
@@ -309,20 +374,38 @@ def _final_validate_secrets(config):
         left.append("hiflow_sn")
     if config[CONF_BLE_ID] == EXAMPLE_BLE_ID:
         left.append("hiflow_ble_id")
-    for client in fv.full_config.get().get("ble_client", []):
-        if client[CONF_ID] == config[CONF_BLE_CLIENT_ID] and str(
-            client[CONF_MAC_ADDRESS]
-        ) == EXAMPLE_MAC:
-            left.append("hiflow_mac")
+    if mac == EXAMPLE_MAC:
+        left.append("hiflow_mac")
     if left:
         raise cv.Invalid(
-            f"hiflow_secrets.yaml still holds the example value of {', '.join(left)}; "
-            f"fill in your inverter's values (set {ALLOW_EXAMPLE_ENV}=1 to build anyway)"
+            f"hiflow_secrets.yaml still holds an old example value of {', '.join(left)}; "
+            "fill in your inverter's values, or leave them empty "
+            f"({RUNTIME_MAC} for the MAC) and set them over Zigbee "
+            f"(set {ALLOW_EXAMPLE_ENV}=1 to build anyway)"
         )
     return config
 
 
-FINAL_VALIDATE_SCHEMA = cv.All(_final_validate_night, _final_validate_secrets)
+def _final_validate_setup_field(config):
+    # ESPHome creates LocationDescription from the area text, cut to 15 ASCII
+    # characters, and the Zigbee stack keeps the length of that first text. A
+    # shorter area leaves the settings field too short for `sn=` and a serial.
+    if CONF_ZIGBEE_ID not in config:
+        return config
+    area = (CORE.area or "").encode("ascii", "ignore")[:SETUP_FIELD_CHARS].decode()
+    if len(area) < SETUP_FIELD_CHARS:
+        raise cv.Invalid(
+            f"the settings field over Zigbee needs an area of {SETUP_FIELD_CHARS} characters: "
+            'set `area: "HiFlow settings"` under `esphome:` as hiflow-zb.yaml does. '
+            "ESPHome turns the area into the attribute the bridge takes over; the text "
+            "itself never shows"
+        )
+    return config
+
+
+FINAL_VALIDATE_SCHEMA = cv.All(
+    _final_validate_night, _final_validate_secrets, _final_validate_setup_field
+)
 
 
 async def to_code(config):
@@ -339,10 +422,16 @@ async def to_code(config):
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
     await ble_client.register_ble_node(var, config)
+    # Sees the advertisements while the bridge looks for its inverter.
+    await esp32_ble_tracker.register_ble_device(var, config)
 
     cg.add(var.set_sn(config[CONF_SN]))
     cg.add(var.set_ble_id(config[CONF_BLE_ID]))
     cg.add(var.set_pin(config[CONF_PIN]))
+    if CONF_ANTENNA_SELECT in config:
+        cg.add(var.set_antenna_select(await cg.get_variable(config[CONF_ANTENNA_SELECT])))
+    if config[CONF_EXTERNAL_ANTENNA] != "":
+        cg.add(var.set_build_antenna(1 if config[CONF_EXTERNAL_ANTENNA] else 0))
     cg.add(var.set_offset(config[CONF_OFFSET]))
     cg.add(var.set_eu_dst(config[CONF_EU_DST]))
     cg.add(var.set_poll_interval(poll_interval))
@@ -399,20 +488,32 @@ async def to_code(config):
         clock = await cg.get_variable(config[CONF_TIME_ID])
         cg.add(var.set_network_time(clock))
 
+    # The settings field (ESPHome's Basic LocationDescription on endpoint 1),
+    # with Zigbee.
+    if CONF_ZIGBEE_ID in config:
+        zb = await cg.get_variable(config[CONF_ZIGBEE_ID])
+        cg.add(var.set_setup_field(zb))
+        CORE.add_job(_add_setup_field, zb)
 
-# ESPHome's Zigbee number on the ESP32 gives the Analog Output no range,
-# resolution or application type. Without them ZHA shows a slider from 0 to
-# 1023, and Zigbee2MQTT names the value differently. These go onto the
-# cluster that the zigbee codegen creates for endpoint 32, so after that code
-# in setup() and before App.setup() registers the device.
+
+# ESPHome's Zigbee number on the ESP32 sets the Analog Output's range and
+# resolution from the number (0-100, step 10), but no application type for a
+# plain percentage. Without it Zigbee2MQTT names the value differently. It goes
+# onto the cluster that the zigbee codegen creates for endpoint 32, so after
+# that code in setup() and before App.setup() registers the device.
 POWER_LIMIT_ATTRIBUTES = (
-    (0x0041, cg.float_, 100.0),  # MaxPresentValue
-    (0x0045, cg.float_, 0.0),  # MinPresentValue
-    (0x006A, cg.float_, 10.0),  # Resolution
     # ApplicationType: group Analog Output (0x01), type Percentage (0x04),
     # index 0xFFFF (vendor defined)
     (0x0100, cg.uint32, 0x0104FFFF),
 )
+
+
+# The settings field takes over the LocationDescription of the Basic cluster
+# that the zigbee codegen creates for endpoint 1, so after that code in setup()
+# and before App.setup() starts the Zigbee task that registers the device.
+@coroutine_with_priority(CoroPriority.LATE)
+async def _add_setup_field(zb):
+    cg.add(hiflow_ble_ns.add_setup_field(zb, SETUP_FIELD_ENDPOINT))
 
 
 @coroutine_with_priority(CoroPriority.LATE)

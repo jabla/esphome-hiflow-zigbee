@@ -1,0 +1,98 @@
+name: Web installer
+
+# Puts the web installer on GitHub Pages: web/index.html, ESP Web Tools (the pin
+# in web/package.json) and the factory images of the latest release, put
+# together by tools/release.py site. The images are copied because GitHub's
+# release downloads carry no CORS header: the installer cannot fetch them from
+# there.
+#
+# It runs once the release images are attached and when a release becomes the
+# latest one. A latest release without factory images (yet) leaves the site as
+# it is. Needs, once, Pages with the source "GitHub Actions" in the repository
+# settings.
+on:
+  workflow_run:
+    workflows: [Release images]
+    types: [completed]
+  release:
+    types: [released]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  # A release event runs on the release's tag, and the github-pages environment
+  # takes deployments only from the default branch: run again from there.
+  from-default-branch:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-26.04
+    permissions:
+      actions: write
+    steps:
+      - name: Start this workflow on the default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.repository.default_branch }}
+        run: gh workflow run pages.yml --ref "$BRANCH"
+
+  build:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-26.04
+    outputs:
+      ready: ${{ steps.latest.outputs.ready }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: The latest release and its factory images
+        id: latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh release view --json tagName --jq .tagName)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" --json assets --jq '.assets[].name' | grep -q '\.factory\.bin$'; then
+            gh release download "$tag" --pattern '*.factory.bin' --dir images
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$tag carries no factory images (yet), the site stays as it is"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: ESP Web Tools
+        if: steps.latest.outputs.ready == 'true'
+        run: |
+          version=$(jq -r '.dependencies["esp-web-tools"]' web/package.json)
+          npm pack --silent "esp-web-tools@$version"
+          tar xzf "esp-web-tools-$version.tgz"
+      - name: The site
+        if: steps.latest.outputs.ready == 'true'
+        env:
+          TAG: ${{ steps.latest.outputs.tag }}
+          REPO_URL: https://github.com/${{ github.repository }}
+        run: |
+          python3 tools/release.py site --out site --tag "$TAG" --repo-url "$REPO_URL" \
+            --esp-web-tools package/dist/web images/*.factory.bin
+      - uses: actions/upload-pages-artifact@v5
+        if: steps.latest.outputs.ready == 'true'
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    if: needs.build.outputs.ready == 'true'
+    runs-on: ubuntu-26.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v5

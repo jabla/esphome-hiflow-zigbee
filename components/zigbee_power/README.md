@@ -13,7 +13,8 @@ zigbee_power:
   loop_interval: 1s          # 16 ms to 3 s
   night_poll_interval: 7s    # with hiflow_ble's night mode
   night_loop_interval: 1s
-  awake_after_boot: 3min
+  awake_on_usb: true
+  awake_after_boot: 3min    # with awake_on_usb: false
   power_down_peripherals: false
   ble_sleep_clock: xtal      # or rc
   sleep_debug: false
@@ -23,6 +24,7 @@ zigbee_power:
       - logger.log: "pressed"
   keep_pins: [6, 7, 22]
   timer_guard: true          # ESP32-C6 only
+  binding_table_size: 44     # default: one per server cluster of the endpoints, plus 8
 ```
 
 - `sleepy`: the node joins as a sleepy end device (receiver off while idle) and the chip goes
@@ -43,10 +45,13 @@ zigbee_power:
 - `night_poll_interval`, `night_loop_interval`: in force while
   [`hiflow_ble`](../hiflow_ble/README.md#power-saving)'s night mode is on; they default to the
   day values.
-- `awake_after_boot`: after a start with a USB host connected the chip stays awake this long,
-  for logs and a USB flash after a press on RESET. In light sleep the USB port goes down. On a
-  battery the chip sleeps at once. Updates without touching the board go over
+- `awake_on_usb`: started with a USB host (a computer, not a charger), the chip stays awake.
+  Logs and a USB flash then work at any time. In light sleep the USB port goes down. `false`
+  lets it sleep there too, for light-sleep tests on a computer. On a battery or a charger the
+  chip sleeps at once. Updates without touching the board go over
   [Zigbee OTA](../zigbee_ota/README.md).
+- `awake_after_boot`: with `awake_on_usb: false`, how long the chip stays awake after a start
+  with a USB host, for logs and a USB flash after a press on RESET.
 - `power_down_peripherals`: power the digital peripherals down in light sleep (about 180 down
   to 35 uA for the chip, datasheet). ESP-IDF only does it while every peripheral in use can
   restore its state, and BLE with `ble_sleep_clock: xtal` keeps them on.
@@ -64,6 +69,14 @@ zigbee_power:
 - `timer_guard`: the workaround for the ESP32-C6's clock fault below. On by default on the
   ESP32-C6, whatever its revision (which revisions have the fault is not known); not available on
   the ESP32-H2.
+- `binding_table_size`: entries in the stack's binding table (source and destination table
+  each). A coordinator binds each endpoint it sets reporting up for, one entry each. The bridge
+  needs 35 (33 analog inputs, the power limit, the on/off switch) with ZHA and Zigbee2MQTT.
+  esp-zigbee-lib's own 16 are too few: the other binds fail with `TABLE_FULL`. Default: one per
+  server cluster of the endpoints plus 8, 44 for the bridge (about 0.6 KB of RAM). Minimum 16.
+  An update from an image with 16 keeps the entries. Back on such an image, the bridge keeps the
+  first 16 and stays in the network. The rest return when the coordinator binds them again (a
+  reconfigure in ZHA).
 
 Things to know:
 
@@ -85,9 +98,9 @@ Things to know:
   network for good and needed its Zigbee data erased by hand.
 - A lost poll does not make the node leave. Since esp-zigbee-lib 2.0.5 the stack raises a parent
   link failure for a single failed poll or frame, which BLE on the same radio causes now and
-  then. ESPHome answers each one with a leave and a rejoin. While BLE holds the radio that rejoin
-  often cannot finish, so about 25 s later the stack leaves for good and drops the Zigbee data:
-  the node then needs a new pairing. The component stops the link failure before ESPHome sees
+  then. ESPHome sends a leave with rejoin once the failures span four polls and 6 s. While BLE
+  holds the radio that rejoin often cannot finish, so about 25 s later the stack leaves for good
+  and drops the Zigbee data: the node then needs a new pairing. The component stops the link failure before ESPHome sees
   it; the stack retries by itself. Only a parent that stayed silent for the whole end device
   timeout (64 minutes) makes the node leave with rejoin, to find another parent. `hiflow_ble`
   turns BLE off for that rejoin and back on once the node is in again (without `hiflow_ble` the

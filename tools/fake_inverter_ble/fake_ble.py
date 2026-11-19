@@ -8,13 +8,19 @@ import ctypes
 import json
 import os
 from pathlib import Path
+import signal
 import time
 
 from bless import BlessServer
+from bless.backends.bluezdbus.dbus import application as bless_app
+from bless.backends.bluezdbus.dbus import characteristic as bless_char
+from bless.backends.bluezdbus.dbus import service as bless_service
 from bless import GATTAttributePermissions as A
 from bless import GATTCharacteristicProperties as P
 from dbus_next import BusType
 from dbus_next.aio import MessageBus
+from dbus_next.errors import DBusError, InterfaceNotFoundError
+from dbus_next.service import method
 
 HERE = Path(__file__).resolve().parent
 SERVICE = "0000e0ff-3c17-d293-8e48-14fe2e4da212"
@@ -24,6 +30,51 @@ CHUNK = int(os.environ.get("CHUNK", "20"))
 KEY = bytes.fromhex(os.environ.get("KEY", "00112233445566778899aabbccddeeff"))
 SN = os.environ.get("SN", "0000000000AA").encode()
 PIN = os.environ.get("PIN", "").encode()
+# A real inverter advertises as RMI- and its serial; a bridge without a MAC in its
+# build finds it by that name.
+NAME = os.environ.get("NAME", "RMI-" + SN.decode())
+# The adapter to run on (hci0, hci1, ...), default the first one BlueZ lists.
+ADAPTER = os.environ.get("ADAPTER", "")
+# While a bridge holds its link to the fake, the controller may refuse new connections
+# to other devices. So the fake refuses an adapter with paired or connected devices
+# unless SHARED=1.
+SHARED = os.environ.get("SHARED") == "1"
+
+
+class _NoUuids(list):
+    def append(self, item):
+        pass
+
+
+class _FullNameAdvertisement(bless_app.BlueZLEAdvertisement):
+    """bless puts the 128-bit service UUID into the advertisement, which leaves room
+    for only 8 of the name's 16 characters (BlueZ shortens it). A real inverter
+    sends its whole name; the bridge connects by address and finds the service
+    after connecting. So the UUID stays out and the name goes out whole."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._service_uuids = _NoUuids()
+
+
+bless_app.BlueZLEAdvertisement = _FullNameAdvertisement
+
+central = None  # D-Bus path of the device that wrote the last frame
+
+
+class _WriterCharacteristic(bless_char.BlueZGattCharacteristic):
+    """bless drops the options of a write. BlueZ names the writing device there: the
+    central a kill drops, never another device on the adapter."""
+
+    @method()
+    def WriteValue(self, value: "ay", options: "a{sv}"):  # type: ignore # noqa: F722 F821 N802
+        global central
+        if "device" in options:
+            central = options["device"].value
+        bless_char.BlueZGattCharacteristic.WriteValue(self, value, options)
+
+
+bless_service.BlueZGattCharacteristic = _WriterCharacteristic
 assert len(KEY) == 16, "KEY must be 16 bytes (32 hex digits)"
 
 # The recorded two-page reading of the host tests.
@@ -44,6 +95,8 @@ lib.shim_reset_pages.argtypes = [ctypes.c_void_p]
 lib.shim_set_mode.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int]
 lib.shim_last_login_lead.restype = ctypes.c_int64
 lib.shim_last_login_lead.argtypes = [ctypes.c_void_p]
+lib.shim_last_ble_id.restype = ctypes.c_char_p
+lib.shim_last_ble_id.argtypes = [ctypes.c_void_p]
 fi = lib.shim_new(KEY, SN, PIN, PAGES["page0_hex"].encode(), PAGES["page1_hex"].encode())
 
 
@@ -91,24 +144,47 @@ def apply_power_file():
     current_power = txt
 
 
-async def drop_link():
-    """The fake drops the link: disconnect the one connected central."""
+async def bluez_objects(bus):
+    intro = await bus.introspect("org.bluez", "/")
+    manager = bus.get_proxy_object("org.bluez", "/", intro).get_interface("org.freedesktop.DBus.ObjectManager")
+    return await manager.call_get_managed_objects()
+
+
+async def pick_adapter():
+    """ADAPTER or the first adapter. Refuses one that other devices use, unless SHARED=1."""
     bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
     try:
-        intro = await bus.introspect("org.bluez", "/")
-        manager = bus.get_proxy_object("org.bluez", "/", intro).get_interface("org.freedesktop.DBus.ObjectManager")
-        objects = await manager.call_get_managed_objects()
-        connected = [
-            path for path, ifaces in objects.items()
-            if "org.bluez.Device1" in ifaces and ifaces["org.bluez.Device1"]["Connected"].value
-        ]
-        if len(connected) != 1:
-            log(f"KILL: {len(connected)} devices connected, not dropping any")
-            return
-        intro = await bus.introspect("org.bluez", connected[0])
-        device = bus.get_proxy_object("org.bluez", connected[0], intro).get_interface("org.bluez.Device1")
+        objects = await bluez_objects(bus)
+    finally:
+        bus.disconnect()
+    adapters = sorted(path.rsplit("/", 1)[1] for path, ifaces in objects.items() if "org.bluez.Adapter1" in ifaces)
+    name = ADAPTER or (adapters[0] if adapters else "")
+    if name not in adapters:
+        raise SystemExit(f"no Bluetooth adapter {name!r} (there are: {' '.join(adapters) or 'none'})")
+    devices = [ifaces["org.bluez.Device1"] for path, ifaces in objects.items()
+               if path.startswith(f"/org/bluez/{name}/") and "org.bluez.Device1" in ifaces]
+    others = sorted(d["Alias"].value for d in devices if d["Paired"].value or d["Connected"].value)
+    if others and not SHARED:
+        raise SystemExit(
+            f"{name} is in use by: {', '.join(others)}. While a bridge holds its link to the fake, the "
+            "controller may refuse new connections to these devices. Run the fake on an adapter of its own "
+            "(ADAPTER=hciN) or accept that with SHARED=1.")
+    return name
+
+
+async def drop_link(path):
+    """The fake drops the link: disconnect the central that wrote the frame, no other device."""
+    if path is None:
+        log("KILL: no central has written yet, nothing dropped")
+        return
+    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    try:
+        intro = await bus.introspect("org.bluez", path)
+        device = bus.get_proxy_object("org.bluez", path, intro).get_interface("org.bluez.Device1")
         await device.call_disconnect()
-        log("KILL: link dropped")
+        log(f"KILL: link to {path.rsplit('/', 1)[1]} dropped")
+    except (DBusError, InterfaceNotFoundError) as e:
+        log(f"KILL: {path} not dropped: {e}")
     finally:
         # One connection per kill: refused logins kill the link every few minutes.
         bus.disconnect()
@@ -165,8 +241,9 @@ def on_write(characteristic, value, **kwargs):
     log(f"<- {len(value)} B, -> {n} B{' KILL' if kill.value else ''}")
     lib.shim_counts(fi, counts)
     if counts[1] != logins_before:
-        log(f"LOGIN #{counts[1]}: timestamp {lib.shim_last_login_lead(fi):+d} s vs device clock"
-            f"{' -> killed' if kill.value else ''}")
+        log(f"LOGIN #{counts[1]}: bleId {lib.shim_last_ble_id(fi).decode(errors='replace')},"
+            f" timestamp {lib.shim_last_login_lead(fi):+d} s vs device clock"
+            f"{' (killed)' if kill.value else ''}")
     if counts[6] != limit_writes_before:
         log(f"LIMIT write #{counts[6]}: limit now {counts[7] / 10:g} %")
     if counts[8] != power_commands_before:
@@ -174,7 +251,8 @@ def on_write(characteristic, value, **kwargs):
     if n:
         pending.append(out.raw[:n])
     if kill.value:
-        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(drop_link()))
+        writer = central  # this frame's writer, even if another central writes before the drop
+        loop.call_soon_threadsafe(lambda: asyncio.ensure_future(drop_link(writer)))
 
 
 async def pump():
@@ -207,15 +285,37 @@ async def watch_link():
 async def main():
     global server, loop
     loop = asyncio.get_running_loop()
-    server = BlessServer(name="HiFlowFake")
+    adapter = await pick_adapter()
+    server = BlessServer(name=NAME, adapter=adapter)
     server.write_request_func = on_write
     server.read_request_func = lambda c, **k: c.value
     await server.add_new_service(SERVICE)
     await server.add_new_characteristic(SERVICE, TX, P.write | P.write_without_response, None, A.writeable)
     await server.add_new_characteristic(SERVICE, RX, P.notify | P.read, None, A.readable)
-    await server.start()
-    log(f"advertising; chunk {CHUNK} B")
-    await asyncio.gather(pump(), watch_link())
+    # Handlers before start(): Ctrl+C while starting still ends through stop() below.
+    stop = asyncio.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+    waiter, done = None, set()
+    try:
+        await server.start()
+        log(f"advertising on {adapter}; chunk {CHUNK} B")
+        waiter = asyncio.ensure_future(stop.wait())
+        tasks = [asyncio.ensure_future(pump()), asyncio.ensure_future(watch_link())]
+        done, _ = await asyncio.wait([waiter, *tasks], return_when=asyncio.FIRST_COMPLETED)
+        for t in (waiter, *tasks):
+            t.cancel()
+    finally:
+        # Stopping the advertising gives the adapter its own name back (bless set it to NAME),
+        # also after a failed start.
+        try:
+            await server.stop()
+            log("stopped")
+        except Exception as e:  # noqa: BLE001 - a failed stop must not hide why the fake ended
+            log(f"stop failed: {e!r}")
+    for t in done:
+        if t is not waiter:
+            t.result()  # a crash of pump() or watch_link() still ends with its traceback
 
 
 asyncio.run(main())

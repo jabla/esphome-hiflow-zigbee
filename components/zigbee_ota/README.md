@@ -52,9 +52,8 @@ What it does:
   ESPHome no longer marks the image valid at boot; this component does, after the OTA server
   answered a Query Next Image. An image that crashes before that is replaced by the previous
   one at the next boot. The bootloader only changes with a USB flash.
-- It needs esp-zigbee-lib 2.0.5 or newer. ESPHome 2026.10 asks for 2.0.4, so the component
-  raises that request (the build log notes the version change) and refuses to build against
-  an older library. 2.0.4 crashes when the client finishes an upgrade: it sends a packet that
+- It needs esp-zigbee-lib 2.0.5 or newer (ESPHome 2026.11 asks for it) and refuses older ones.
+  2.0.4 crashes when the client finishes an upgrade: it sends a packet that
   was never set up and fails an assert. 2.0.5 fixed that. It also starts in about a second
   where 2.0.4 took 30 s to 2 minutes: 2.0.4 reads every stored reporting entry once per
   endpoint (each read a walk through the whole NVS) and writes them all again at every boot.

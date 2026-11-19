@@ -1,3 +1,6 @@
-# The ESPHome release the CI compiles with (.github/workflows/ci.yml). Dependabot
-# proposes newer ones; .github/dependabot.yml says what a bump needs before merge.
-esphome==2026.10.0
+# The ESPHome release the CI and the release workflow compile with
+# (.github/workflows/ci.yml, release.yml). Dependabot proposes newer ones;
+# .github/dependabot.yml says what a bump needs before merge.
+esphome==2026.11.0
+# Deltas of the release workflow (tools/make_zigbee_ota.py, tools/release.py).
+detools==0.53.0

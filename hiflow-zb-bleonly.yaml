@@ -126,6 +126,7 @@ sensor:
   # ---------- HiFlow Pro (BLE, hiflow_ble) ----------
   # Every sensor is one Zigbee endpoint, numbered in the order of this list
   # (tools/ha_fix_bridge_entities.py maps them to entity ids).
+  # Unit, device class, state class and decimals follow from `type`.
   #
   # Every sensor has `report` set to `force`: each published value goes out as a
   # Zigbee report, instead of relying on the coordinator's reporting
@@ -149,14 +150,9 @@ sensor:
   # `id:` so the display lambda can read them. An id does not affect the Zigbee
   # endpoint numbering, and it stays unused on a board without a display.
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: ac_power
     id: ac_power
     name: "HiFlow AC Power"
-    unit_of_measurement: W
-    device_class: power
-    state_class: measurement
-    accuracy_decimals: 1
     filters:
       - or:
           - throttle: 300s
@@ -164,14 +160,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: ac_voltage
     id: ac_voltage
     name: "HiFlow AC Voltage"
-    unit_of_measurement: V
-    device_class: voltage
-    state_class: measurement
-    accuracy_decimals: 1
     filters:
       - or:
           - throttle: 300s
@@ -179,14 +170,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: ac_current
     id: ac_current
     name: "HiFlow AC Current"
-    unit_of_measurement: A
-    device_class: current
-    state_class: measurement
-    accuracy_decimals: 2
     filters:
       - or:
           - throttle: 300s
@@ -194,14 +180,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: ac_frequency
     id: ac_frequency
     name: "HiFlow AC Frequency"
-    unit_of_measurement: Hz
-    device_class: frequency
-    state_class: measurement
-    accuracy_decimals: 2
     filters:
       - or:
           - throttle: 300s
@@ -209,14 +190,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: temperature
     id: temperature
     name: "HiFlow Temperature"
-    unit_of_measurement: "°C"
-    device_class: temperature
-    state_class: measurement
-    accuracy_decimals: 1
     filters:
       - or:
           - throttle: 600s
@@ -224,14 +200,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: energy_total
     id: energy_total
     name: "HiFlow Energy Total"
-    unit_of_measurement: Wh
-    device_class: energy
-    state_class: total_increasing
-    accuracy_decimals: 0
     filters:
       - or:
           - throttle: 300s
@@ -239,14 +210,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: energy_daily
     id: energy_daily
     name: "HiFlow Energy Daily"
-    unit_of_measurement: Wh
-    device_class: energy
-    state_class: total_increasing
-    accuracy_decimals: 0
     filters:
       - or:
           - throttle: 300s
@@ -254,14 +220,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port1_power
     id: port1_power
     name: "HiFlow Port1 Power"
-    unit_of_measurement: W
-    device_class: power
-    state_class: measurement
-    accuracy_decimals: 1
     filters:
       - or:
           - throttle: 300s
@@ -269,14 +230,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port1_voltage
     id: port1_voltage
     name: "HiFlow Port1 Voltage"
-    unit_of_measurement: V
-    device_class: voltage
-    state_class: measurement
-    accuracy_decimals: 1
     filters:
       - or:
           - throttle: 300s
@@ -284,14 +240,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port1_current
     id: port1_current
     name: "HiFlow Port1 Current"
-    unit_of_measurement: A
-    device_class: current
-    state_class: measurement
-    accuracy_decimals: 2
     filters:
       - or:
           - throttle: 300s
@@ -299,14 +250,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port2_power
     id: port2_power
     name: "HiFlow Port2 Power"
-    unit_of_measurement: W
-    device_class: power
-    state_class: measurement
-    accuracy_decimals: 1
     filters:
       - or:
           - throttle: 300s
@@ -314,14 +260,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port2_voltage
     id: port2_voltage
     name: "HiFlow Port2 Voltage"
-    unit_of_measurement: V
-    device_class: voltage
-    state_class: measurement
-    accuracy_decimals: 1
     filters:
       - or:
           - throttle: 300s
@@ -329,14 +270,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port2_current
     id: port2_current
     name: "HiFlow Port2 Current"
-    unit_of_measurement: A
-    device_class: current
-    state_class: measurement
-    accuracy_decimals: 2
     filters:
       - or:
           - throttle: 300s
@@ -344,14 +280,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port3_power
     id: port3_power
     name: "HiFlow Port3 Power"
-    unit_of_measurement: W
-    device_class: power
-    state_class: measurement
-    accuracy_decimals: 1
     filters:
       - or:
           - throttle: 300s
@@ -359,14 +290,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port3_voltage
     id: port3_voltage
     name: "HiFlow Port3 Voltage"
-    unit_of_measurement: V
-    device_class: voltage
-    state_class: measurement
-    accuracy_decimals: 1
     filters:
       - or:
           - throttle: 300s
@@ -374,14 +300,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port3_current
     id: port3_current
     name: "HiFlow Port3 Current"
-    unit_of_measurement: A
-    device_class: current
-    state_class: measurement
-    accuracy_decimals: 2
     filters:
       - or:
           - throttle: 300s
@@ -389,14 +310,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port4_power
     id: port4_power
     name: "HiFlow Port4 Power"
-    unit_of_measurement: W
-    device_class: power
-    state_class: measurement
-    accuracy_decimals: 1
     filters:
       - or:
           - throttle: 300s
@@ -404,14 +320,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port4_voltage
     id: port4_voltage
     name: "HiFlow Port4 Voltage"
-    unit_of_measurement: V
-    device_class: voltage
-    state_class: measurement
-    accuracy_decimals: 1
     filters:
       - or:
           - throttle: 300s
@@ -419,14 +330,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port4_current
     id: port4_current
     name: "HiFlow Port4 Current"
-    unit_of_measurement: A
-    device_class: current
-    state_class: measurement
-    accuracy_decimals: 2
     filters:
       - or:
           - throttle: 300s
@@ -435,8 +341,9 @@ sensor:
 
   # Session state as a number (the only remote diagnosis at the site):
   #   0 waiting for a connection (also normal at night)
+  #   1 no inverter yet · 16 several inverters in range, waits for the serial (sn=)
   #   2 V0 pairing · 3 login · 4 PIN · 5 time-sync · 6 ready (also while reading data)
-  # From 8 on the bridge is waiting after a failure, and the value names it:
+  # 9 to 15: the bridge waits after a failure, the value names it:
   #   9 login refused (the link died during the handshake)
   #  10 no connection came up (radio, placement, power)
   #  11 a request went unanswered
@@ -446,7 +353,6 @@ sensor:
   # Deliberately at the end so the endpoints of the measurements stay put
   # (otherwise the whole ZHA entity mapping shifts).
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: status
     id: hiflow_status
     name: "HiFlow Status"
@@ -455,14 +361,9 @@ sensor:
   # Values that change slowly or matter little report at a lower rate.
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: reactive_power
     id: reactive_power
     name: "HiFlow Reactive Power"
-    unit_of_measurement: var
-    device_class: reactive_power
-    state_class: measurement
-    accuracy_decimals: 1
     filters:
       - or:
           - throttle: 900s
@@ -470,14 +371,9 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: power_factor
     id: power_factor
     name: "HiFlow Power Factor"
-    unit_of_measurement: "%"
-    device_class: power_factor
-    state_class: measurement
-    accuracy_decimals: 1
     filters:
       - or:
           - throttle: 900s
@@ -487,12 +383,9 @@ sensor:
   # The inverter's count of warnings since dawn (what they were is not part
   # of the data). Reported on every change.
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: warnings
     id: warnings
     name: "HiFlow Warnings"
-    state_class: measurement
-    accuracy_decimals: 0
     filters:
       - or:
           - throttle: 1800s
@@ -500,13 +393,8 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port1_energy_total
     name: "HiFlow Port1 Energy Total"
-    unit_of_measurement: Wh
-    device_class: energy
-    state_class: total_increasing
-    accuracy_decimals: 0
     filters:
       - or:
           - throttle: 900s
@@ -514,13 +402,8 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port1_energy_daily
     name: "HiFlow Port1 Energy Daily"
-    unit_of_measurement: Wh
-    device_class: energy
-    state_class: total_increasing
-    accuracy_decimals: 0
     filters:
       - or:
           - throttle: 900s
@@ -528,13 +411,8 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port2_energy_total
     name: "HiFlow Port2 Energy Total"
-    unit_of_measurement: Wh
-    device_class: energy
-    state_class: total_increasing
-    accuracy_decimals: 0
     filters:
       - or:
           - throttle: 900s
@@ -542,13 +420,8 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port2_energy_daily
     name: "HiFlow Port2 Energy Daily"
-    unit_of_measurement: Wh
-    device_class: energy
-    state_class: total_increasing
-    accuracy_decimals: 0
     filters:
       - or:
           - throttle: 900s
@@ -556,13 +429,8 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port3_energy_total
     name: "HiFlow Port3 Energy Total"
-    unit_of_measurement: Wh
-    device_class: energy
-    state_class: total_increasing
-    accuracy_decimals: 0
     filters:
       - or:
           - throttle: 900s
@@ -570,13 +438,8 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port3_energy_daily
     name: "HiFlow Port3 Energy Daily"
-    unit_of_measurement: Wh
-    device_class: energy
-    state_class: total_increasing
-    accuracy_decimals: 0
     filters:
       - or:
           - throttle: 900s
@@ -584,13 +447,8 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port4_energy_total
     name: "HiFlow Port4 Energy Total"
-    unit_of_measurement: Wh
-    device_class: energy
-    state_class: total_increasing
-    accuracy_decimals: 0
     filters:
       - or:
           - throttle: 900s
@@ -598,13 +456,8 @@ sensor:
           - debounce: 90s
 
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: port4_energy_daily
     name: "HiFlow Port4 Energy Daily"
-    unit_of_measurement: Wh
-    device_class: energy
-    state_class: total_increasing
-    accuracy_decimals: 0
     filters:
       - or:
           - throttle: 900s

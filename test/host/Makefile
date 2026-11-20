@@ -9,8 +9,8 @@
 #   test_daylog.c        the day log: standby, new days, restore, recorded days
 #   test_ota_blocks.c    OTA block answers out of place, against a model of the
 #                        Zigbee stack and two OTA servers
-#   test_setup.c         the settings commands, BLE names and the choice of
-#                        the inverter (hiflow_setup)
+#   test_setup.c         the settings commands and lines, BLE names, the choice of
+#                        the inverter and the status line (hiflow_setup)
 #
 #   make              build both test binaries
 #   make test         build + run both suites (exit 0 only if all pass)

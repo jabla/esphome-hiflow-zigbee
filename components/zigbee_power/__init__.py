@@ -1,14 +1,14 @@
 """Power saving for ESPHome's zigbee component on the ESP32-C6 and ESP32-H2.
 
-With `sleepy: true` the node becomes a sleepy end device (receiver off while
-idle, it polls its parent every `poll_interval`) and the chip goes to light
-sleep whenever every task is idle (ESP-IDF power management with tickless
-idle), with the 802.15.4 radio and the BLE controller sleeping as well. The
-parent holds messages for a sleepy child for about 7.5 s, so the poll
-interval has to stay below that or commands from the coordinator get lost.
-After a request sent to the node it polls every 50 ms for
-`request_poll_window`, so an interview does not wait a poll per request.
-`loop_interval` also works without it.
+With ESPHome's `zigbee: sleepy: true` the node is a sleepy end device
+(receiver off while idle, it polls its parent every `polling_interval`). This
+component then lets the chip go to light sleep whenever every task is idle
+(ESP-IDF power management with tickless idle), with the 802.15.4 radio and the
+BLE controller sleeping as well. The parent holds messages for a sleepy child
+for about 7.5 s, so the poll interval has to stay below that or commands from
+the coordinator get lost. After a request sent to the node it polls every
+50 ms for `request_poll_window`, so an interview does not wait a poll per
+request. `loop_interval` also works without it.
 
 The light-sleep callbacks of ESP-IDF count the time actually slept; `slept_ms()`
 gives the running total, so a template sensor can report the share of time
@@ -51,10 +51,11 @@ from esphome.components.esp32 import (
     include_builtin_idf_component,
     only_on_variant,
 )
-from esphome.components.zigbee.const import KEY_ZIGBEE, ZigbeeComponent
+from esphome.components.zigbee import DOMAIN as ZIGBEE_DOMAIN
+from esphome.components.zigbee.const import CONF_SLEEPY, KEY_ZIGBEE, ZigbeeComponent
 from esphome.components.zigbee.const_esp32 import CONF_CLUSTERS, KEY_ZIGBEE_EP, ROLE
 import esphome.config_validation as cv
-from esphome.const import CONF_ID, CONF_ON_PRESS, CONF_PIN, CONF_TRIGGER_ID
+from esphome.const import CONF_ID, CONF_ON_PRESS, CONF_PIN, CONF_POLLING_INTERVAL, CONF_TRIGGER_ID
 from esphome.core import CORE
 import esphome.final_validate as fv
 
@@ -64,13 +65,10 @@ DEPENDENCIES = ["zigbee"]
 CODEOWNERS = []
 
 CONF_ZIGBEE_ID = "zigbee_id"
-CONF_SLEEPY = "sleepy"
 CONF_POLL_INTERVAL = "poll_interval"
 CONF_AWAKE_AFTER_BOOT = "awake_after_boot"
 CONF_AWAKE_ON_USB = "awake_on_usb"
 CONF_LOOP_INTERVAL = "loop_interval"
-CONF_NIGHT_POLL_INTERVAL = "night_poll_interval"
-CONF_NIGHT_LOOP_INTERVAL = "night_loop_interval"
 CONF_POWER_DOWN_PERIPHERALS = "power_down_peripherals"
 CONF_SLEEP_DEBUG = "sleep_debug"
 CONF_BLE_SLEEP_CLOCK = "ble_sleep_clock"
@@ -89,7 +87,6 @@ BINDING_TABLE_SPARE = 8
 
 # Options that only act on a sleepy end device, with their defaults.
 SLEEPY_DEFAULTS = {
-    CONF_POLL_INTERVAL: "3s",
     CONF_AWAKE_AFTER_BOOT: "3min",
     CONF_AWAKE_ON_USB: True,
     CONF_POWER_DOWN_PERIPHERALS: False,
@@ -97,19 +94,19 @@ SLEEPY_DEFAULTS = {
     CONF_BLE_SLEEP_CLOCK: "xtal",
     CONF_REQUEST_POLL_WINDOW: "10s",
 }
-SLEEPY_ONLY = (*SLEEPY_DEFAULTS, CONF_NIGHT_POLL_INTERVAL, CONF_NIGHT_LOOP_INTERVAL)
 
 zigbee_power_ns = cg.esphome_ns.namespace("zigbee_power")
 ZigbeePower = zigbee_power_ns.class_("ZigbeePower", cg.Component)
 PressTrigger = zigbee_power_ns.class_("PressTrigger", automation.Trigger.template())
 
-# The stack counts the parent's lifetime down by poll_interval / 1000 whole
-# seconds per failed poll; below 1 s it never runs out and a node that lost its
-# parent stays blind. The parent keeps a message for a sleepy child ~7.5 s.
-POLL_INTERVAL = cv.All(
-    cv.positive_time_period_milliseconds,
-    cv.Range(min=cv.TimePeriod(seconds=1), max=cv.TimePeriod(seconds=7)),
-)
+# zigbee's polling_interval on a sleepy node. The stack counts the parent's
+# lifetime down by the poll interval / 1000 whole seconds per failed poll;
+# below 1 s it never runs out and a node that lost its parent stays blind. The
+# parent keeps a message for a sleepy child ~7.5 s.
+POLL_INTERVAL_MIN_MS = 1000
+POLL_INTERVAL_MAX_MS = 7000
+# ESPHome's poll interval without polling_interval (zigbee_esp32.py).
+ZIGBEE_POLL_INTERVAL_MS = 3000
 # The main loop waits up to this long without feeding the 5 s task watchdog
 # (ESPHome feeds it at most once a second); while something keeps the chip
 # awake that wait counts in real time, so stay well below.
@@ -117,19 +114,6 @@ LOOP_INTERVAL = cv.All(
     cv.positive_time_period_milliseconds,
     cv.Range(min=cv.TimePeriod(milliseconds=16), max=cv.TimePeriod(seconds=3)),
 )
-
-
-def _sleepy_options(config):
-    if not config[CONF_SLEEPY]:
-        unused = [key for key in SLEEPY_ONLY if key in config]
-        if unused:
-            _LOGGER.warning("zigbee_power: %s only act with sleepy: true", ", ".join(unused))
-        return config
-    for key, default in SLEEPY_DEFAULTS.items():
-        if key not in config:
-            config[key] = CONFIG_FIELDS[key](default)
-    config.setdefault(CONF_LOOP_INTERVAL, LOOP_INTERVAL("1s"))
-    return config
 
 
 def _timer_guard_option(config):
@@ -140,7 +124,6 @@ def _timer_guard_option(config):
 
 
 CONFIG_FIELDS = {
-    CONF_POLL_INTERVAL: POLL_INTERVAL,
     CONF_AWAKE_AFTER_BOOT: cv.positive_time_period_milliseconds,
     CONF_AWAKE_ON_USB: cv.boolean,
     # Power the digital peripherals down in light sleep (about 180 down to
@@ -170,15 +153,13 @@ CONFIG_SCHEMA = cv.All(
         {
             cv.GenerateID(): cv.declare_id(ZigbeePower),
             cv.GenerateID(CONF_ZIGBEE_ID): cv.use_id(ZigbeeComponent),
-            cv.Optional(CONF_SLEEPY, default=False): cv.boolean,
+            # Both live in ESPHome's zigbee component now.
+            cv.Optional(CONF_SLEEPY): cv.invalid("moved to the zigbee component as zigbee: sleepy"),
+            cv.Optional(CONF_POLL_INTERVAL): cv.invalid("moved to the zigbee component as zigbee: polling_interval"),
             # ESPHome's main loop interval (16 ms by default); every round
             # wakes the chip, scheduled work still runs on time. 1 s by
             # default with sleepy: true, ESPHome's own otherwise.
             cv.Optional(CONF_LOOP_INTERVAL): LOOP_INTERVAL,
-            # At night (set by hiflow_ble's night mode): poll and main loop
-            # less often. Both default to their day values.
-            cv.Optional(CONF_NIGHT_POLL_INTERVAL): POLL_INTERVAL,
-            cv.Optional(CONF_NIGHT_LOOP_INTERVAL): LOOP_INTERVAL,
             **{cv.Optional(key): validator for key, validator in CONFIG_FIELDS.items()},
             # A button that wakes the chip from light sleep. Its presses are
             # counted in an interrupt, so a short one is not lost while the
@@ -217,23 +198,20 @@ CONFIG_SCHEMA = cv.All(
     # bridge's minimum, 2026.11.
     cv.require_esphome_version(2026, 11, 0),
     only_on_variant(supported=[VARIANT_ESP32C6, VARIANT_ESP32H2], msg_prefix="zigbee_power"),
-    _sleepy_options,
     _timer_guard_option,
 )
 
 
 def _final_validate(config):
-    full = fv.full_config.get()
-    if config[CONF_SLEEPY] and full.get("zigbee", {}).get("router"):
-        raise cv.Invalid("zigbee_power sleepy: true and zigbee router: true are mutually exclusive")
-    night = [key for key in (CONF_NIGHT_POLL_INTERVAL, CONF_NIGHT_LOOP_INTERVAL) if key in config]
-    hiflow = full.get("hiflow_ble", {})
-    if night and not ("night_scan_interval" in hiflow or "night_ble_off" in hiflow):
-        _LOGGER.warning(
-            "zigbee_power: %s only act with hiflow_ble's night mode "
-            "(night_scan_interval or night_ble_off)",
-            ", ".join(night),
-        )
+    zigbee = fv.full_config.get()[ZIGBEE_DOMAIN]
+    if not zigbee[CONF_SLEEPY]:
+        unused = [key for key in SLEEPY_DEFAULTS if key in config]
+        if unused:
+            _LOGGER.warning("zigbee_power: %s only act with zigbee: sleepy: true", ", ".join(unused))
+        return config
+    poll = zigbee.get(CONF_POLLING_INTERVAL)
+    if poll is not None and not POLL_INTERVAL_MIN_MS <= poll.total_milliseconds <= POLL_INTERVAL_MAX_MS:
+        raise cv.Invalid(f"zigbee: polling_interval must be 1s to 7s with sleepy: true and zigbee_power, not {poll}")
     return config
 
 
@@ -254,6 +232,12 @@ def _binding_table_size(config):
 
 
 async def to_code(config):
+    zigbee = CORE.config[ZIGBEE_DOMAIN]
+    sleepy = zigbee[CONF_SLEEPY]
+    if sleepy:
+        for key, default in SLEEPY_DEFAULTS.items():
+            config.setdefault(key, CONFIG_FIELDS[key](default))
+        config.setdefault(CONF_LOOP_INTERVAL, LOOP_INTERVAL("1s"))
     zb = await cg.get_variable(config[CONF_ZIGBEE_ID])
     var = cg.new_Pvariable(config[CONF_ID])
     await cg.register_component(var, config)
@@ -287,12 +271,11 @@ async def to_code(config):
         # A repair can run in an interrupt while the flash cache is off: keeps
         # esp_timer_private_advance() in IRAM (also esp_timer's own code).
         add_idf_sdkconfig_option("CONFIG_PM_SLP_IRAM_OPT", True)
-    if config[CONF_SLEEPY]:
-        cg.add(var.set_poll_interval(config[CONF_POLL_INTERVAL]))
+    if sleepy:
+        # The poll the stack starts with: fast polls end back on it.
+        cg.add(var.set_poll_interval(zigbee.get(CONF_POLLING_INTERVAL, ZIGBEE_POLL_INTERVAL_MS)))
         cg.add(var.set_awake_after_boot(config[CONF_AWAKE_AFTER_BOOT]))
         cg.add(var.set_awake_on_usb(config[CONF_AWAKE_ON_USB]))
-        cg.add(var.set_night_poll_interval(config.get(CONF_NIGHT_POLL_INTERVAL, config[CONF_POLL_INTERVAL])))
-        cg.add(var.set_night_loop_interval(config.get(CONF_NIGHT_LOOP_INTERVAL, config[CONF_LOOP_INTERVAL])))
         cg.add(var.set_request_poll_window(config[CONF_REQUEST_POLL_WINDOW]))
         cg.add_define("USE_ZIGBEE_POWER_SLEEPY")
         # The 802.15.4 interrupt of a sleepy node switches the PHY off, which

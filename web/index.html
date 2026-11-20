@@ -1,16 +1,26 @@
 <!doctype html>
 <!--
-  The web installer. `tools/release.py site` fills in the release tag and the
-  repository URL. It puts the page next to ESP Web Tools, the factory images and
-  one manifest per board, for GitHub Pages (.github/workflows/pages.yml).
+  The web flasher. `tools/release.py site` fills in the release tag and the
+  repository URL. It puts the page next to the factory images, one manifest per
+  board, ESP Web Tools' flash() and esptool-js, for GitHub Pages
+  (.github/workflows/pages.yml). The settings go over Web Serial as the text
+  commands of components/hiflow_ble/hiflow_setup.h.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>HiFlow bridge installer</title>
-<meta name="description" content="Install the HiFlow Pro to Zigbee bridge firmware on an ESP32-C6 or ESP32-H2 board from the browser.">
-<script type="module" src="esp-web-tools/install-button.js"></script>
+<title>HiFlow bridge flasher</title>
+<meta name="description" content="Install and set up the HiFlow Pro to Zigbee bridge firmware on an ESP32-C6 or ESP32-H2 board from the browser.">
+<!-- ESP Web Tools' flash.js imports esptool-js by name and its helper without the .js. -->
+<script type="importmap">
+{
+  "imports": {
+    "esptool-js": "./esptool-js/bundle.js",
+    "./esp-web-tools/util/sleep": "./esp-web-tools/util/sleep.js"
+  }
+}
+</script>
 <style>
   :root {
     color-scheme: light dark;
@@ -22,6 +32,7 @@
     --accent: #0b6bcb;
     --accent-text: #ffffff;
     --note: #fff6dc;
+    --error: #b42318;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -33,6 +44,7 @@
       --accent: #4c9ef0;
       --accent-text: #0b1520;
       --note: #2e2a1c;
+      --error: #f97066;
     }
   }
   * { box-sizing: border-box; }
@@ -48,24 +60,34 @@
   a { color: var(--accent); }
   code { font-size: 0.9em; }
   .lead { color: var(--muted); margin: 0 0 24px; max-width: 46em; }
-  .steps { padding-left: 1.4em; max-width: 46em; }
-  .steps li { margin: 6px 0; }
+  .note {
+    background: var(--note);
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 0.95rem;
+    max-width: 46em;
+  }
+  fieldset { border: 0; margin: 0; padding: 0; }
+  legend, .setup label.field { display: block; font-weight: 600; margin: 16px 0 6px; padding: 0; }
   .boards {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 16px;
-    margin: 24px 0 12px;
   }
   .board {
     background: var(--card);
-    border: 1px solid var(--line);
+    border: 2px solid var(--line);
     border-radius: 12px;
-    padding: 16px;
+    padding: 14px;
     display: flex;
     flex-direction: column;
     align-items: center;
     text-align: center;
+    cursor: pointer;
   }
+  .board:has(input:checked) { border-color: var(--accent); }
+  .board:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .board input { position: absolute; opacity: 0; pointer-events: none; }
   .board img {
     height: 150px;
     max-width: 100%;
@@ -73,9 +95,24 @@
     border-radius: 8px;
     background: #fff;
   }
-  .board h3 { font-size: 1.05rem; margin: 12px 0 2px; }
-  .board p { color: var(--muted); font-size: 0.9rem; margin: 0 0 14px; }
-  .board esp-web-install-button { margin-top: auto; }
+  .board .name { font-weight: 600; font-size: 1.05rem; margin: 10px 0 2px; }
+  .setup { max-width: 46em; }
+  .setup input[type="password"], .setup input[type="text"], .setup select {
+    font: inherit;
+    width: 100%;
+    max-width: 18em;
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--card);
+    color: var(--text);
+  }
+  .setup input[aria-invalid="true"] { border-color: var(--error); }
+  .setup details { margin: 16px 0 0; }
+  .setup summary { cursor: pointer; font-weight: 600; }
+  .setup .check { display: block; margin: 20px 0 0; font-weight: 600; }
+  .hint { color: var(--muted); font-size: 0.9rem; margin: 4px 0 0; }
+  .actions { margin-top: 20px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px; }
   .install {
     font: inherit;
     font-weight: 600;
@@ -87,15 +124,20 @@
     cursor: pointer;
   }
   .install:hover { filter: brightness(1.1); }
-  .unsupported { color: var(--muted); font-size: 0.9rem; }
-  .note {
-    background: var(--note);
+  button:disabled { opacity: 0.6; cursor: default; filter: none; }
+  .reply {
+    background: var(--card);
+    border: 1px solid var(--line);
     border-radius: 8px;
     padding: 10px 14px;
+    margin-top: 16px;
     font-size: 0.95rem;
     max-width: 46em;
   }
-  ul { padding-left: 1.2em; max-width: 46em; }
+  .reply p { margin: 2px 0; }
+  .reply .error { color: var(--error); }
+  .reply code { color: var(--muted); word-break: break-all; }
+  ul, ol { padding-left: 1.2em; max-width: 46em; }
   li { margin: 6px 0; }
   footer {
     margin-top: 40px;
@@ -108,96 +150,520 @@
 </head>
 <body>
 <main>
-  <h1>HiFlow Pro to Zigbee bridge</h1>
+  <h1>HiFlow Pro to Zigbee bridge flasher</h1>
   <p class="lead">
     Installs release <a href="@REPO_URL@/releases/tag/@TAG@">@TAG@</a> of the bridge firmware
-    from the browser. The images hold no personal data: the bridge finds the inverter by its BLE
-    name and takes the rest over Zigbee.
+    over USB and sets it up.
   </p>
+  <p class="note" id="no-serial" hidden>Needs Chrome, Edge or Firefox 151+ on a computer.</p>
 
-  <ol class="steps">
-    <li><strong>Open pairing</strong> and leave it open: <em>Add device</em> in ZHA,
-      <em>Permit join</em> in Zigbee2MQTT.</li>
-    <li><strong>Connect the board</strong> by USB and press <em>Install</em> below it. Pick the
-      port named <em>USB JTAG/serial debug unit</em>.</li>
-    <li><strong>Tick <em>Erase device</em></strong> on the first install. Unticked, a bridge
-      keeps its settings and its pairing.</li>
-    <li><strong>Close the dialog</strong> after <em>Installation complete!</em> Its
-      <em>Next</em> only leads back to the menu.</li>
-  </ol>
+  <form id="setup-form" class="setup" novalidate>
+    <fieldset>
+      <legend>Your board, connected by USB</legend>
+      <div class="boards">
+        <label class="board">
+          <input type="radio" name="board" value="waveshare_c6_lcd147">
+          <img src="img/board-c6-lcd.jpg" alt="">
+          <span class="name">ESP32-C6-LCD-1.47</span>
+        </label>
+        <label class="board">
+          <input type="radio" name="board" value="xiao_esp32c6">
+          <img src="img/board-xiao.jpg" alt="">
+          <span class="name">XIAO ESP32-C6</span>
+        </label>
+        <label class="board">
+          <input type="radio" name="board" value="waveshare_h2_zero">
+          <img src="img/board-h2-zero.jpg" alt="">
+          <span class="name">ESP32-H2-Zero</span>
+        </label>
+      </div>
+    </fieldset>
 
-  <section class="boards">
-    <article class="board">
-      <img src="img/board-c6-lcd.jpg" alt="Waveshare ESP32-C6-LCD-1.47">
-      <h3>ESP32-C6-LCD-1.47</h3>
-      <p>Waveshare, shows the values on its display</p>
-      <esp-web-install-button manifest="manifest-waveshare_c6_lcd147.json">
-        <button slot="activate" class="install">Install</button>
-        <span slot="unsupported" class="unsupported">Needs Chrome, Edge or Firefox 151+ on a computer</span>
-        <span slot="not-allowed" class="unsupported">Needs HTTPS</span>
-      </esp-web-install-button>
-    </article>
-    <article class="board">
-      <img src="img/board-xiao.jpg" alt="Seeed Studio XIAO ESP32-C6">
-      <h3>XIAO ESP32-C6</h3>
-      <p>Seeed Studio, takes an external antenna</p>
-      <esp-web-install-button manifest="manifest-xiao_esp32c6.json">
-        <button slot="activate" class="install">Install</button>
-        <span slot="unsupported" class="unsupported">Needs Chrome, Edge or Firefox 151+ on a computer</span>
-        <span slot="not-allowed" class="unsupported">Needs HTTPS</span>
-      </esp-web-install-button>
-    </article>
-    <article class="board">
-      <img src="img/board-h2-zero.jpg" alt="Waveshare ESP32-H2-Zero">
-      <h3>ESP32-H2-Zero</h3>
-      <p>Waveshare, the cheapest</p>
-      <esp-web-install-button manifest="manifest-waveshare_h2_zero.json">
-        <button slot="activate" class="install">Install</button>
-        <span slot="unsupported" class="unsupported">Needs Chrome, Edge or Firefox 151+ on a computer</span>
-        <span slot="not-allowed" class="unsupported">Needs HTTPS</span>
-      </esp-web-install-button>
-    </article>
+    <label class="field" for="setup-pin">Bluetooth PIN</label>
+    <input id="setup-pin" type="password" autocomplete="off" spellcheck="false" maxlength="20">
+    <p class="hint">The Bluetooth connection PIN from the S-Miles app, not the account password.</p>
+
+    <details id="setup-several">
+      <summary>Several inverters in range?</summary>
+      <label class="field" for="setup-sn">Inverter serial</label>
+      <input id="setup-sn" type="text" autocomplete="off" spellcheck="false" maxlength="20"
+        placeholder="ABCDEF123456">
+      <p class="hint">The bridge's answer lists the ones it sees.</p>
+    </details>
+
+    <div id="setup-antenna-row" hidden>
+      <label class="field" for="setup-antenna">Antenna</label>
+      <select id="setup-antenna">
+        <option value="">Leave as it is</option>
+        <option value="int">Internal (ceramic)</option>
+        <option value="ext">External (U.FL)</option>
+      </select>
+    </div>
+
+    <label class="check"><input type="checkbox" id="setup-erase"> Erase the board first</label>
+    <p class="hint">Needed on the first install over other firmware. Clears the pairing and the
+      settings.</p>
+
+    <div class="actions">
+      <button type="submit" class="install" id="setup-install">Install</button>
+    </div>
+  </form>
+  <div class="reply" id="setup-reply" role="status" aria-live="polite" hidden></div>
+
+  <section id="pair" hidden>
+    <h2>Pair</h2>
+    <ol>
+      <li>Open pairing: <em>Add device</em> in ZHA, <em>Permit join</em> in Zigbee2MQTT.</li>
+      <li>Put the board at the inverter on a USB charger. It joins as
+        <code>HMS-2000-4WB Bridge</code>. A bridge paired before needs no new pairing, unless it was
+        erased.</li>
+    </ol>
+    <p>The values arrive once the bridge has logged in. Until then its status sensor shows what
+      it is doing: <a href="@REPO_URL@/blob/main/docs/development.md#status-codes-sensorinverter_zb_status">status
+      codes</a>. Updates then come over Zigbee:
+      <a href="@REPO_URL@#from-the-releases">Firmware updates from the releases</a>.</p>
   </section>
-  <p class="note">
-    The installer cannot tell the ESP32-C6-LCD-1.47 and the XIAO apart (same chip). Pick the
-    board you have: a bridge only takes updates for its own board.
-  </p>
-
-  <h2>After the install</h2>
-  <ol class="steps">
-    <li><strong>Check that it joined:</strong> it shows up as <code>HMS-2000-4WB Bridge</code>
-      (the ESP32-H2-Zero about a minute later). If not, open pairing again and press RESET (or
-      plug the board in again).</li>
-    <li><strong>Put the board at the inverter</strong> on a USB charger. It keeps its pairing.
-      With one inverter in range it takes it after 5 minutes. With more, name yours over Zigbee.
-      A Bluetooth PIN from the S-Miles app goes the same way:
-      <a href="@REPO_URL@#settings-over-zigbee">Settings over Zigbee</a>.</li>
-    <li><strong>Check the values:</strong> they arrive once the bridge has logged in to the
-      inverter. Until then its settings field shows what it is doing.</li>
-    <li>Updates then come over Zigbee: <a href="@REPO_URL@#from-the-releases">Firmware updates
-      from the releases</a>.</li>
-  </ol>
 
   <h2>If it does not work</h2>
   <ul>
-    <li>The installer needs a browser with Web Serial: Chrome, Edge or Firefox 151+ on a computer.</li>
     <li>On Linux the browser needs access to the port: add your user to the group
       <code>uucp</code> (Arch) or <code>dialout</code> (Debian, Ubuntu) and log in again.</li>
-    <li>Close other programs that use the port, such as an ESPHome log or a serial monitor.</li>
-    <li><em>Failed to initialize</em> on a board with an older bridge: it sleeps, so its USB port
-      does not answer. Close the dialog, press RESET and click <em>Install</em> within
-      3 minutes.</li>
-    <li>Still no connection: hold BOOT while you plug the board in, then press <em>Install</em>
-      again. Afterwards press RESET or plug the board in again: otherwise it stays in the boot
-      loader.</li>
-    <li>Without a browser: esptool, see
-      <a href="@REPO_URL@#quick-start-with-a-release-image">Quick start with a release
-      image</a>.</li>
+    <li>No connection: hold BOOT while you plug the board in, then press <em>Install</em> again.</li>
+    <li>See <a href="@REPO_URL@#quick-start">Quick start</a> to install with esptool.</li>
   </ul>
 
   <footer>
     <a href="@REPO_URL@">Source, documentation and releases on GitHub</a>. MIT license.
   </footer>
 </main>
+<script type="module">
+// Install flashes the factory image with ESP Web Tools' flash(), which opens
+// the port, writes, resets the board and closes the port again. Then the page
+// opens the same port, waits for the bridge and sends the settings. The bridge
+// reads one command per line on its USB port and answers with one line that starts with PREFIX. The page never
+// changes DTR or RTS itself: on the ESP32-C6/H2 USB port RTS on with DTR off
+// resets the chip. Chrome sets the two one by one.
+const PREFIX = "hiflow> ";
+const BRIDGE_USB = { usbVendorId: 0x303a, usbProductId: 0x1001 }; // Espressif USB JTAG/serial debug unit
+const BOARDS = {
+  waveshare_c6_lcd147: { name: "an ESP32-C6-LCD-1.47", chip: "ESP32-C6" },
+  xiao_esp32c6: { name: "a XIAO ESP32-C6", chip: "ESP32-C6" },
+  waveshare_h2_zero: { name: "an ESP32-H2-Zero", chip: "ESP32-H2" },
+};
+const PROBE_WAIT_MS = 2500; // a running bridge answers within a second
+const BOOT_TRIES = 8; // a bridge that just started after the install
+const REPLY_WAIT_MS = 5000;
+const WRITE_WAIT_MS = 3000;
+const STATUS = {
+  "-1": "starting",
+  0: "waiting for a connection (also normal at night)",
+  1: "no inverter yet",
+  2: "pairing with the inverter",
+  3: "logging in",
+  4: "sending the PIN",
+  5: "setting the inverter's time",
+  6: "ready, reads data every 30 s",
+  9: "login refused",
+  10: "no connection came up",
+  11: "a request went unanswered",
+  13: "the PIN is missing or was refused",
+  14: "the session key does not fit",
+  15: "the radio link timed out",
+  16: "several inverters in range: waits for the serial",
+};
+
+const form = document.getElementById("setup-form");
+const pinInput = document.getElementById("setup-pin");
+const snInput = document.getElementById("setup-sn");
+const several = document.getElementById("setup-several");
+const antennaRow = document.getElementById("setup-antenna-row");
+const antennaInput = document.getElementById("setup-antenna");
+const eraseInput = document.getElementById("setup-erase");
+const installButton = document.getElementById("setup-install");
+const reply = document.getElementById("setup-reply");
+const pair = document.getElementById("pair");
+
+class SetupError extends Error {}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Loaded early, used once Install is pressed.
+const flashModule = import("./esp-web-tools/flash.js").catch((err) => err);
+
+// The reply area: one progress line on top, then rows.
+let progress = null;
+function show(rows) {
+  reply.hidden = false;
+  reply.replaceChildren();
+  if (progress !== null) {
+    const p = document.createElement("p");
+    p.textContent = progress;
+    reply.append(p);
+  }
+  for (const [text, cls, code] of rows) {
+    const p = document.createElement("p");
+    if (cls) p.className = cls;
+    p.textContent = text;
+    if (code) {
+      p.append(" ");
+      const c = document.createElement("code");
+      c.textContent = code;
+      p.append(c);
+    }
+    reply.append(p);
+  }
+}
+function step(text) {
+  progress = text;
+  show([]);
+}
+
+// The open port: reads lines, keeps the bridge's answers, drops the log lines.
+class Link {
+  constructor(port) {
+    this.port = port;
+    this.answers = [];
+    this.waiter = null;
+    this.done = false;
+    this.reader = port.readable.getReader();
+    this.reading = this.read();
+  }
+
+  async read() {
+    const decoder = new TextDecoder();
+    let buffer = "";
+    try {
+      for (;;) {
+        const { value, done } = await this.reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let end;
+        while ((end = buffer.indexOf("\n")) >= 0) {
+          const line = buffer.slice(0, end).replace(/\r$/, "");
+          buffer = buffer.slice(end + 1);
+          const at = line.indexOf(PREFIX);
+          if (at >= 0) this.answer(line.slice(at + PREFIX.length));
+        }
+        if (buffer.length > 4096) buffer = buffer.slice(-256);
+      }
+    } catch (err) {
+      // The board went away (a restart, a pulled cable): no more answers.
+    } finally {
+      this.done = true;
+      this.reader.releaseLock();
+      this.answer(null);
+    }
+  }
+
+  answer(text) {
+    if (text !== null) this.answers.push(text);
+    if (this.waiter) this.waiter();
+  }
+
+  // The next answer that `fits`, or null after `ms`. Others are dropped.
+  async next(fits, ms) {
+    const until = Date.now() + ms;
+    for (;;) {
+      while (this.answers.length) {
+        const text = this.answers.shift();
+        if (fits(text)) return text;
+      }
+      const left = until - Date.now();
+      if (this.done || left <= 0) return null;
+      await new Promise((resolve) => {
+        const timer = setTimeout(resolve, left);
+        this.waiter = () => {
+          clearTimeout(timer);
+          resolve();
+        };
+      });
+      this.waiter = null;
+    }
+  }
+
+  async send(text) {
+    let writer;
+    let ok;
+    try {
+      writer = this.port.writable.getWriter();
+      ok = await Promise.race([
+        writer.write(new TextEncoder().encode(text)).then(() => true),
+        sleep(WRITE_WAIT_MS).then(() => false),
+      ]);
+    } catch (err) {
+      throw new SetupError("The board went away: it restarted or the cable came off. Press Install again.");
+    } finally {
+      if (writer) writer.releaseLock();
+    }
+    if (!ok) throw new SetupError("The board takes no data. Plug it in again and press Install again.");
+  }
+
+  // A command and its answer: the one that starts with its own word, or a
+  // complaint about the line.
+  async command(text, word) {
+    await this.send(text + "\n");
+    const answer = await this.next(
+      (a) => a.startsWith(word) || a === "line too long" || a.startsWith("unknown command") ||
+        (word === "ant" && a === "no antenna switch"),
+      REPLY_WAIT_MS);
+    if (answer === null) throw new SetupError("The bridge did not answer. Plug the board in again and press Install again.");
+    return answer;
+  }
+
+  async close() {
+    try {
+      await this.reader.cancel();
+    } catch (err) {
+      // already closed
+    }
+    await this.reading;
+    try {
+      await this.port.close();
+    } catch (err) {
+      // already closed
+    }
+  }
+}
+
+const isBridge = (port) => {
+  const info = port.getInfo();
+  return info.usbVendorId === BRIDGE_USB.usbVendorId && info.usbProductId === BRIDGE_USB.usbProductId;
+};
+
+// Always the picker: Install overwrites the board, so the user names it.
+async function pickPort() {
+  try {
+    return await navigator.serial.requestPort({ filters: [BRIDGE_USB] });
+  } catch (err) {
+    if (err.name === "NotFoundError") {
+      throw new SetupError("No port picked. Connect the board by USB and pick USB JTAG/serial debug unit.");
+    }
+    throw new SetupError("The browser did not allow the serial port.");
+  }
+}
+
+const BUSY = "The port is busy. Close other programs that use it, such as an ESPHome log or a serial monitor. " +
+  "On Linux the browser may also lack access to it, see below.";
+
+async function openPort(port) {
+  try {
+    await port.open({ baudRate: 115200 });
+  } catch (err) {
+    throw new SetupError(BUSY);
+  }
+}
+
+// After the install the board restarts. The same port opens again. Should the
+// browser list the board as a new port, that one opens. A port the browser
+// knew before the install belongs to another board and is never taken.
+async function reopenPort(port, known) {
+  for (let i = 0; i < 12; i++) {
+    try {
+      await port.open({ baudRate: 115200 });
+      return port;
+    } catch (err) {
+      const fresh = (await navigator.serial.getPorts()).filter((p) => isBridge(p) && !known.has(p));
+      if (fresh.length === 1) port = fresh[0];
+      await sleep(500);
+    }
+  }
+  throw new SetupError("Installed, but the port did not open again. Plug the board in again and press " +
+    "Install again.");
+}
+
+function words(status) {
+  const out = {};
+  for (const word of status.split(" ").slice(1)) {
+    const eq = word.indexOf("=");
+    if (eq > 0) out[word.slice(0, eq)] = word.slice(eq + 1);
+  }
+  return out;
+}
+
+// The status as rows. `sent` leaves out what a command's answer just showed.
+function statusRows(status, sent) {
+  const w = words(status);
+  const seen = (w.seen || "").split(",").filter(Boolean).map((sn) => "RMI-" + sn).join(", ");
+  let inverter;
+  if (w.sn && w.sn !== "-") inverter = "RMI-" + w.sn;
+  else if (w.want) inverter = `looking for RMI-${w.want}` + (seen ? ` (in range: ${seen})` : "");
+  else if (w.found === "0") inverter = "none in range yet";
+  else if (w.take_in !== undefined) inverter = `${seen} in range, taken in ${w.take_in} s`;
+  else inverter = `${w.found} in range (${seen}): enter yours as the serial`;
+  const rows = [["Inverter: " + inverter]];
+  if (!sent.pin) rows.push(["PIN: " + ({ none: "none", set: "saved", build: "fixed in the build" }[w.pin] || w.pin)]);
+  rows.push(["Status: " + w.session + ", " + (STATUS[w.session] || "see the status codes")]);
+  if (w.antenna && !sent.antenna) rows.push(["Antenna: " + (w.antenna === "ext" ? "external" : "internal")]);
+  rows.push(["The bridge said:", "", status]);
+  return rows;
+}
+
+function readForm() {
+  const board = form.querySelector("input[name=board]:checked")?.value || "";
+  const pin = pinInput.value.trim();
+  const sn = snInput.value.trim().replace(/^RMI-/i, "");
+  let bad = null;
+  pinInput.removeAttribute("aria-invalid");
+  snInput.removeAttribute("aria-invalid");
+  if (pin && !/^[A-Za-z0-9]{1,15}$/.test(pin)) {
+    pinInput.setAttribute("aria-invalid", "true");
+    bad = "The PIN has up to 15 letters and digits.";
+  } else if (sn && !/^[A-Za-z0-9]{12}$/.test(sn)) {
+    snInput.setAttribute("aria-invalid", "true");
+    several.open = true;
+    bad = "The serial has 12 letters and digits: the part after RMI-.";
+  }
+  const antenna = board === "xiao_esp32c6" ? antennaInput.value : "";
+  return { board, pin, sn, antenna, erase: eraseInput.checked, bad };
+}
+
+// The settings on an open port: a status, the commands, a status again.
+// `tries` probes cover a board that is still starting.
+async function sendSettings(port, values, tries, rows) {
+  let link;
+  try {
+    link = new Link(port);
+  } catch (err) {
+    await port.close().catch(() => {});
+    throw new SetupError("The board went away: it restarted or the cable came off. Press Install again.");
+  }
+  try {
+    // Ctrl-U drops whatever another program left on the line.
+    let status = null;
+    for (let i = 0; i < tries && status === null && !link.done; i++) {
+      await link.send("\x15status\n");
+      status = await link.next((a) => a.startsWith("status "), PROBE_WAIT_MS);
+    }
+    if (status === null) return null;
+    if (values.pin) rows.push(["PIN: " + (await link.command("pin=" + values.pin, "pin"))]);
+    if (values.antenna) {
+      if (words(status).antenna === undefined) rows.push(["Antenna: this board has no antenna switch"]);
+      else rows.push(["Antenna: " + (await link.command("ant=" + values.antenna, "ant"))]);
+    }
+    if (values.sn) {
+      const answer = await link.command("sn=" + values.sn, "sn");
+      rows.push(["Serial: " + answer]);
+      if (answer.endsWith("restarting")) {
+        rows.push(["The bridge restarts and looks for that inverter."]);
+        return rows;
+      }
+    }
+    if (rows.length) {
+      await link.send("status\n");
+      status = await link.next((a) => a.startsWith("status "), REPLY_WAIT_MS) || status;
+    }
+    return rows.concat(statusRows(status, values));
+  } finally {
+    await link.close();
+  }
+}
+
+async function install(values) {
+  const board = BOARDS[values.board];
+  // The picker first: it needs the click that started this.
+  const port = await pickPort();
+  const mod = await flashModule;
+  if (mod instanceof Error) throw new SetupError("The flasher could not load. Reload the page.");
+  // A port held by another program fails here with a clear message.
+  await openPort(port);
+  await port.close();
+  const known = new Set(await navigator.serial.getPorts());
+
+  step("Connecting ...");
+  const resp = await fetch(`manifest-${values.board}.json`).catch(() => null);
+  if (!resp || !resp.ok) throw new SetupError("The firmware list did not load. Reload the page.");
+  const manifest = await resp.json();
+  let failure = null;
+  let written = false;
+  try {
+    await mod.flash((state) => {
+      if (state.state === "initializing") step("Connecting ...");
+      else if (state.state === "erasing") step("Erasing ...");
+      else if (state.state === "writing") {
+        written = true;
+        step(`Writing ${state.details.percentage} %`);
+      } else if (state.state === "error") failure = state;
+    }, port, `manifest-${values.board}.json`, manifest, values.erase);
+  } catch (err) {
+    failure = failure || { details: { error: "lost" } };
+  }
+  if (failure) {
+    progress = null;
+    // flash() closes the port on its way out, unless the board went away first
+    // or erasing threw: then esptool-js still reads the port and has to let go.
+    try {
+      await window.esploader?.transport?.disconnect();
+    } catch (err) {
+      // disconnected already
+    }
+    try {
+      await port.close();
+    } catch (err) {
+      // closed already
+    }
+    const kind = failure.details && failure.details.error;
+    if (kind === "not_supported") {
+      throw new SetupError(`This is an ${failure.chipFamily || failure.details.details}, not ${board.name}. ` +
+        "Nothing was written.");
+    }
+    if (kind === "failed_initialize") {
+      throw new SetupError("The board did not answer. Plug it in again and press Install again.");
+    }
+    if (kind === "failed_firmware_download") throw new SetupError("The firmware did not load. Reload the page.");
+    throw new SetupError(written || values.erase
+      ? "The board was lost while writing. Plug it in again and press Install again."
+      : "The board was lost. Plug it in again and press Install again.");
+  }
+
+  step("Installed. Restarting ...");
+  const again = await reopenPort(port, known);
+  const rows = await sendSettings(again, values, BOOT_TRIES, []);
+  if (rows === null) {
+    throw new SetupError("Installed, but the bridge did not answer. Plug the board in again and press " +
+      "Install again.");
+  }
+  progress = "Installed.";
+  return rows;
+}
+
+function updateAntenna() {
+  antennaRow.hidden = form.querySelector("input[name=board]:checked")?.value !== "xiao_esp32c6";
+}
+form.addEventListener("change", updateAntenna);
+updateAntenna();
+
+if (!("serial" in navigator)) {
+  installButton.disabled = true;
+  const note = document.getElementById("no-serial");
+  if (!window.isSecureContext) note.textContent = "Needs HTTPS.";
+  note.hidden = false;
+}
+
+async function run() {
+  const values = readForm();
+  pair.hidden = true;
+  progress = null;
+  if (!values.bad && !values.board) values.bad = "Pick your board.";
+  if (values.bad) {
+    show([[values.bad, "error"]]);
+    return;
+  }
+  installButton.disabled = true;
+  show([["Connecting ..."]]);
+  try {
+    show(await install(values));
+    pair.hidden = false;
+  } catch (err) {
+    const text = err instanceof SetupError ? err.message : "Something went wrong: " + err.message;
+    show([[text, "error"]]);
+  } finally {
+    installButton.disabled = false;
+  }
+}
+
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+  run();
+});
+</script>
 </body>
 </html>

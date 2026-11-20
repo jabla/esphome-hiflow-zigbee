@@ -27,8 +27,6 @@ class ZigbeePower : public Component {
   void set_awake_after_boot(uint32_t ms) { this->awake_after_boot_ms_ = ms; }
   void set_awake_on_usb(bool awake) { this->awake_on_usb_ = awake; }
   void set_loop_interval(uint32_t ms) { this->loop_interval_ms_ = ms; }
-  void set_night_poll_interval(uint32_t ms) { this->night_poll_interval_ms_ = ms; }
-  void set_night_loop_interval(uint32_t ms) { this->night_loop_interval_ms_ = ms; }
   void set_request_poll_window(uint32_t ms) { this->request_poll_window_ms_ = ms; }
   void set_binding_table_size(uint8_t size) { this->binding_table_size_ = size; }
   void set_wake_button(InternalGPIOPin *pin) { this->button_pin_ = pin; }
@@ -65,9 +63,7 @@ class ZigbeePower : public Component {
   float chip_temperature();
   uint32_t pd_blockers() const;
   uint32_t poll_interval_ms() const { return this->poll_interval_ms_; }
-  uint32_t night_poll_interval_ms() const { return this->night_poll_interval_ms_; }
   uint32_t loop_interval_ms() const { return this->loop_interval_ms_; }
-  uint32_t night_loop_interval_ms() const { return this->night_loop_interval_ms_; }
   uint32_t request_poll_window_ms() const { return this->request_poll_window_ms_; }
 
  protected:
@@ -77,11 +73,6 @@ class ZigbeePower : public Component {
   void rejoin_if_pending_();
   void leave_to_rejoin_();
   void apply_keep_pins_();
-#ifdef USE_ZIGBEE_POWER_SLEEPY
-  friend void set_night(bool night);
-  /// Gives the stack the poll interval in force, now or from a timeout (main loop).
-  void apply_poll_interval_();
-#endif
 
   zigbee::ZigbeeComponent *zb_{nullptr};
   uint32_t poll_interval_ms_{0};
@@ -90,8 +81,6 @@ class ZigbeePower : public Component {
   uint32_t awake_after_boot_ms_{0};
   bool awake_on_usb_{false};
   uint32_t loop_interval_ms_{0};  // 0 = ESPHome's own
-  uint32_t night_poll_interval_ms_{0};
-  uint32_t night_loop_interval_ms_{0};
   uint32_t request_poll_window_ms_{0};  // 0 = no fast poll after a request
   uint8_t binding_table_size_{0};       // 0 = the stack's own (16)
 
@@ -131,17 +120,10 @@ void set_ble_quiet(bool quiet);
 
 /// While `on` (a firmware update, from the download to the restart): a
 /// pending join with the other receiver mode waits, and the sleepy build polls
-/// every FAST_POLL_MS; `false` goes back to the day or night interval (or
-/// stays fast while requests come in, see request_poll_window).
+/// every FAST_POLL_MS; `false` goes back to polling_interval (or stays fast while
+/// requests come in, see request_poll_window).
 /// Called on the Zigbee task or under its lock.
 void set_updating(bool on);
-
-#ifdef USE_ZIGBEE_POWER_SLEEPY
-
-/// Night mode (the inverter is dark): poll and main loop at their night
-/// intervals. Called from the main loop by whoever knows it is night.
-void set_night(bool night);
-#endif
 
 }  // namespace zigbee_power
 }  // namespace esphome

@@ -33,7 +33,7 @@
 # Holding BOOT while the board resets starts the ROM download mode (GPIO9 is a
 # strapping pin); a press during normal operation is harmless.
 #
-# With `sleepy: "true"` (zigbee_power in hiflow-zb.yaml) the chip light-sleeps
+# With `sleepy: "true"` (zigbee: in hiflow-zb.yaml) the chip light-sleeps
 # between its work, by day too: the backlight PWM runs on in light sleep
 # (lcd_power), and the overview is only redrawn when there is something new.
 # At night the panel controller sleeps as well. BOOT wakes the chip, and the
@@ -54,7 +54,7 @@ substitutions:
   lcd_page_seconds: "15"
   # At night: glow (red LED, panel off) | off | screensaver (panel dim, "HiFlow" bounces).
   lcd_night: "glow"
-  # Sleepy end device (zigbee_power in hiflow-zb.yaml), on unless hiflow_secrets.yaml says
+  # Sleepy end device (zigbee: in hiflow-zb.yaml), on unless hiflow_secrets.yaml says
   # otherwise.
   sleepy: "true"
 
@@ -241,9 +241,8 @@ script:
           // By day the overview only changes with new data, a new status, a
           // new clock minute or a new power limit or on/off state (a write
           // from HA lands between two data rounds); each redraw keeps the
-          // chip awake. While the
-          // data is old or the link is not up, the age and the retry count
-          // down on it, so it is redrawn every 5 s then.
+          // chip awake. While the data is old or the link is not up, the age
+          // and the retry count down on it, so it is redrawn every 5 s then.
           const int st = id(hiflow).status();
           const int64_t age = id(hiflow).ms_since_data();
           const int age_ms = age < 0 ? -1 : (int) std::min<int64_t>(age, INT32_MAX);
@@ -374,6 +373,7 @@ display:
           case 13: name = "PIN MISSING"; break;
           case 14: name = "STALE KEY"; break;
           case 15: name = "TIMEOUT"; break;
+          case 16: name = "SEVERAL FOUND"; status_color = ORANGE; break;
           default: break;
         }
         if (name != nullptr)

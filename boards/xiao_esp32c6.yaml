@@ -7,9 +7,9 @@
 #   GPIO14 LOW  = internal ceramic antenna, HIGH = external U.FL antenna
 # gpio outputs start "off" (LOW, the internal antenna). hiflow_ble sets GPIO14
 # once its settings are loaded: `external_antenna` from hiflow_secrets.yaml, or,
-# left empty there, ant=ext / ant=int from the settings field over Zigbee. That
-# is before the BLE scan and the Zigbee network start. An external antenna
-# gained about 19 dB at the reference site.
+# left empty there, ant=ext / ant=int over USB. That is before the BLE scan and
+# the Zigbee network start. An external antenna gained about 19 dB at the
+# reference site.
 
 esp32:
   variant: esp32c6
@@ -20,7 +20,7 @@ esp32:
 substitutions:
   # Zigbee OTA image type of this board ("HX"), see zigbee_ota: in hiflow-zb.yaml.
   ota_image_type: "0x4858"
-  # Sleepy end device (zigbee_power in hiflow-zb.yaml), on unless hiflow_secrets.yaml says
+  # Sleepy end device (zigbee: in hiflow-zb.yaml), on unless hiflow_secrets.yaml says
   # otherwise.
   sleepy: "true"
 

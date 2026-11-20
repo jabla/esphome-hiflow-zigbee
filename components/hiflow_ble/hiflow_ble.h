@@ -31,9 +31,6 @@
 #ifdef USE_TIME
 #include "esphome/components/time/real_time_clock.h"
 #endif
-#ifdef USE_ZIGBEE
-#include "esphome/components/zigbee/zigbee_esp32.h"
-#endif
 
 namespace esphome {
 namespace hiflow_ble {
@@ -96,8 +93,8 @@ enum HiflowSensorType : uint8_t {
 /// The inverter, the login identity and the BLE PIN come from the build
 /// (hiflow_secrets.yaml) or, left empty there, from the bridge's own settings
 /// in flash: it finds the inverter by its BLE name, makes up an identity and
-/// takes the rest through the Zigbee settings field (see hiflow_setup.h). A
-/// release image is built that way and carries no personal data.
+/// takes the rest as commands over the board's USB port (see hiflow_setup.h).
+/// A release image is built that way and carries no personal data.
 class HiflowBle : public Component, public ble_client::BLEClientNode, public espbt::ESPBTDeviceListener {
  public:
   void setup() override;
@@ -151,13 +148,9 @@ class HiflowBle : public Component, public ble_client::BLEClientNode, public esp
   /// The XIAO ESP32-C6's antenna select (GPIO14: off = internal, on = external).
   void set_antenna_select(output::BinaryOutput *out) { this->antenna_select_ = out; }
 #endif
-  /// The antenna as the build fixes it: 0 internal, 1 external, -1 left to the
-  /// settings field (ant=).
+  /// The antenna as the build fixes it: 0 internal, 1 external, -1 left to
+  /// ant= over USB.
   void set_build_antenna(int8_t external) { this->build_antenna_ = external; }
-#ifdef USE_ZIGBEE
-  /// The settings field in the Basic cluster of endpoint 1 (see hiflow_setup_field.h).
-  void set_setup_field(zigbee::ZigbeeComponent *zb) { this->setup_zb_ = zb; }
-#endif
 
   // --- for an on-board display (see boards/waveshare_c6_lcd147.yaml) ---
   /// Milliseconds since the last complete set of measurements, -1 before the first.
@@ -253,11 +246,11 @@ class HiflowBle : public Component, public ble_client::BLEClientNode, public esp
   bool inverter_known_();
   void start_search_(const char *want);
   void search_tick_(int64_t now);
-  std::string setup_status_text_();
-#ifdef USE_ZIGBEE
-  void poll_setup_field_(int64_t now);
-  void handle_setup_command_(const std::string &text, int64_t now);
-  void set_setup_text_(const std::string &text);
+  uint8_t search_status_() const;
+#ifdef USE_LOGGER_UART_SELECTION_USB_SERIAL_JTAG
+  void usb_setup_tick_(int64_t now);
+  void handle_setup_command_(const char *line, size_t len, int64_t now);
+  void usb_reply_(const char *text);
 #endif
 
   // --- transport ---
@@ -350,16 +343,13 @@ class HiflowBle : public Component, public ble_client::BLEClientNode, public esp
   ESPPreferenceObject daylog_pref_{};
   int64_t next_daylog_check_ms_{0};
 
-#ifdef USE_ZIGBEE
-  // --- settings field ---
-  zigbee::ZigbeeComponent *setup_zb_{nullptr};
-  std::string setup_text_;      // what the field shows: our last answer
-  bool setup_text_due_{false};  // setup_text_ still has to reach the attribute
-  std::string setup_written_;   // the text in the attribute as we wrote it
-  std::string setup_handled_;   // the command handled last, until its answer is in
-  bool setup_handled_set_{false};
-  int64_t setup_reply_until_ms_{0};  // a command's answer stays until then
-  int64_t next_setup_poll_ms_{0};
+#ifdef USE_LOGGER_UART_SELECTION_USB_SERIAL_JTAG
+  // --- settings over USB (the logger's USB-Serial-JTAG port) ---
+  bool usb_setup_{false};  // the logger installed the port's driver
+  hiflow_line_reader_t usb_line_{};
+  uint8_t usb_rx_[16]{};  // bytes read from the port, not yet put into the line
+  uint8_t usb_rx_len_{0};
+  uint8_t usb_rx_pos_{0};
 #endif
 
 #ifdef USE_NUMBER

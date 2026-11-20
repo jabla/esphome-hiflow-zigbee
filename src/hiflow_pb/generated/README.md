@@ -27,7 +27,7 @@ uv venv /tmp/pbvenv
 uv pip install --python /tmp/pbvenv/bin/python protobuf
 
 cd src/hiflow_pb/generated
-for p in RealDataNew.proto APPInfomationData.proto APPHeartbeatPB.proto CommandPB.proto CommCmdPB.proto GetConfig.proto; do
+for p in RealDataNew.proto APPInfomationData.proto CommandPB.proto CommCmdPB.proto GetConfig.proto; do
   /tmp/pbvenv/bin/python /tmp/nanopb-src/generator/nanopb_generator.py "$p"
 done
 ```

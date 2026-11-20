@@ -1,5 +1,4 @@
 #include "hiflow_ble.h"
-#include "hiflow_setup_field.h"
 
 #include "esphome/core/application.h"
 #include "esphome/core/log.h"
@@ -20,6 +19,9 @@
 #include <esp_gattc_api.h>
 #include <esp_random.h>
 #include <esp_timer.h>
+#ifdef USE_LOGGER_UART_SELECTION_USB_SERIAL_JTAG
+#include <driver/usb_serial_jtag.h>
+#endif
 
 namespace esphome {
 namespace hiflow_ble {
@@ -55,9 +57,9 @@ static const uint8_t SETUP_PREF_VERSION = 1;
 static const char *const SETUP_PREF_NAME = "hiflow_setup_v1";
 static const int64_t SEARCH_CHECK_MS = 1000;          // how often the search is looked at
 static const int64_t RESCAN_IDLE_MS = 5000;           // an idle scanner the tracker leaves alone
-static const int64_t SETUP_POLL_MS = 1000;            // the settings field is polled this often
-static const uint32_t SETUP_REBOOT_MS = 3000;         // after a new inverter: time for the answer (next poll)
-static const int64_t SETUP_REPLY_KEEP_MS = 30000;     // a command's answer stays this long
+static const uint32_t SETUP_REBOOT_MS = 3000;         // after a new inverter: time for the answer to go out
+static const size_t USB_READ_MAX = 64;                // bytes read from the USB port per loop at most
+static_assert(HIFLOW_SETUP_PIN_MAX < HIFLOW_PIN_LEN, "a PIN over USB fits the session's buffer");
 
 // ---------------------------------------------------------------------------
 // trampolines: the session core is C and calls back through a context pointer
@@ -123,6 +125,10 @@ void HiflowBle::setup() {
     this->network_time_->add_on_time_sync_callback([this]() { this->on_network_time_(); });
 #endif
   this->load_setup_();
+#ifdef USE_LOGGER_UART_SELECTION_USB_SERIAL_JTAG
+  // The logger installs the driver before any setup(), unless it logs nowhere.
+  this->usb_setup_ = usb_serial_jtag_is_driver_installed();
+#endif
 }
 
 #ifdef HIFLOW_DEMO_DAY
@@ -231,9 +237,9 @@ void HiflowBle::start_session_() {
 void HiflowBle::loop() {
   int64_t now = this->now_ms_();
 
-#ifdef USE_ZIGBEE
-  if (this->setup_zb_ != nullptr)
-    this->poll_setup_field_(now);
+#ifdef USE_LOGGER_UART_SELECTION_USB_SERIAL_JTAG
+  if (this->usb_setup_)
+    this->usb_setup_tick_(now);
 #endif
 
   // Started from loop() and not from setup(): the session enables the BLE
@@ -368,7 +374,7 @@ void HiflowBle::dump_config() {
 #ifdef USE_OUTPUT
   if (this->antenna_select_ != nullptr) {
     ESP_LOGCONFIG(TAG, "  Antenna: %s (%s)", this->setup_.antenna == 2 ? "external" : "internal",
-                  this->build_antenna_ >= 0 ? "from the build" : "settings field");
+                  this->build_antenna_ >= 0 ? "from the build" : "kept in flash");
   }
 #endif
   ESP_LOGCONFIG(TAG, "  Time offset: %d s%s", static_cast<int>(this->std_offset_),
@@ -387,9 +393,9 @@ void HiflowBle::dump_config() {
   if (this->night_test_) {
     ESP_LOGW(TAG, "  night_test: every lost link starts night mode (bench only)");
   }
-#ifdef USE_ZIGBEE
-  if (this->setup_zb_ != nullptr) {
-    ESP_LOGCONFIG(TAG, "  Settings field: Zigbee endpoint %u, Basic LocationDescription", SETUP_FIELD_ENDPOINT);
+#ifdef USE_LOGGER_UART_SELECTION_USB_SERIAL_JTAG
+  if (this->usb_setup_) {
+    ESP_LOGCONFIG(TAG, "  Settings over USB: on");
   }
 #endif
 #ifdef USE_NUMBER
@@ -490,9 +496,6 @@ void HiflowBle::set_night_(bool night, const char *why) {
   }
   ESP_LOGI(TAG, "%s mode (%s)%s", night ? "night" : "day", why,
            this->night_ble_off_ms_ == 0 ? "" : (night ? ", BLE off" : ", BLE on"));
-#ifdef USE_ZIGBEE_POWER_SLEEPY
-  zigbee_power::set_night(night);
-#endif
 }
 
 // Night from the state, not only from the moment the link drops: after a
@@ -1193,13 +1196,8 @@ void HiflowBle::load_setup_() {
   if (changed)
     this->save_setup_();
   this->apply_antenna_();
-  if (!this->inverter_known_()) {
+  if (!this->inverter_known_())
     this->start_search_(rec.want);
-  } else {
-#ifdef USE_ZIGBEE
-    this->set_setup_text_(this->setup_status_text_());
-#endif
-  }
 }
 
 void HiflowBle::save_setup_() {
@@ -1240,9 +1238,6 @@ void HiflowBle::start_search_(const char *want) {
     ESP_LOGI(TAG, "no inverter yet: looking for one by its BLE name (RMI-...)");
   }
   this->publish_status_(HIFLOW_STATUS_NO_INVERTER, false);
-#ifdef USE_ZIGBEE
-  this->set_setup_text_(this->setup_status_text_());
-#endif
 }
 
 bool HiflowBle::parse_device(const espbt::ESPBTDevice &device) {
@@ -1278,7 +1273,7 @@ void HiflowBle::search_tick_(int64_t now) {
     return;
   this->next_search_check_ms_ = now + SEARCH_CHECK_MS;
   if (now >= this->next_status_refresh_ms_)
-    this->publish_status_(HIFLOW_STATUS_NO_INVERTER, true);
+    this->publish_status_(this->search_status_(), true);
 
   uint64_t mac = 0;
   char sn[HIFLOW_SN_LEN + 1];
@@ -1300,95 +1295,99 @@ void HiflowBle::search_tick_(int64_t now) {
     }
     ESP_LOGI(TAG, "inverter chosen: RMI-%s (%s), kept in flash", sn,
              this->parent() != nullptr ? this->parent()->address_str() : "?");
-#ifdef USE_ZIGBEE
-    this->set_setup_text_(this->setup_status_text_());
-#endif
     return;  // the next loop starts the session
   }
   if (result != this->search_result_ || seen != this->search_seen_) {
     if (result == HIFLOW_DISCOVERY_SEVERAL)
-      ESP_LOGW(TAG, "%d inverters in range: name yours with sn= in the settings field", seen);
+      ESP_LOGW(TAG, "%d inverters in range: name yours with sn= over USB", seen);
     this->search_result_ = result;
     this->search_seen_ = seen;
+    this->publish_status_(this->search_status_(), false);
   }
 }
 
-// What the settings field shows while nobody writes to it: at most 15
-// characters (HIFLOW_SETUP_TEXT_MAX), the field's size.
-std::string HiflowBle::setup_status_text_() {
-  char text[32];  // set_setup_text_() keeps the first 15
-  if (!this->searching_) {
-    std::snprintf(text, sizeof(text), "sn %s", this->sn_.c_str());
-  } else if (this->search_result_ == HIFLOW_DISCOVERY_SEVERAL) {
-    std::snprintf(text, sizeof(text), "%d%s found, sn=?", std::min(this->discovery_.count, HIFLOW_DISCOVERY_SLOTS),
-                  this->discovery_.more ? "+" : "");
-  } else if (this->discovery_.want[0] == '\0' && this->discovery_.count == 1) {
-    // One in range: taken when the window is over, unless a second one shows up.
-    const int64_t left_ms = HIFLOW_DISCOVERY_WINDOW_MS - (this->now_ms_() - this->discovery_.first_ms);
-    std::snprintf(text, sizeof(text), "1 found, %ds", static_cast<int>(std::max<int64_t>(left_ms, 0) / 1000));
-  } else {
-    std::snprintf(text, sizeof(text), "searching");
-  }
-  return text;
+// The status while looking: 16 once several are in range and none is named.
+uint8_t HiflowBle::search_status_() const {
+  return this->search_result_ == HIFLOW_DISCOVERY_SEVERAL ? HIFLOW_STATUS_SEVERAL : HIFLOW_STATUS_NO_INVERTER;
 }
 
-#ifdef USE_ZIGBEE
-void HiflowBle::set_setup_text_(const std::string &text) {
-  this->setup_text_ = text.substr(0, HIFLOW_SETUP_TEXT_MAX);
-  this->setup_text_due_ = true;
-}
-
-// Polled like the slider. Only once joined: a write can only come from the
-// coordinator. The stack also takes attribute values reliably only once it runs.
-void HiflowBle::poll_setup_field_(int64_t now) {
-  if (now < this->next_setup_poll_ms_ || !this->setup_zb_->is_joined())
-    return;
-  this->next_setup_poll_ms_ = now + SETUP_POLL_MS;
-  // Once a command's answer had its time, the field shows the state again and
-  // follows the search every second. Only the local attribute changes;
-  // nothing goes over the air until the coordinator reads it.
-  if (now >= this->setup_reply_until_ms_) {
-    const std::string status = this->setup_status_text_();
-    if (status != this->setup_text_)
-      this->set_setup_text_(status);
-  }
-  // Anything but our own text (the one written last, or the command handled
-  // last) came from the coordinator. Read and write share one hold of the
-  // stack's lock, so a new text goes in only over one of ours, never over a
-  // command that is still unread. A command is handled once. Its answer goes
-  // in at the next poll.
-  std::string text;
-  bool wrote = false;
-  if (!exchange_setup_field(SETUP_FIELD_ENDPOINT, &text, this->setup_written_,
-                            this->setup_handled_set_ ? &this->setup_handled_ : nullptr,
-                            this->setup_text_due_ ? &this->setup_text_ : nullptr, &wrote))
-    return;  // the stack is busy: the next poll tries again
-  if (wrote) {
-    this->setup_text_due_ = false;
-    this->setup_written_ = this->setup_text_;
-    this->setup_handled_set_ = false;
-  } else if (text != this->setup_written_ && !(this->setup_handled_set_ && text == this->setup_handled_)) {
-    this->setup_handled_ = text;
-    this->setup_handled_set_ = true;
-    this->handle_setup_command_(text, now);
+#ifdef USE_LOGGER_UART_SELECTION_USB_SERIAL_JTAG
+// Commands over the logger's USB-Serial-JTAG port, one per line (see
+// hiflow_setup.h). The logger installed the driver with a 512-byte receive
+// buffer. Reading it never waits. Only a computer sends anything. The board
+// stays awake on one (zigbee_power's awake_on_usb).
+void HiflowBle::usb_setup_tick_(int64_t now) {
+  // One answer per loop at most: an answer may wait for the port and a
+  // setting writes flash. The rest of a read waits for the next loop.
+  for (size_t total = 0; total < USB_READ_MAX;) {
+    if (this->usb_rx_pos_ >= this->usb_rx_len_) {
+      const int n = usb_serial_jtag_read_bytes(this->usb_rx_, std::min(sizeof(this->usb_rx_), USB_READ_MAX - total), 0);
+      if (n <= 0)
+        return;
+      this->usb_rx_len_ = n;
+      this->usb_rx_pos_ = 0;
+      total += n;
+    }
+    while (this->usb_rx_pos_ < this->usb_rx_len_) {
+      switch (hiflow_line_put(&this->usb_line_, this->usb_rx_[this->usb_rx_pos_++])) {
+        case HIFLOW_LINE_READY:
+          this->handle_setup_command_(this->usb_line_.line, this->usb_line_.len, now);
+          hiflow_line_done(&this->usb_line_);
+          return;
+        case HIFLOW_LINE_TOO_LONG:
+          this->usb_reply_("line too long");
+          return;
+        default:
+          break;
+      }
+    }
   }
 }
 
-void HiflowBle::handle_setup_command_(const std::string &text, int64_t now) {
+// One answer line, straight to the port: the image logs at WARN. The prefix
+// tells the line apart from log lines. The driver waits twice (its lock, room
+// in the send buffer), 5 ms each at most. A full buffer drops the line.
+void HiflowBle::usb_reply_(const char *text) {
+  char line[sizeof(HIFLOW_SETUP_REPLY_PREFIX) + HIFLOW_SETUP_STATUS_MAX + 2];
+  const int n = std::snprintf(line, sizeof(line), HIFLOW_SETUP_REPLY_PREFIX "%s\r\n", text);
+  if (n > 0)
+    usb_serial_jtag_write_bytes(line, std::min<size_t>(n, sizeof(line) - 1), 5 / portTICK_PERIOD_MS);
+}
+
+void HiflowBle::handle_setup_command_(const char *line, size_t len, int64_t now) {
   hiflow_setup_cmd_t cmd;
-  hiflow_setup_parse(text.data(), text.size(), &cmd);
-  std::string reply;
+  hiflow_setup_parse(line, len, &cmd);
+  const char *reply = "";
 
   switch (cmd.type) {
     case HIFLOW_SETUP_CMD_NONE:
-      reply = this->setup_status_text_();
-      break;
+      return;
 
     case HIFLOW_SETUP_CMD_BAD:
-      // Never log the text itself: it may hold a PIN.
-      ESP_LOGW(TAG, "settings field: not understood (%s)", cmd.error);
+      // Never log the line itself: it may hold a PIN.
+      ESP_LOGW(TAG, "USB command not understood (%s)", cmd.error);
       reply = cmd.error;
       break;
+
+    case HIFLOW_SETUP_CMD_STATUS: {
+      hiflow_setup_status_t st{};
+      st.sn = this->searching_ ? nullptr : this->sn_.c_str();
+      st.discovery = this->searching_ ? &this->discovery_ : nullptr;
+      st.now_ms = now;
+      st.pin = this->build_pin_      ? HIFLOW_SETUP_PIN_BUILD
+               : this->pin_.empty() ? HIFLOW_SETUP_PIN_NONE
+                                    : HIFLOW_SETUP_PIN_SET;
+      st.session = this->last_status_;
+      st.antenna = -1;
+#ifdef USE_OUTPUT
+      if (this->antenna_select_ != nullptr)
+        st.antenna = this->setup_.antenna == 2 ? 1 : 0;
+#endif
+      char text[HIFLOW_SETUP_STATUS_MAX];
+      hiflow_setup_format_status(text, sizeof(text), &st);
+      this->usb_reply_(text);
+      return;
+    }
 
     case HIFLOW_SETUP_CMD_PIN:
       if (this->build_pin_) {
@@ -1400,7 +1399,7 @@ void HiflowBle::handle_setup_command_(const std::string &text, int64_t now) {
       this->pin_ = cmd.value;
       if (this->session_started_)
         hiflow_session_set_pin(&this->session_, now, cmd.value);
-      ESP_LOGI(TAG, "BLE PIN %s over Zigbee", cmd.value[0] != '\0' ? "set" : "removed");
+      ESP_LOGI(TAG, "BLE PIN %s over USB", cmd.value[0] != '\0' ? "set" : "removed");
       reply = cmd.value[0] != '\0' ? "pin saved" : "pin removed";
       break;
 
@@ -1409,8 +1408,10 @@ void HiflowBle::handle_setup_command_(const std::string &text, int64_t now) {
         reply = "sn: in build";
         break;
       }
-      if (!this->searching_ && hiflow_setup_same_serial(cmd.value, this->sn_.c_str())) {
-        reply = this->setup_status_text_();
+      // Unchanged only while no other serial waits for the restart.
+      if (!this->searching_ && this->setup_.sn[0] != '\0' &&
+          hiflow_setup_same_serial(cmd.value, this->sn_.c_str())) {
+        reply = "sn unchanged";
         break;
       }
       this->setup_.mac = 0;
@@ -1422,11 +1423,11 @@ void HiflowBle::handle_setup_command_(const std::string &text, int64_t now) {
         // session may run already or start with the next loop. A clean start
         // is simpler than taking that apart. Changing the inverter is rare.
         ESP_LOGI(TAG, "inverter RMI-%s asked for, restarting", cmd.value);
-        reply = "sn ok, reboot";
+        reply = "sn saved, restarting";
         this->set_timeout("setup_reboot", SETUP_REBOOT_MS, []() { App.safe_reboot(); });
       } else {
         this->start_search_(cmd.value);
-        reply = this->setup_status_text_();
+        reply = "sn saved, searching";
       }
       break;
 
@@ -1441,18 +1442,18 @@ void HiflowBle::handle_setup_command_(const std::string &text, int64_t now) {
       this->save_setup_();
       if (!this->searching_) {  // an inverter is chosen, see sn= above
         ESP_LOGI(TAG, "inverter forgotten, restarting");
-        reply = "forgot, reboot";
+        reply = "forgot, restarting";
         this->set_timeout("setup_reboot", SETUP_REBOOT_MS, []() { App.safe_reboot(); });
       } else {
         this->start_search_(nullptr);
-        reply = this->setup_status_text_();
+        reply = "forgot, searching";
       }
       break;
 
     case HIFLOW_SETUP_CMD_ANTENNA:
 #ifdef USE_OUTPUT
       if (this->antenna_select_ == nullptr) {
-        reply = "no ant switch";
+        reply = "no antenna switch";
       } else if (this->build_antenna_ >= 0) {
         reply = "ant: in build";
       } else {
@@ -1463,14 +1464,13 @@ void HiflowBle::handle_setup_command_(const std::string &text, int64_t now) {
         reply = cmd.external ? "ant ext" : "ant int";
       }
 #else
-      reply = "no ant switch";
+      reply = "no antenna switch";
 #endif
       break;
   }
-  this->set_setup_text_(reply);
-  this->setup_reply_until_ms_ = now + SETUP_REPLY_KEEP_MS;
+  this->usb_reply_(reply);
 }
-#endif  // USE_ZIGBEE
+#endif  // USE_LOGGER_UART_SELECTION_USB_SERIAL_JTAG
 
 }  // namespace hiflow_ble
 }  // namespace esphome

@@ -1,9 +1,10 @@
 {
   "name": "hiflow-web-installer",
   "private": true,
-  "description": "The ESP Web Tools release the web installer ships (.github/workflows/pages.yml copies its dist/web folder into the site). Dependabot watches the pin.",
+  "description": "What the web flasher ships: ESP Web Tools' flash() and esptool-js, installed from package-lock.json and copied into the site by tools/release.py site, which also checks that esptool-js fits the range ESP Web Tools names. Dependabot watches the pins.",
   "license": "MIT",
   "dependencies": {
-    "esp-web-tools": "10.4.0"
+    "esp-web-tools": "10.4.0",
+    "esptool-js": "0.6.1"
   }
 }

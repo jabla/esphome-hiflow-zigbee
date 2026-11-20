@@ -133,16 +133,7 @@ static esp_sleep_context_t s_sleep_ctx;
 // Requests as keepalive gets one per poll on top, while it lasts: a few
 // minutes per download, request_poll_window (10 s) per burst of requests.
 static const uint32_t FAST_POLL_MS = 50;
-// A new poll interval from the main loop that finds the stack's lock taken is
-// set from a timeout this much later.
-static const uint32_t LOCK_RETRY_MS = 100;
-// Scheduler ids of this component (its string ids never match them).
-static constexpr uint32_t POLL_RETRY_ID = 0;
 
-// The poll interval in force: a firmware update or a request first, then a
-// pending join with the other receiver mode (1 s, so the parent reaches us
-// whichever mode it assumes), then night, then day.
-static std::atomic<bool> s_night{false};
 // After a request from the network (the coordinator's interview, a
 // reconfigure, a read or a write) the next one usually follows as soon as the
 // answer is out, and waits at the parent until our next poll: a few hundred
@@ -150,12 +141,16 @@ static std::atomic<bool> s_night{false};
 // until no request came for request_poll_window.
 static std::atomic<bool> s_request_fast{false};
 static std::atomic<uint32_t> s_request_until_ms{0};
+
+// The poll interval in force: a firmware update or a request first, then a
+// pending join with the other receiver mode (1 s, so the parent reaches us
+// whichever mode it assumes), then zigbee's polling_interval.
 static uint32_t current_poll_ms() {
   if (s_updating.load() || s_request_fast.load())
     return FAST_POLL_MS;
   if (s_rejoin_pending.load())
     return REJOIN_POLL_MS;
-  return s_night.load() ? s_power->night_poll_interval_ms() : s_power->poll_interval_ms();
+  return s_power->poll_interval_ms();
 }
 
 // A request to us, not an answer or a report: a ZDP request (cluster below
@@ -191,30 +186,6 @@ static bool on_aps_indication(const ezb_apsde_data_ind_t *ind) {
     s_power->enable_loop_soon_any_context();
   }
   return false;
-}
-
-void set_night(bool night) {
-  if (s_power == nullptr || s_night.load() == night)
-    return;
-  s_night.store(night);
-  s_power->apply_poll_interval_();
-  App.set_loop_interval(night ? s_power->night_loop_interval_ms() : s_power->loop_interval_ms());
-  ESP_LOGI(TAG, "%s: poll every %u ms, main loop every %u ms", night ? "Night" : "Day",
-           (unsigned) current_poll_ms(), (unsigned) App.get_loop_interval());
-}
-
-// Sets the poll interval in force, from the main loop. The main loop must not
-// block, so it tries the stack's lock for 10 ms and otherwise comes back from
-// a timeout. A late write is still right: every writer, a retry included,
-// sets the interval in force when it runs. A newer call that finds the lock
-// taken too replaces the pending retry.
-void ZigbeePower::apply_poll_interval_() {
-  if (!esp_zigbee_lock_acquire(10 / portTICK_PERIOD_MS)) {
-    this->set_timeout(POLL_RETRY_ID, LOCK_RETRY_MS, [this]() { this->apply_poll_interval_(); });
-    return;
-  }
-  ezb_nwk_set_keepalive_interval(current_poll_ms());
-  esp_zigbee_lock_release();
 }
 
 // ESP-IDF calls this after every attempt, also one the hardware rejected (a
@@ -726,12 +697,11 @@ void ZigbeePower::dump_config() {
                 "  Binding table: %u entries",
                 (unsigned) (this->binding_table_size_ > 0 ? this->binding_table_size_ : 16));
 #ifdef USE_ZIGBEE_POWER_SLEEPY
+  // ESPHome's zigbee component logs the sleepy mode and the poll interval.
   ESP_LOGCONFIG(TAG,
-                "  Sleepy end device, poll every %u ms\n"
                 "  Light sleep at %d MHz\n"
                 "  Main loop every %u ms",
-                (unsigned) this->poll_interval_ms_, CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ,
-                (unsigned) App.get_loop_interval());
+                CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ, (unsigned) App.get_loop_interval());
   if (this->awake_on_usb_) {
     ESP_LOGCONFIG(TAG, "  Awake on a USB host");
   } else {

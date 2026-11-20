@@ -19,9 +19,8 @@ ZIGBEE_BLOCKS = ("zigbee:", "zigbee_ota:", "zigbee_power:", "time:")
 # zigbee_power): left as `!remove`, which also drops what a package brings in.
 REMOVED_BLOCKS = ("zigbee_power:",)
 # Options that are only valid while the zigbee component is loaded: the
-# sensors' report and endpoint, hiflow_ble's network time. The area only
-# reserves room for the Zigbee settings field.
-ZIGBEE_ONLY_OPTIONS = ("report:", "endpoint:", "time_id:", "area:")
+# sensors' report and endpoint, hiflow_ble's network time.
+ZIGBEE_ONLY_OPTIONS = ("report:", "endpoint:", "time_id:")
 # A list entry that reads zigbee_power goes with it.
 ZIGBEE_POWER_REF = "id(zb_power)"
 

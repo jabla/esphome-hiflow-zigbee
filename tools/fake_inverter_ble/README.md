@@ -33,7 +33,7 @@ size, default 20 bytes; at most the MTU minus 3) and `NAME` (advertised name, de
 plus the serial).
 
 A bridge on the example secrets finds it by that name: after 5 minutes alone in range or at once
-after `sn=0000000000AA`. Or point it at the fake with a secrets file of its own, e.g. a copy of
+after `sn=0000000000AA` over USB. Or point it at the fake with a secrets file of its own, e.g. a copy of
 `hiflow_secrets.example.yaml` with:
 
 - `hiflow_mac`: the laptop adapter's address (`bluetoothctl list`),

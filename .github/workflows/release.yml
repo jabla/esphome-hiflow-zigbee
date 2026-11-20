@@ -2,7 +2,7 @@ name: Release images
 
 # Builds the images a release carries for updates over Zigbee, once the release
 # is published: one per board, from hiflow_secrets.example.yaml as it is (no
-# personal data, the bridge takes its settings over Zigbee), a delta against
+# personal data, the bridge takes its settings over USB), a delta against
 # the previous release and one index.json for ZHA and Zigbee2MQTT. See
 # "Release images" in the README and tools/release.py.
 #

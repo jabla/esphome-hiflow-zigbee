@@ -123,7 +123,6 @@ hiflow_ble:
 
 sensor:
   - platform: hiflow_ble
-    hiflow_ble_id: hiflow
     type: ac_power
     name: "HiFlow AC Power"
 ```
@@ -211,21 +210,39 @@ bridge's settings in flash (`hiflow_setup.h`):
 
 * The inverter: the component scans actively until it has seen exactly one
   `RMI-` device with a 12-character serial for 5 minutes. With `sn=` it takes
-  the named one. It keeps its address and serial (status 1 until then).
+  the named one. It keeps its address and serial (status 1 until then, 16
+  while several are in range and none is named).
 * The login identity: made up once, 18 digits like the S-Miles app's.
-* The PIN and, with `antenna_select`, the antenna: over Zigbee.
+* The PIN and, with `antenna_select`, the antenna: over USB.
 
 A build value wins and is copied into flash. An image built without it (a
-release image) keeps using it. With the `zigbee` component the settings arrive
-through the Basic cluster's LocationDescription on endpoint 1 (15 characters,
-no quirk needed): `pin=`, `sn=`, `forget`, `ant=ext` / `ant=int`. The bridge
-answers in the same attribute (*Settings over Zigbee* in the repository
-README). ESPHome sizes that attribute by `esphome: area:`. The area needs
-15 characters (`hiflow-zb.yaml` sets `HiFlow settings`). Otherwise the build
-stops with a hint.
+release image) keeps using it. The settings arrive as text commands on the
+logger's USB-Serial-JTAG port (`hardware_uart: USB_SERIAL_JTAG`, the default
+on the C6 and H2), one per line: `pin=`, `sn=`, `forget`, `ant=ext` /
+`ant=int` and `status`. The component answers each with one line that starts
+with `hiflow> ` (see *Settings over USB* below).
 
 `boards/xiao_esp32c6.yaml` sets `antenna_select` (an output, GPIO14) and
 `external_antenna` (`true`, `false` or empty for `ant=`).
+
+### Settings over USB
+
+The web flasher sends these after the install. Any serial terminal at 115200
+baud works too, one command per line. Backspace takes back a character, Ctrl-U
+the whole line.
+
+| Command | Does | Answer |
+|---|---|---|
+| `pin=123456` | the Bluetooth PIN from the S-Miles app | `pin saved` |
+| `pin=` | no PIN | `pin removed` |
+| `sn=ABCDEF123456` | the inverter with that serial (BLE name `RMI-ABCDEF123456`). Restarts the bridge when another one is chosen | `sn saved, searching`, `sn saved, restarting` or `sn unchanged` |
+| `forget` | drops the inverter, searches again. Restarts the bridge when one is chosen | `forgot, searching` or `forgot, restarting` |
+| `ant=ext` / `ant=int` | external or internal antenna (XIAO only) | `ant ext` / `ant int` |
+| `status` | where the bridge stands | `status sn=ABCDEF123456 pin=set session=6` |
+
+Every answer starts with `hiflow> `. A value set in the build answers
+`... in build`. The PIN is never shown or logged. While the bridge searches,
+`status` lists the inverters in range (`seen=`).
 
 ### Power saving
 

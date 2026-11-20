@@ -1,18 +1,18 @@
 # zigbee_power
 
-Power saving for ESPHome's `zigbee` component on the ESP32-C6 and ESP32-H2: a sleepy end device
-with light sleep, for a bridge on a battery or one that should run cooler on mains. The bridge
-(`hiflow-zb.yaml`) runs with `sleepy: true` unless `hiflow_secrets.yaml` says `"false"`.
+Power saving for ESPHome's `zigbee` component on the ESP32-C6 and ESP32-H2: light sleep for a
+sleepy end device, for a bridge on a battery or one that should run cooler on mains. The bridge
+(`hiflow-zb.yaml`) runs with `zigbee: sleepy: true` unless `hiflow_secrets.yaml` says `"false"`.
 
 ```yaml
-zigbee_power:
+zigbee:
   sleepy: true
+  polling_interval: 3s       # optional, 1 s to 7 s with zigbee_power
+
+zigbee_power:
   # all optional
-  poll_interval: 3s          # 1 s to 7 s
   request_poll_window: 10s   # 0 s (off) to 60 s
   loop_interval: 1s          # 16 ms to 3 s
-  night_poll_interval: 7s    # with hiflow_ble's night mode
-  night_loop_interval: 1s
   awake_on_usb: true
   awake_after_boot: 3min    # with awake_on_usb: false
   power_down_peripherals: false
@@ -27,12 +27,12 @@ zigbee_power:
   binding_table_size: 44     # default: one per server cluster of the endpoints, plus 8
 ```
 
-- `sleepy`: the node joins as a sleepy end device (receiver off while idle) and the chip goes
-  to light sleep whenever every task is idle, with the 802.15.4 radio and the BLE controller
-  sleeping as well. Not with `zigbee: router: true`.
-- `poll_interval`: how often the node asks its parent for messages. The parent keeps a message
-  for a sleepy child about 7.5 s, so it stays below that; below 1 s the stack would never
-  notice a lost parent.
+- `zigbee: sleepy` (ESPHome): the node joins as a sleepy end device (receiver off while idle).
+  This component then lets the chip go to light sleep whenever every task is idle, with the
+  802.15.4 radio and the BLE controller sleeping as well.
+- `zigbee: polling_interval` (ESPHome, 3 s by default): how often the node asks its parent for
+  messages. With `sleepy: true` this component takes 1 s to 7 s: the parent keeps a message for
+  a sleepy child about 7.5 s, and below 1 s the stack would never notice a lost parent.
 - `request_poll_window`: after a request from the network (ZHA's interview after an update, a
   reconfigure, a read or a write) the node polls every 50 ms until no request came for this
   long. Each request waits at the parent until the next poll, and the next one usually follows
@@ -42,9 +42,6 @@ zigbee_power:
 - `loop_interval`: ESPHome's main loop interval (16 ms by default), 1 s with `sleepy: true`.
   Every round wakes the chip. Also works without `sleepy`. At most 3 s, because the loop
   waits that long without feeding the 5 s task watchdog.
-- `night_poll_interval`, `night_loop_interval`: in force while
-  [`hiflow_ble`](../hiflow_ble/README.md#power-saving)'s night mode is on; they default to the
-  day values.
 - `awake_on_usb`: started with a USB host (a computer, not a charger), the chip stays awake.
   Logs and a USB flash then work at any time. In light sleep the USB port goes down. `false`
   lets it sleep there too, for light-sleep tests on a computer. On a battery or a charger the

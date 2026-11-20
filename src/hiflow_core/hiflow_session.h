@@ -66,6 +66,9 @@ extern "C" {
 #define HIFLOW_STATUS_READING   7
 /* While waiting after a failure the status is 8 + reason, i.e. 9..15. */
 #define HIFLOW_STATUS_BACKOFF_BASE 8
+/* Never from the session either: several inverters in range, the bridge waits
+   for the serial of its own (sn=). */
+#define HIFLOW_STATUS_SEVERAL 16
 
 typedef enum {
     HIFLOW_FAIL_NONE           = 0,

@@ -4,7 +4,7 @@ installer built from them.
 
 Release images are built from hiflow_secrets.example.yaml as it is, so no image
 holds personal data: the bridge finds its inverter by its BLE name and takes
-the rest over Zigbee (see "Settings over Zigbee" in the README). Per board a
+the rest over USB (see "Settings over USB" in components/hiflow_ble/README.md). Per board a
 release carries
 
   hiflow-zb-<board>-<VERSION>.factory.bin       the first install, by USB
@@ -28,10 +28,11 @@ https://github.com/<owner>/<repo>/releases/latest/download/index.json.
   release.py index --out FILE PART.json...
       One index from the boards' parts, the deltas first: Zigbee2MQTT takes the
       first entry that fits, ZHA prefers the more specific one anyway.
-  release.py site --out DIR --tag TAG --repo-url URL --esp-web-tools DIR FACTORY.bin...
+  release.py site --out DIR --tag TAG --repo-url URL --esp-web-tools DIR --esptool-js DIR FACTORY.bin...
       The web installer for GitHub Pages in DIR: web/index.html, the board
-      pictures, ESP Web Tools (the dist/web folder of its npm package), the
-      release's factory images and one ESP Web Tools manifest per board.
+      pictures, the release's factory images, one manifest per board, ESP Web
+      Tools' flash() and esptool-js (both from the folders of their npm
+      packages, with their licenses).
 
 Usage in .github/workflows/release.yml and pages.yml; pack needs detools for
 the deltas and for the ESP32-H2's images.
@@ -42,6 +43,7 @@ import hashlib
 import html
 import importlib.util
 import json
+import posixpath
 import re
 import shutil
 import struct
@@ -76,16 +78,6 @@ BOARDS = {
 CHIP_IDS = {13: "ESP32-C6", 16: "ESP32-H2"}
 ESP_IMAGE_MAGIC = 0xE9
 WEB = ROOT / "web"
-
-
-def release_version(day: datetime.date, known: list[int]) -> int:
-    """The version of a release built on `day`: build 1 of the day, or one past
-    the highest release of that day among `known` (the earlier releases)."""
-    builds = [d[1] for d in map(versions.decode, known) if d is not None and d[0] == day]
-    build = max(builds, default=0) + 1
-    if build > versions.MAX_BUILDS_PER_DAY:
-        raise SystemExit(f"no release build left on {day.isoformat()}")
-    return versions.encode(day, build)
 
 
 def ota_header(data: bytes) -> dict:
@@ -156,9 +148,8 @@ def factory_chip(head: bytes) -> str:
 
 def web_manifest(board: str, factory: Path, tag: str) -> dict:
     """ESP Web Tools' manifest for one board: the factory image at offset 0.
-    The installer asks whether to erase the flash first, because a bridge
-    installed again keeps its settings and its pairing only without the erase.
-    Improv is off: it only sets up Wi-Fi."""
+    flash() takes the build of the chip it finds, so a board with another chip
+    gets nothing written."""
     name, chip = BOARDS[board]
     with factory.open("rb") as f:
         found = factory_chip(f.read(24))
@@ -167,8 +158,6 @@ def web_manifest(board: str, factory: Path, tag: str) -> dict:
     return {
         "name": f"HiFlow Zigbee bridge for the {name}",
         "version": tag,
-        "new_install_prompt_erase": True,
-        "new_install_improv_wait_time": 0,
         "builds": [{"chipFamily": chip, "parts": [{"path": factory.name, "offset": 0}]}],
     }
 
@@ -181,7 +170,11 @@ def cmd_version(args) -> int:
             known += [int(e["fileVersion"]) for e in json.loads(Path(index).read_text())]
         except (OSError, ValueError, KeyError, TypeError) as err:
             raise SystemExit(f"{index}: not a release index ({err})")
-    print(f"0x{release_version(day, known):08X}")
+    try:
+        version = versions.next_version(day, known)
+    except ValueError as err:
+        raise SystemExit(str(err)) from None
+    print(f"0x{version:08X}")
     return 0
 
 
@@ -247,6 +240,29 @@ def cmd_index(args) -> int:
     return 0
 
 
+# A static import, a re-export or a dynamic import with a fixed specifier.
+JS_IMPORT = re.compile(r"""(?:\bfrom|\bimport)\s*\(?\s*["'`]([^"'`]+)["'`]""")
+
+
+def npm_range_fits(version: str, wanted: str) -> bool:
+    """version (x.y.z) fits wanted as npm reads it: an exact x.y.z or ^x.y.z."""
+    def parts(v):
+        m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", v)
+        if m is None:
+            raise SystemExit(f"{v}: not an x.y.z version, check it by hand")
+        return tuple(int(p) for p in m.groups())
+    if not wanted.startswith("^"):
+        return parts(version) == parts(wanted)
+    have, low = parts(version), parts(wanted[1:])
+    if have < low:
+        return False
+    if low[0] > 0:
+        return have[0] == low[0]
+    if low[1] > 0:
+        return have[:2] == low[:2]
+    return have == low
+
+
 def cmd_site(args) -> int:
     images = {}
     for path in args.images:
@@ -259,8 +275,22 @@ def cmd_site(args) -> int:
     missing = sorted(set(BOARDS) - set(images))
     if missing:
         raise SystemExit(f"no factory image for {', '.join(missing)}")
-    if not (args.esp_web_tools / "install-button.js").is_file():
-        raise SystemExit(f"{args.esp_web_tools}: not the dist/web folder of ESP Web Tools")
+    tools = {
+        # site path: source
+        "esp-web-tools/flash.js": args.esp_web_tools / "dist" / "flash.js",
+        "esp-web-tools/util/sleep.js": args.esp_web_tools / "dist" / "util" / "sleep.js",
+        "esp-web-tools/LICENSE": args.esp_web_tools / "LICENSE",
+        "esptool-js/bundle.js": args.esptool_js / "bundle.js",
+        "esptool-js/LICENSE": args.esptool_js / "LICENSE",
+    }
+    for src in tools.values():
+        if not src.is_file():
+            raise SystemExit(f"{src}: missing, not the npm package folder of ESP Web Tools or esptool-js")
+    # esptool-js has its own pin: it must fit the range ESP Web Tools names.
+    wanted = json.loads((args.esp_web_tools / "package.json").read_text()).get("dependencies", {}).get("esptool-js")
+    have = json.loads((args.esptool_js / "package.json").read_text())["version"]
+    if wanted is None or not npm_range_fits(have, wanted):
+        raise SystemExit(f"esptool-js {have} does not fit the range ESP Web Tools names ({wanted})")
 
     out = args.out
     out.mkdir(parents=True, exist_ok=True)
@@ -278,7 +308,31 @@ def cmd_site(args) -> int:
     (out / "img").mkdir(exist_ok=True)
     for picture in (ROOT / "docs" / "img").glob("board-*.jpg"):
         shutil.copyfile(picture, out / "img" / picture.name)
-    shutil.copytree(args.esp_web_tools, out / "esp-web-tools", dirs_exist_ok=True)
+    for dst, src in tools.items():
+        (out / dst).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src, out / dst)
+    # The page loads flash() through its import map: every target must be there.
+    imports = json.loads(re.search(r'<script type="importmap">(.*?)</script>', page, re.S).group(1))["imports"]
+    for target in imports.values():
+        if not (out / target).is_file():
+            raise SystemExit(f"web/index.html: the import map names {target}, which the site lacks")
+    # Every import of flash() and the modules it loads must find a file on the site.
+    todo, seen = ["esp-web-tools/flash.js"], set()
+    while todo:
+        module = todo.pop()
+        if module in seen:
+            continue
+        seen.add(module)
+        for spec in JS_IMPORT.findall((out / module).read_text()):
+            if spec.startswith(("./", "../")):
+                key = "./" + posixpath.normpath(posixpath.join(posixpath.dirname(module), spec))
+                target = imports.get(key, key)
+            else:
+                target = imports.get(spec)
+            target = None if target is None else posixpath.normpath(target)
+            if target is None or target.startswith("../") or not (out / target).is_file():
+                raise SystemExit(f"{module}: its import {spec!r} finds no file on the site")
+            todo.append(target)
     print(f"{out}: installer for {args.tag}, {len(images)} boards")
     return 0
 
@@ -304,6 +358,7 @@ def main() -> int:
     s.add_argument("--tag", required=True)
     s.add_argument("--repo-url", required=True)
     s.add_argument("--esp-web-tools", type=Path, required=True)
+    s.add_argument("--esptool-js", type=Path, required=True)
     s.add_argument("images", nargs="+", type=Path)
     args = ap.parse_args()
     return {"version": cmd_version, "pack": cmd_pack, "index": cmd_index, "site": cmd_site}[args.cmd](args)

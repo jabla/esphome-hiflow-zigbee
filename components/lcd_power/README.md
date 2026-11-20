@@ -1,8 +1,9 @@
 # lcd_power
 
 Power saving for a small SPI panel next to a sleepy chip (ESP32-C6, ESP32-H2), used by the
-Waveshare ESP32-C6-LCD-1.47 board. Works with [`zigbee_power`](../zigbee_power/README.md)'s
-`sleepy: true`; without light sleep it is a plain PWM output.
+Waveshare ESP32-C6-LCD-1.47 board. Works with the light sleep of
+[`zigbee_power`](../zigbee_power/README.md) (`zigbee: sleepy: true`); without light sleep it is a
+plain PWM output.
 
 ```yaml
 output:

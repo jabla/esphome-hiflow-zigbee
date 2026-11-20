@@ -171,8 +171,9 @@ Each point below cost at least one debugging session. Don't undo them casually.
   `VERBOSE` it ended in watchdog resets. Use `DEBUG` (handshake steps) and `VERBOSE` (GATT
   errors) only for short sessions on a computer's USB port. `tools/quicktest.sh` builds a DEBUG
   copy for that.
-- **Opening the USB-Serial/JTAG port can hold the chip in reset.** With the default modem lines
-  (DTR asserted) the board stops: no log lines, no BLE, and the values in HA freeze. Open it with
+- **Opening the USB-Serial/JTAG port from a script can stop the board.** With the default modem
+  lines (DTR asserted) the board can stop: no log lines, no BLE, and the values in HA freeze. A
+  terminal that keeps reading has worked fine. A script should open the port with
   `serial.Serial(); s.dtr = False; s.rts = False; s.open()`, as `tools/quicktest.sh` does.
   Closing the port can reset the board too, and the Waveshare board resets once even when the
   port is opened this way. `esphome logs` is unreliable on this port.

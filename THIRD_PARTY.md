@@ -7,6 +7,8 @@
 | `generate_ble_id()` from TheTiEr/hiflow-ble | ported to `tools/gen_ble_id.py` | MIT |
 | [esp_delta_ota](https://github.com/espressif/idf-extra-components/tree/master/esp_delta_ota) 1.1.4 with detools' C patch decoder | fetched by the ESP-IDF component manager at build time, used by `components/zigbee_ota/` | Apache-2.0 (detools part: BSD) |
 | [detools](https://github.com/eerimoq/detools) Python package | installed by the user, used by `tools/make_zigbee_ota.py` for delta images and the ESP32-H2's heatshrink images | BSD |
+| [ESP Web Tools](https://github.com/esphome/esp-web-tools) `flash()` | copied into the web installer site by `.github/workflows/pages.yml` (pin in `web/package.json`) | Apache-2.0, copied along |
+| [esptool-js](https://github.com/espressif/esptool-js) bundle, with [pako](https://github.com/nodeca/pako) inside | the same | Apache-2.0 (pako: MIT and zlib), copied along |
 
 The C protocol core in `src/hiflow_core/` is an independent C implementation of the protocol
 that hiflow-ble documents. It is verified against vectors generated with the reference modules

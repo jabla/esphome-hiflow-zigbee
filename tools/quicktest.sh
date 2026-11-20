@@ -47,8 +47,8 @@ fi
 
 echo "== 2/3 capture $SECS s of log -> $LOG"
 # `esphome logs` is unreliable on the USB-Serial/JTAG port, and opening it with
-# the modem lines asserted holds the board in reset (docs/troubleshooting.md):
-# open with dtr/rts low.
+# the modem lines asserted can stop the board (docs/troubleshooting.md): open
+# with dtr/rts low.
 "$PY" - "$DEV" "$LOG" "$SECS" <<'PY'
 import sys, time, serial
 

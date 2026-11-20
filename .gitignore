@@ -27,5 +27,9 @@ tools/fake_inverter_ble/mode
 # web installer tried locally (docs/development.md, Releases)
 /dist/
 /site/
-/package/
+/npm/
 esp-web-tools-*.tgz
+esptool-js-*.tgz
+
+# npm ci in web/ (the web flasher site, tests)
+web/node_modules/

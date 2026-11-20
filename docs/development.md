@@ -12,7 +12,7 @@
 | `src/hiflow_pb/` | vendored nanopb 0.4.9.2 and the generated protobuf code (`regen.sh` reproduces it) |
 | `test/` | host test suites and the reference vectors |
 | `tools/` | bleId generator, HA entity naming, flashing, log capture, BLE-only variant generator, Zigbee OTA files, release files (`release.py`), a fake inverter over BLE for the bench (`tools/fake_inverter_ble/`) |
-| `web/` | the web installer page and the ESP Web Tools pin (`package.json`), see *Releases* |
+| `web/` | the web flasher page (install and settings in one form) and the pins of ESP Web Tools and esptool-js (`package.json`), see *Releases* |
 | `hiflow-zb-bleonly.yaml` | generated: the bridge without Zigbee, for diagnosing radio coexistence |
 | `docs/` | this file, troubleshooting, energy-dashboard template |
 
@@ -123,7 +123,7 @@ against a simulated inverter.
 | Code | Meaning |
 |---|---|
 | 0 | waiting for a connection (also the normal state at night) |
-| 1 | no inverter yet: looking for one by its BLE name or waiting for `sn=` (*Settings over Zigbee* in the README) |
+| 1 | no inverter yet: looking for one by its BLE name or for the one named with `sn=` |
 | 2 / 3 / 4 / 5 | V0 pairing · login · PIN · time-sync |
 | 6 | ready, the session reads data every 30 s |
 | 9 | login refused: the link died during the handshake |
@@ -132,6 +132,7 @@ against a simulated inverter.
 | 13 | the BLE PIN is missing or was refused |
 | 14 | the session key does not fit: a frame did not authenticate, or the pairing handed back the key that just failed |
 | 15 | the radio link timed out (supervision timeout) |
+| 16 | several inverters in range: waits for the serial of its own (`sn=`, *Settings over USB* in `components/hiflow_ble/README.md`) |
 
 Codes 9–11 now and then are normal: the bridge waits (30 s, then doubling up to 5 min) and comes
 back by itself. During daylight it should stay at 6.
@@ -154,17 +155,19 @@ personal data.
 2. Wait for the workflow (about 10 minutes). Then mark the release as latest
    (`gh release edit <tag> --prerelease=false --latest`).
 
-Marking it latest also updates the web installer on GitHub Pages (`.github/workflows/pages.yml`,
-`tools/release.py site`): `web/index.html`, ESP Web Tools, the factory images and one manifest
-per board. The images sit on Pages because release downloads have no CORS header. After a page
-change or an ESP Web Tools bump, run the workflow from the *Actions* tab. Once: set Pages to the
-source *GitHub Actions* in the repository settings.
+Marking it latest also updates the web flasher on GitHub Pages (`.github/workflows/pages.yml`,
+`tools/release.py site`): `web/index.html`, the factory images, one manifest per board, ESP Web
+Tools' `flash()` and esptool-js. The images sit on Pages because release downloads have no CORS
+header. A page change goes live when the next release is marked latest. Run the workflow from the
+*Actions* tab by hand only when the page on `main` fits the latest release, e.g. after a bump in
+`web/package.json`. Once: set Pages to the source *GitHub Actions* in the repository settings.
 
-To try the page with own builds (`release.py pack` output in `dist/`, ESP Web Tools from
-`npm pack esp-web-tools@<pin>`), serve it on localhost. Web Serial accepts that like HTTPS:
+To try the page with own builds (`release.py pack` output in `dist/`), install the pinned
+packages with `npm ci --ignore-scripts` in `web/`. Then serve the site on localhost. Web Serial
+accepts that like HTTPS:
 ```bash
 python3 tools/release.py site --out site --tag test --repo-url https://github.com/jabla/esphome-hiflow-zigbee \
-  --esp-web-tools package/dist/web dist/*.factory.bin
+  --esp-web-tools web/node_modules/esp-web-tools --esptool-js web/node_modules/esptool-js dist/*.factory.bin
 python3 -m http.server -d site -b 127.0.0.1 8000
 ```
 

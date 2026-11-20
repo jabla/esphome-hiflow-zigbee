@@ -21,6 +21,6 @@ esp32:
 substitutions:
   # Zigbee OTA image type of this board ("H2"), see zigbee_ota: in hiflow-zb.yaml.
   ota_image_type: "0x4832"
-  # Sleepy end device (zigbee_power in hiflow-zb.yaml), on unless hiflow_secrets.yaml says
+  # Sleepy end device (zigbee: in hiflow-zb.yaml), on unless hiflow_secrets.yaml says
   # otherwise.
   sleepy: "true"

@@ -2,7 +2,7 @@
 
 Firmware updates over Zigbee for ESPHome's `zigbee` component on the ESP32-C6 and ESP32-H2: the ZCL OTA
 Upgrade client of esp-zigbee-lib, which ESPHome does not expose. How to use it with ZHA is in
-the main README, *Firmware updates over Zigbee*.
+[`docs/own-build.md`](../../docs/own-build.md), *Firmware updates over Zigbee*.
 
 ```yaml
 zigbee_ota:
@@ -73,5 +73,6 @@ What it does:
 - A download without progress for 60 s is ended: the server answered a block with an error
   (a ZHA reload mid-download does that), and the library stops without telling. The
   component frees the download and resets the upgrade status, so the next offer is taken.
-- With [`zigbee_power`](../zigbee_power/README.md) `sleepy: true` the node polls its parent
-  every 50 ms from the start of a download to the reboot (it still sleeps between polls).
+- With `zigbee: sleepy: true` and [`zigbee_power`](../zigbee_power/README.md) the node polls
+  its parent every 50 ms from the start of a download to the reboot (it still sleeps between
+  polls).

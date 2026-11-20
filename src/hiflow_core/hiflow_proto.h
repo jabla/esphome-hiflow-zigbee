@@ -35,7 +35,6 @@ extern "C" {
 #define HIFLOW_CMD_COMM_CMD     0xA318u /* CommCmdResDTO: login, PIN, time-sync */
 #define HIFLOW_CMD_COMM_STATUS  0xA319u /* CommCmdStatusResDTO: poll an action  */
 #define HIFLOW_CMD_REAL_DATA    0xA311u /* RealDataNew request (paged)          */
-#define HIFLOW_CMD_HEARTBEAT    0xA302u /* keeps an idle link warm              */
 #define HIFLOW_CMD_APP_INFO_V0  0xA301u /* V0 pairing, answered on 0xA201       */
 #define HIFLOW_CMD_COMMAND      0xA305u /* CommandResDTO: control actions       */
 #define HIFLOW_CMD_GET_CONFIG   0xA309u /* GetConfig: carries the power limit   */

@@ -4,7 +4,7 @@
   "description": "What the web flasher ships: ESP Web Tools' flash() and esptool-js, installed from package-lock.json and copied into the site by tools/release.py site, which also checks that esptool-js fits the range ESP Web Tools names. Dependabot watches the pins.",
   "license": "MIT",
   "dependencies": {
-    "esp-web-tools": "10.4.0",
-    "esptool-js": "0.6.1"
+    "esp-web-tools": "10.5.2",
+    "esptool-js": "0.7.1"
   }
 }

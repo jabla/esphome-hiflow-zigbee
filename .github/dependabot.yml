@@ -26,9 +26,9 @@ updates:
   # ESP Web Tools and esptool-js for the web flasher (web/package.json and
   # package-lock.json, copied into the GitHub Pages site by
   # .github/workflows/pages.yml). A bump goes live with the next run of that
-  # workflow. esptool-js has to stay in the range that ESP Web Tools names: CI's
-  # site test fails otherwise. The cooldown keeps out a release that is pulled
-  # again within its first two weeks.
+  # workflow. esptool-js has to fit the range ESP Web Tools names, so both come
+  # in one pull request. The cooldown keeps out a release that is pulled again
+  # within its first two weeks.
   - package-ecosystem: npm
     directory: /web
     schedule:
@@ -37,3 +37,6 @@ updates:
       default-days: 14
     commit-message:
       prefix: "ci"
+    groups:
+      web-flasher:
+        patterns: ["esp-web-tools", "esptool-js"]
